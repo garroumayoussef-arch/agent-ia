@@ -1,1 +1,11 @@
+[phases.setup]
+nixPkgs = [
+  "php84",
+  "php84Extensions.mbstring",
+  "php84Extensions.intl",
+  "php84Extensions.zip",
+  "composer"
+]
 
+[variables]
+NIXPACKS_PHP_VERSION = "8.4"
