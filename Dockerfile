@@ -1,6 +1,6 @@
-FROM php:8.4-cli
+FROM php:8.4-apache
 
-# PHP + dépendances système
+# Extensions système nécessaires à Laravel et PostgreSQL
 RUN apt-get update && apt-get install -y \
     git \
     unzip \
@@ -8,11 +8,14 @@ RUN apt-get update && apt-get install -y \
     curl \
     libicu-dev \
     libzip-dev \
-    && docker-php-ext-install intl zip pdo pdo_mysql pdo_pgsql
-
-# Installer Node.js 20
-RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
-    && apt-get install -y nodejs
+    libpq-dev \
+    && docker-php-ext-install \
+    pdo \
+    pdo_pgsql \
+    intl \
+    zip \
+    opcache \
+    && rm -rf /var/lib/apt/lists/*
 
 # Composer
 COPY --from=composer:2 /usr/bin/composer /usr/bin/composer
@@ -24,21 +27,26 @@ WORKDIR /app
 COPY . .
 
 # Installer les dépendances PHP
-RUN composer install --no-dev --optimize-autoloader
+RUN composer install \
+    --no-dev \
+    --optimize-autoloader \
+    --no-interaction
 
-# Installer les dépendances Node
-RUN npm install
+# Configuration Apache pour Laravel
+RUN a2enmod rewrite
 
-# Construire les assets Vite
-RUN npm run build
+ENV APACHE_DOCUMENT_ROOT=/app/public
 
-# Optimiser Laravel
-RUN php artisan config:cache && \
-    php artisan route:cache && \
-    php artisan view:cache
+RUN sed -ri -e 's!/var/www/html!${APACHE_DOCUMENT_ROOT}!g' \
+    /etc/apache2/sites-available/*.conf \
+    /etc/apache2/apache2.conf \
+    /etc/apache2/conf-available/*.conf
+
+# Permissions Laravel
+RUN chown -R www-data:www-data /app/storage /app/bootstrap/cache \
+    && chmod -R 775 /app/storage /app/bootstrap/cache
 
 # Port Railway
-EXPOSE 8000
+EXPOSE 80
 
-# Démarrer Laravel
-CMD php artisan serve --host=0.0.0.0 --port=8000
+CMD ["apache2-foreground"]
