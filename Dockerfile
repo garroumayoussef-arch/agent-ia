@@ -21,14 +21,19 @@ WORKDIR /app
 
 COPY . .
 
-# Installer PHP
+# Installer les dépendances PHP
 RUN composer install --no-dev --optimize-autoloader
 
-# Installer Node
+# Installer les dépendances Node
 RUN npm install
 
-# Construire Vite
+# Construire les assets Vite
 RUN npm run build
+
+# Optimiser Laravel
+RUN php artisan config:cache && \
+    php artisan route:cache && \
+    php artisan view:cache
 
 EXPOSE 8000
 
