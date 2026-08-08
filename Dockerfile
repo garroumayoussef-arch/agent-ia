@@ -43,21 +43,15 @@ RUN composer install \
     --no-interaction
 
 # ============================================================
-# CONFIGURATION APACHE POUR LARAVEL
+# CONFIGURATION APACHE
 # ============================================================
 
-# Désactiver tous les MPM Apache éventuellement actifs
-RUN a2dismod mpm_event mpm_worker mpm_prefork || true
+# L'image PHP Apache utilise prefork.
+# On désactive les autres MPM avant d'activer prefork.
 
-# Supprimer les fichiers/liens MPM restants
-RUN find /etc/apache2/mods-enabled -type l -name 'mpm_*' -delete \
-    && find /etc/apache2/mods-enabled -type f -name 'mpm_*' -delete
-
-# Activer UN SEUL MPM : prefork
-RUN a2enmod mpm_prefork
-
-# Activer le module rewrite nécessaire à Laravel
-RUN a2enmod rewrite
+RUN a2dismod mpm_event mpm_worker || true \
+    && a2enmod mpm_prefork \
+    && a2enmod rewrite
 
 # ============================================================
 # DOCUMENT ROOT LARAVEL
@@ -65,7 +59,7 @@ RUN a2enmod rewrite
 
 ENV APACHE_DOCUMENT_ROOT=/app/public
 
-RUN sed -ri -e 's!/var/www/html!${APACHE_DOCUMENT_ROOT}!g' \
+RUN sed -ri "s!/var/www/html!${APACHE_DOCUMENT_ROOT}!g" \
     /etc/apache2/sites-available/*.conf \
     /etc/apache2/apache2.conf \
     /etc/apache2/conf-available/*.conf
