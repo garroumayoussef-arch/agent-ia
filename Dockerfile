@@ -13,10 +13,10 @@ RUN apt-get update && apt-get install -y \
     libzip-dev \
     libpq-dev \
     && docker-php-ext-install \
-    pdo \
-    pdo_pgsql \
-    intl \
-    zip \
+        pdo \
+        pdo_pgsql \
+        intl \
+        zip \
     && rm -rf /var/lib/apt/lists/*
 
 # ============================================================
@@ -34,7 +34,7 @@ WORKDIR /app
 COPY . .
 
 # ============================================================
-# DEPENDANCES LARAVEL
+# DÉPENDANCES LARAVEL
 # ============================================================
 
 RUN composer install \
@@ -43,12 +43,13 @@ RUN composer install \
     --no-interaction
 
 # ============================================================
-# CONFIGURATION APACHE
+# APACHE
 # ============================================================
 
-RUN a2dismod mpm_event mpm_worker || true \
-    && a2enmod mpm_prefork \
-    && a2enmod rewrite
+# L'image php:apache utilise déjà mpm_prefork.
+# On active uniquement rewrite pour Laravel.
+
+RUN a2enmod rewrite
 
 # ============================================================
 # DOCUMENT ROOT LARAVEL
@@ -56,19 +57,10 @@ RUN a2dismod mpm_event mpm_worker || true \
 
 ENV APACHE_DOCUMENT_ROOT=/app/public
 
-RUN sed -ri "s!/var/www/html!${APACHE_DOCUMENT_ROOT}!g" \
-    /etc/apache2/sites-available/*.conf \
-    /etc/apache2/apache2.conf \
-    /etc/apache2/conf-available/*.conf
-
-# ============================================================
-# PORT RAILWAY
-# ============================================================
-
-RUN sed -ri 's/^Listen 80$/Listen 8080/' /etc/apache2/ports.conf
-
-RUN sed -ri 's/<VirtualHost \*:80>/<VirtualHost *:8080>/' \
-    /etc/apache2/sites-available/000-default.conf
+RUN sed -ri \
+    -e 's!/var/www/html!${APACHE_DOCUMENT_ROOT}!g' \
+    /etc/apache2/sites-available/000-default.conf \
+    /etc/apache2/apache2.conf
 
 # ============================================================
 # PERMISSIONS LARAVEL
@@ -78,13 +70,13 @@ RUN chown -R www-data:www-data /app/storage /app/bootstrap/cache \
     && chmod -R 775 /app/storage /app/bootstrap/cache
 
 # ============================================================
-# PORT
+# PORT RAILWAY
 # ============================================================
 
-EXPOSE 8080
+EXPOSE 80
 
 # ============================================================
-# DEMARRAGE APACHE
+# DÉMARRAGE APACHE
 # ============================================================
 
-CMD ["apache2-foreground"]
+CMD ["sh", "-c", "sed -ri \"s/^Listen 80$/Listen ${PORT:-80}/\" /etc/apache2/ports.conf && sed -ri \"s/<VirtualHost \\*:80>/<VirtualHost *:${PORT:-80}>/\" /etc/apache2/sites-available/000-default.conf && exec apache2-foreground"]
