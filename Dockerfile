@@ -4,14 +4,15 @@ FROM php:8.4-apache
 # EXTENSIONS PHP POUR LARAVEL + POSTGRESQL
 # ============================================================
 
-RUN apt-get update && apt-get install -y \
-    git \
-    unzip \
-    zip \
-    curl \
-    libicu-dev \
-    libzip-dev \
-    libpq-dev \
+RUN apt-get update \
+    && apt-get install -y \
+        git \
+        unzip \
+        zip \
+        curl \
+        libicu-dev \
+        libzip-dev \
+        libpq-dev \
     && docker-php-ext-install \
         pdo \
         pdo_pgsql \
@@ -34,7 +35,7 @@ WORKDIR /app
 COPY . .
 
 # ============================================================
-# DÉPENDANCES LARAVEL
+# DEPENDANCES LARAVEL
 # ============================================================
 
 RUN composer install \
@@ -43,13 +44,18 @@ RUN composer install \
     --no-interaction
 
 # ============================================================
-# APACHE
+# CONFIGURATION APACHE
 # ============================================================
 
-# L'image php:apache utilise déjà mpm_prefork.
-# On active uniquement rewrite pour Laravel.
+# Supprime TOUS les MPM actuellement activés.
+# Cela évite l'erreur :
+# AH00534: apache2: Configuration error:
+# More than one MPM loaded.
 
-RUN a2enmod rewrite
+RUN rm -f /etc/apache2/mods-enabled/mpm_*.load \
+          /etc/apache2/mods-enabled/mpm_*.conf \
+    && a2enmod mpm_prefork \
+    && a2enmod rewrite
 
 # ============================================================
 # DOCUMENT ROOT LARAVEL
@@ -76,7 +82,7 @@ RUN chown -R www-data:www-data /app/storage /app/bootstrap/cache \
 EXPOSE 80
 
 # ============================================================
-# DÉMARRAGE APACHE
+# DEMARRAGE APACHE
 # ============================================================
 
-CMD ["sh", "-c", "sed -ri \"s/^Listen 80$/Listen ${PORT:-80}/\" /etc/apache2/ports.conf && sed -ri \"s/<VirtualHost \\*:80>/<VirtualHost *:${PORT:-80}>/\" /etc/apache2/sites-available/000-default.conf && exec apache2-foreground"]
+CMD ["apache2-foreground"]
