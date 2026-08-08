@@ -1,6 +1,6 @@
 FROM php:8.4-apache
 
-# Extensions système nécessaires à Laravel et PostgreSQL
+# Extensions nécessaires à Laravel et PostgreSQL
 RUN apt-get update && apt-get install -y \
     git \
     unzip \
@@ -31,32 +31,34 @@ RUN composer install \
     --optimize-autoloader \
     --no-interaction
 
-# Configuration Apache pour Laravel
+# =========================================================
+# CONFIGURATION APACHE
+# =========================================================
+
+# Désactiver TOUS les MPM éventuellement activés
+RUN rm -f /etc/apache2/mods-enabled/mpm_*.load \
+          /etc/apache2/mods-enabled/mpm_*.conf
+
+# Activer UNIQUEMENT prefork
+RUN a2enmod mpm_prefork rewrite
+
+# Document root Laravel
 ENV APACHE_DOCUMENT_ROOT=/app/public
 
-# IMPORTANT :
-# PHP 8.4 Apache utilise déjà un MPM.
-# On désactive tous les MPM puis on active uniquement prefork.
-RUN a2dismod mpm_event mpm_worker mpm_prefork || true \
-    && a2enmod mpm_prefork \
-    && a2enmod rewrite
-
-# Configurer Apache pour utiliser /app/public
+# Configurer Apache pour Laravel
 RUN sed -ri "s!/var/www/html!${APACHE_DOCUMENT_ROOT}!g" \
     /etc/apache2/sites-available/000-default.conf \
-    /etc/apache2/apache2.conf \
-    /etc/apache2/conf-available/*.conf
+    /etc/apache2/apache2.conf
 
 # Permissions Laravel
-RUN chown -R www-data:www-data \
-    /app/storage \
-    /app/bootstrap/cache \
-    && chmod -R 775 \
-    /app/storage \
-    /app/bootstrap/cache
+RUN chown -R www-data:www-data /app/storage /app/bootstrap/cache \
+    && chmod -R 775 /app/storage /app/bootstrap/cache
+
+# Vérifier qu'un seul MPM est chargé
+RUN apache2ctl -M | grep mpm
 
 # Port Railway
 EXPOSE 80
 
-# Démarrer Apache
+# Démarrage Apache
 CMD ["apache2-foreground"]
