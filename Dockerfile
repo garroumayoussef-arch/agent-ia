@@ -9,19 +9,12 @@ RUN apt-get update && apt-get install -y \
     libicu-dev \
     libzip-dev \
     libpq-dev \
-    libonig-dev \
     && docker-php-ext-install \
-    pdo_pgsql \
-    intl \
-    mbstring \
-    zip \
-    opcache \
+        pdo \
+        pdo_pgsql \
+        intl \
+        zip \
     && rm -rf /var/lib/apt/lists/*
-
-# Configuration Apache : un seul MPM
-RUN a2dismod mpm_event mpm_worker mpm_prefork || true \
-    && a2enmod mpm_prefork \
-    && a2enmod rewrite
 
 # Composer
 COPY --from=composer:2 /usr/bin/composer /usr/bin/composer
@@ -41,18 +34,29 @@ RUN composer install \
 # Configuration Apache pour Laravel
 ENV APACHE_DOCUMENT_ROOT=/app/public
 
-RUN sed -ri \
-    -e 's!/var/www/html!${APACHE_DOCUMENT_ROOT}!g' \
-    /etc/apache2/sites-available/*.conf \
+# IMPORTANT :
+# PHP 8.4 Apache utilise déjà un MPM.
+# On désactive tous les MPM puis on active uniquement prefork.
+RUN a2dismod mpm_event mpm_worker mpm_prefork || true \
+    && a2enmod mpm_prefork \
+    && a2enmod rewrite
+
+# Configurer Apache pour utiliser /app/public
+RUN sed -ri "s!/var/www/html!${APACHE_DOCUMENT_ROOT}!g" \
+    /etc/apache2/sites-available/000-default.conf \
     /etc/apache2/apache2.conf \
     /etc/apache2/conf-available/*.conf
 
 # Permissions Laravel
-RUN chown -R www-data:www-data /app/storage /app/bootstrap/cache \
-    && chmod -R 775 /app/storage /app/bootstrap/cache
+RUN chown -R www-data:www-data \
+    /app/storage \
+    /app/bootstrap/cache \
+    && chmod -R 775 \
+    /app/storage \
+    /app/bootstrap/cache
 
-# Port
+# Port Railway
 EXPOSE 80
 
-# Démarrage Apache
+# Démarrer Apache
 CMD ["apache2-foreground"]
