@@ -26,7 +26,7 @@ RUN apt-get update && apt-get install -y \
 COPY --from=composer:2 /usr/bin/composer /usr/bin/composer
 
 # ============================================================
-# APPLICATION
+# APPLICATION LARAVEL
 # ============================================================
 
 WORKDIR /app
@@ -43,22 +43,28 @@ RUN composer install \
     --no-interaction
 
 # ============================================================
-# CONFIGURATION APACHE / MPM
+# APACHE - NETTOYAGE COMPLET DES MPM
 # ============================================================
 
-# Désactiver tous les MPM existants
-RUN a2dismod mpm_event mpm_worker mpm_prefork || true
-
-# Activer uniquement prefork et rewrite
-RUN a2enmod mpm_prefork rewrite
+RUN rm -f /etc/apache2/mods-enabled/mpm_*.load \
+    && rm -f /etc/apache2/mods-enabled/mpm_*.conf
 
 # ============================================================
-# VERIFICATION : UN SEUL MPM
+# APACHE - ACTIVATION D'UN SEUL MPM
 # ============================================================
 
-RUN find /etc/apache2/mods-enabled -name 'mpm_*.load' -type l -delete \
-    && find /etc/apache2/mods-enabled -name 'mpm_*.conf' -type l -delete \
-    && a2enmod mpm_prefork
+RUN ln -sf /etc/apache2/mods-available/mpm_prefork.load \
+        /etc/apache2/mods-enabled/mpm_prefork.load \
+    && ln -sf /etc/apache2/mods-available/mpm_prefork.conf \
+        /etc/apache2/mods-enabled/mpm_prefork.conf \
+    && ln -sf /etc/apache2/mods-available/rewrite.load \
+        /etc/apache2/mods-enabled/rewrite.load
+
+# ============================================================
+# VERIFICATION MPM
+# ============================================================
+
+RUN apache2ctl -M 2>&1 | grep mpm
 
 # ============================================================
 # DOCUMENT ROOT LARAVEL
@@ -79,7 +85,7 @@ RUN chown -R www-data:www-data /app/storage /app/bootstrap/cache \
     && chmod -R 775 /app/storage /app/bootstrap/cache
 
 # ============================================================
-# PORT RAILWAY
+# PORT
 # ============================================================
 
 EXPOSE 80
