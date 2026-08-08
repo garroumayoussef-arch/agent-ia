@@ -13,10 +13,10 @@ RUN apt-get update && apt-get install -y \
     libzip-dev \
     libpq-dev \
     && docker-php-ext-install \
-    pdo \
-    pdo_pgsql \
-    intl \
-    zip \
+        pdo \
+        pdo_pgsql \
+        intl \
+        zip \
     && rm -rf /var/lib/apt/lists/*
 
 # ============================================================
@@ -43,15 +43,22 @@ RUN composer install \
     --no-interaction
 
 # ============================================================
-# CONFIGURATION APACHE
+# CONFIGURATION APACHE / MPM
 # ============================================================
 
-# L'image PHP Apache utilise prefork.
-# On désactive les autres MPM avant d'activer prefork.
+# Désactiver tous les MPM existants
+RUN a2dismod mpm_event mpm_worker mpm_prefork || true
 
-RUN a2dismod mpm_event mpm_worker || true \
-    && a2enmod mpm_prefork \
-    && a2enmod rewrite
+# Activer uniquement prefork et rewrite
+RUN a2enmod mpm_prefork rewrite
+
+# ============================================================
+# VERIFICATION : UN SEUL MPM
+# ============================================================
+
+RUN find /etc/apache2/mods-enabled -name 'mpm_*.load' -type l -delete \
+    && find /etc/apache2/mods-enabled -name 'mpm_*.conf' -type l -delete \
+    && a2enmod mpm_prefork
 
 # ============================================================
 # DOCUMENT ROOT LARAVEL
