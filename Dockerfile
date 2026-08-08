@@ -1,64 +1,151 @@
 FROM php:8.4-apache
 
-# Extensions nécessaires à Laravel et PostgreSQL
+# =========================================================
+
+# EXTENSIONS NÉCESSAIRES À LARAVEL ET POSTGRESQL
+
+# =========================================================
+
 RUN apt-get update && apt-get install -y \
+
     git \
+
     unzip \
+
     zip \
+
     curl \
+
     libicu-dev \
+
     libzip-dev \
+
     libpq-dev \
+
     && docker-php-ext-install \
-        pdo \
-        pdo_pgsql \
-        intl \
-        zip \
+
+    pdo \
+
+    pdo_pgsql \
+
+    intl \
+
+    zip \
+
     && rm -rf /var/lib/apt/lists/*
 
-# Composer
+# =========================================================
+
+# COMPOSER
+
+# =========================================================
+
 COPY --from=composer:2 /usr/bin/composer /usr/bin/composer
 
-# Dossier de travail
+# =========================================================
+
+# DOSSIER DE TRAVAIL
+
+# =========================================================
+
 WORKDIR /app
 
-# Copier le projet
+# =========================================================
+
+# COPIER LE PROJET
+
+# =========================================================
+
 COPY . .
 
-# Installer les dépendances PHP
+# =========================================================
+
+# INSTALLER LES DÉPENDANCES PHP
+
+# =========================================================
+
 RUN composer install \
+
     --no-dev \
+
     --optimize-autoloader \
+
     --no-interaction
 
 # =========================================================
+
 # CONFIGURATION APACHE
+
 # =========================================================
 
-# Désactiver TOUS les MPM éventuellement activés
+# Désactiver tous les MPM éventuellement activés
+
 RUN rm -f /etc/apache2/mods-enabled/mpm_*.load \
+
           /etc/apache2/mods-enabled/mpm_*.conf
 
-# Activer UNIQUEMENT prefork
-RUN a2enmod mpm_prefork rewrite
+# Désactiver les MPM Apache
 
-# Document root Laravel
+RUN a2dismod mpm_event mpm_worker mpm_prefork || true
+
+# Activer UNIQUEMENT le MPM prefork
+
+RUN a2enmod mpm_prefork
+
+# Activer le module rewrite pour Laravel
+
+RUN a2enmod rewrite
+
+# =========================================================
+
+# DOCUMENT ROOT LARAVEL
+
+# =========================================================
+
 ENV APACHE_DOCUMENT_ROOT=/app/public
 
 # Configurer Apache pour Laravel
-RUN sed -ri "s!/var/www/html!${APACHE_DOCUMENT_ROOT}!g" \
+
+RUN sed -ri -e 's!/var/www/html!${APACHE_DOCUMENT_ROOT}!g' \
+
     /etc/apache2/sites-available/000-default.conf \
+
     /etc/apache2/apache2.conf
 
-# Permissions Laravel
-RUN chown -R www-data:www-data /app/storage /app/bootstrap/cache \
-    && chmod -R 775 /app/storage /app/bootstrap/cache
+# =========================================================
 
-# Vérifier qu'un seul MPM est chargé
-RUN apache2ctl -M | grep mpm
+# PERMISSIONS LARAVEL
 
-# Port Railway
+# =========================================================
+
+RUN chown -R www-data:www-data /app/storage /app/bootstrap/cache && \
+
+    chmod -R 775 /app/storage /app/bootstrap/cache
+
+# =========================================================
+
+# VÉRIFICATION DE LA CONFIGURATION APACHE
+
+# =========================================================
+
+RUN apache2ctl configtest
+
+# Vérifier le MPM chargé
+
+RUN apache2ctl -M 2>/dev/null | grep 'mpm_'
+
+# =========================================================
+
+# PORT RAILWAY
+
+# =========================================================
+
 EXPOSE 80
 
-# Démarrage Apache
+# =========================================================
+
+# DÉMARRAGE APACHE
+
+# =========================================================
+
 CMD ["apache2-foreground"]
