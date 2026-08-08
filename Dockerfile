@@ -26,7 +26,7 @@ RUN apt-get update && apt-get install -y \
 COPY --from=composer:2 /usr/bin/composer /usr/bin/composer
 
 # ============================================================
-# APPLICATION LARAVEL
+# APPLICATION
 # ============================================================
 
 WORKDIR /app
@@ -43,28 +43,21 @@ RUN composer install \
     --no-interaction
 
 # ============================================================
-# APACHE - NETTOYAGE COMPLET DES MPM
+# APACHE - DESACTIVATION DES MPM
 # ============================================================
 
-RUN rm -f /etc/apache2/mods-enabled/mpm_*.load \
+RUN a2dismod mpm_event || true \
+    && a2dismod mpm_worker || true \
+    && a2dismod mpm_prefork || true \
+    && rm -f /etc/apache2/mods-enabled/mpm_*.load \
     && rm -f /etc/apache2/mods-enabled/mpm_*.conf
 
 # ============================================================
-# APACHE - ACTIVATION D'UN SEUL MPM
+# APACHE - ACTIVATION DU MPM PREFORK UNIQUEMENT
 # ============================================================
 
-RUN ln -sf /etc/apache2/mods-available/mpm_prefork.load \
-        /etc/apache2/mods-enabled/mpm_prefork.load \
-    && ln -sf /etc/apache2/mods-available/mpm_prefork.conf \
-        /etc/apache2/mods-enabled/mpm_prefork.conf \
-    && ln -sf /etc/apache2/mods-available/rewrite.load \
-        /etc/apache2/mods-enabled/rewrite.load
-
-# ============================================================
-# VERIFICATION MPM
-# ============================================================
-
-RUN apache2ctl -M 2>&1 | grep mpm
+RUN a2enmod mpm_prefork \
+    && a2enmod rewrite
 
 # ============================================================
 # DOCUMENT ROOT LARAVEL
@@ -85,13 +78,13 @@ RUN chown -R www-data:www-data /app/storage /app/bootstrap/cache \
     && chmod -R 775 /app/storage /app/bootstrap/cache
 
 # ============================================================
-# PORT
+# PORT RAILWAY
 # ============================================================
 
 EXPOSE 80
 
 # ============================================================
-# DEMARRAGE APACHE
+# NETTOYAGE FINAL AVANT DEMARRAGE APACHE
 # ============================================================
 
-CMD ["apache2-foreground"]
+CMD ["bash", "-c", "rm -f /etc/apache2/mods-enabled/mpm_event.load /etc/apache2/mods-enabled/mpm_event.conf /etc/apache2/mods-enabled/mpm_worker.load /etc/apache2/mods-enabled/mpm_worker.conf && a2dismod mpm_event mpm_worker 2>/dev/null || true && a2enmod mpm_prefork 2>/dev/null || true && exec apache2-foreground"]
