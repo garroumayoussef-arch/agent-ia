@@ -46,12 +46,10 @@ RUN composer install \
 # APACHE
 # ============================================================
 
-# Supprimer tous les MPM actuellement activés
-RUN a2dismod mpm_event mpm_worker mpm_prefork || true \
-    && rm -f /etc/apache2/mods-enabled/mpm_*.load \
-    && rm -f /etc/apache2/mods-enabled/mpm_*.conf \
-    && a2enmod mpm_prefork \
-    && a2enmod rewrite
+# L'image officielle php:8.4-apache utilise déjà MPM prefork.
+# On active uniquement le module rewrite nécessaire à Laravel.
+
+RUN a2enmod rewrite
 
 # ============================================================
 # DOCUMENT ROOT LARAVEL
