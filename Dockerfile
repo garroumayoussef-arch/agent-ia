@@ -20,16 +20,17 @@ RUN npm run build
 
 
 # ============================================================
-# LARAVEL / PHP / APACHE
+# LARAVEL / PHP
 # ============================================================
 
-FROM php:8.4-apache
+FROM php:8.4-cli
 
 WORKDIR /app
 
-# ------------------------------------------------------------
-# PHP extensions and system dependencies
-# ------------------------------------------------------------
+
+# ============================================================
+# SYSTEM DEPENDENCIES + PHP EXTENSIONS
+# ============================================================
 
 RUN apt-get update \
     && apt-get install -y \
@@ -48,16 +49,16 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 
-# ------------------------------------------------------------
-# Composer
-# ------------------------------------------------------------
+# ============================================================
+# COMPOSER
+# ============================================================
 
 COPY --from=composer:2 /usr/bin/composer /usr/bin/composer
 
 
-# ------------------------------------------------------------
-# Laravel application
-# ------------------------------------------------------------
+# ============================================================
+# LARAVEL APPLICATION
+# ============================================================
 
 COPY composer.json composer.lock ./
 
@@ -71,42 +72,40 @@ RUN composer install \
 COPY . .
 
 
-# ------------------------------------------------------------
-# Vite production build
-# ------------------------------------------------------------
+# ============================================================
+# VITE PRODUCTION BUILD
+# ============================================================
 
 COPY --from=frontend /app/public/build ./public/build
 
 
-# ------------------------------------------------------------
-# Apache configuration
-# ------------------------------------------------------------
+# ============================================================
+# LARAVEL DIRECTORIES / PERMISSIONS
+# ============================================================
 
-RUN a2dismod mpm_event mpm_worker mpm_prefork || true \
-    && rm -f /etc/apache2/mods-enabled/mpm_*.load \
-    && rm -f /etc/apache2/mods-enabled/mpm_*.conf \
-    && a2enmod mpm_prefork \
-    && a2enmod rewrite
-
-ENV APACHE_DOCUMENT_ROOT=/app/public
-
-RUN sed -ri 's!/var/www/html!${APACHE_DOCUMENT_ROOT}!g' \
-    /etc/apache2/sites-available/000-default.conf \
-    /etc/apache2/apache2.conf
-
-
-# ------------------------------------------------------------
-# Laravel permissions
-# ------------------------------------------------------------
-
-RUN chown -R www-data:www-data /app/storage /app/bootstrap/cache \
-    && chmod -R 775 /app/storage /app/bootstrap/cache
+RUN mkdir -p \
+        /app/storage/framework/cache \
+        /app/storage/framework/sessions \
+        /app/storage/framework/views \
+        /app/storage/logs \
+        /app/bootstrap/cache \
+    && chown -R www-data:www-data \
+        /app/storage \
+        /app/bootstrap/cache \
+    && chmod -R 775 \
+        /app/storage \
+        /app/bootstrap/cache
 
 
-# ------------------------------------------------------------
-# Railway port
-# ------------------------------------------------------------
+# ============================================================
+# RAILWAY PORT
+# ============================================================
 
-EXPOSE 80
+EXPOSE 8080
 
-CMD ["apache2-foreground"]
+
+# ============================================================
+# START LARAVEL
+# ============================================================
+
+CMD ["sh", "-c", "php artisan serve --host=0.0.0.0 --port=${PORT:-8080}"]
