@@ -52,6 +52,17 @@ RUN composer install \
 RUN a2enmod rewrite
 
 # ============================================================
+# DEBUG MPM APACHE
+# ============================================================
+
+RUN echo "===== MPM MODULES =====" \
+    && ls -la /etc/apache2/mods-enabled/ | grep mpm || true \
+    && echo "===== LOADMODULE MPM =====" \
+    && grep -Rni "LoadModule.*mpm_" /etc/apache2 2>/dev/null || true \
+    && echo "===== APACHE MODULES =====" \
+    && apache2ctl -M 2>&1 || true
+    
+# ============================================================
 # DOCUMENT ROOT LARAVEL
 # ============================================================
 
