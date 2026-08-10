@@ -8,7 +8,7 @@ WORKDIR /app
 
 COPY package*.json ./
 
-RUN npm ci
+RUN npm install
 
 COPY resources ./resources
 COPY vite.config.js ./
@@ -25,97 +25,88 @@ RUN npm run build
 
 FROM php:8.4-apache
 
-# Extensions nécessaires à Laravel et PostgreSQL
-RUN apt-get update && apt-get install -y \
-    git \
-    unzip \
-    zip \
-    curl \
-    libicu-dev \
-    libzip-dev \
-    libpq-dev \
+WORKDIR /app
+
+# ------------------------------------------------------------
+# PHP extensions and system dependencies
+# ------------------------------------------------------------
+
+RUN apt-get update \
+    && apt-get install -y \
+        git \
+        unzip \
+        zip \
+        curl \
+        libicu-dev \
+        libzip-dev \
+        libpq-dev \
     && docker-php-ext-install \
-    pdo \
-    pdo_pgsql \
-    intl \
-    zip \
+        pdo \
+        pdo_pgsql \
+        intl \
+        zip \
     && rm -rf /var/lib/apt/lists/*
 
 
-# ============================================================
-# COMPOSER
-# ============================================================
+# ------------------------------------------------------------
+# Composer
+# ------------------------------------------------------------
 
 COPY --from=composer:2 /usr/bin/composer /usr/bin/composer
 
 
-# ============================================================
-# APPLICATION
-# ============================================================
+# ------------------------------------------------------------
+# Laravel application
+# ------------------------------------------------------------
 
-WORKDIR /app
+COPY composer.json composer.lock ./
+
+RUN composer install \
+    --no-dev \
+    --no-interaction \
+    --prefer-dist \
+    --optimize-autoloader \
+    --no-scripts
 
 COPY . .
 
 
-# ============================================================
-# VITE BUILD
-# ============================================================
+# ------------------------------------------------------------
+# Vite production build
+# ------------------------------------------------------------
 
 COPY --from=frontend /app/public/build ./public/build
 
 
-# ============================================================
-# COMPOSER INSTALL
-# ============================================================
+# ------------------------------------------------------------
+# Apache configuration
+# ------------------------------------------------------------
 
-RUN composer install \
-    --no-dev \
-    --optimize-autoloader \
-    --no-interaction
-
-
-# ============================================================
-# APACHE
-# ============================================================
-
-# Supprimer tous les MPM éventuellement activés
-# puis activer UNIQUEMENT prefork.
-RUN rm -f /etc/apache2/mods-enabled/mpm_*.load \
-          /etc/apache2/mods-enabled/mpm_*.conf \
+RUN a2dismod mpm_event mpm_worker mpm_prefork || true \
+    && rm -f /etc/apache2/mods-enabled/mpm_*.load \
+    && rm -f /etc/apache2/mods-enabled/mpm_*.conf \
     && a2enmod mpm_prefork \
     && a2enmod rewrite
 
-
-# ============================================================
-# LARAVEL DOCUMENT ROOT
-# ============================================================
-
 ENV APACHE_DOCUMENT_ROOT=/app/public
 
-RUN sed -ri \
-    -e 's!/var/www/html!${APACHE_DOCUMENT_ROOT}!g' \
-    /etc/apache2/sites-available/*.conf \
+RUN sed -ri 's!/var/www/html!${APACHE_DOCUMENT_ROOT}!g' \
+    /etc/apache2/sites-available/000-default.conf \
     /etc/apache2/apache2.conf
 
 
-# ============================================================
-# PERMISSIONS LARAVEL
-# ============================================================
+# ------------------------------------------------------------
+# Laravel permissions
+# ------------------------------------------------------------
 
 RUN chown -R www-data:www-data /app/storage /app/bootstrap/cache \
     && chmod -R 775 /app/storage /app/bootstrap/cache
 
 
-# ============================================================
-# PORT
-# ============================================================
+# ------------------------------------------------------------
+# Railway port
+# ------------------------------------------------------------
 
 EXPOSE 80
-
-
-# ============================================================
-# START APACHE
-# ============================================================
 
 CMD ["apache2-foreground"]
