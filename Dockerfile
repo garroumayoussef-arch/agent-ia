@@ -1,9 +1,31 @@
+# =========================================================
+# FRONTEND BUILD
+# =========================================================
+
+FROM node:22-alpine AS frontend
+
+WORKDIR /app
+
+COPY package*.json ./
+
+RUN npm ci
+
+COPY resources ./resources
+COPY vite.config.js ./
+COPY postcss.config.js ./
+COPY tailwind.config.js ./
+COPY jsconfig.json ./
+
+RUN npm run build
+
+
+# =========================================================
+# LARAVEL / PHP / APACHE
+# =========================================================
+
 FROM php:8.4-apache
 
-# =========================================================
-# EXTENSIONS PHP POUR LARAVEL + POSTGRESQL
-# =========================================================
-
+# Extensions nécessaires à Laravel et PostgreSQL
 RUN apt-get update && apt-get install -y \
     git \
     unzip \
@@ -19,11 +41,13 @@ RUN apt-get update && apt-get install -y \
     zip \
     && rm -rf /var/lib/apt/lists/*
 
+
 # =========================================================
 # COMPOSER
 # =========================================================
 
 COPY --from=composer:2 /usr/bin/composer /usr/bin/composer
+
 
 # =========================================================
 # APPLICATION
@@ -33,8 +57,16 @@ WORKDIR /app
 
 COPY . .
 
+
 # =========================================================
-# DEPENDANCES LARAVEL
+# VITE BUILD
+# =========================================================
+
+COPY --from=frontend /app/public/build ./public/build
+
+
+# =========================================================
+# COMPOSER INSTALL
 # =========================================================
 
 RUN composer install \
@@ -42,15 +74,22 @@ RUN composer install \
     --optimize-autoloader \
     --no-interaction
 
+
 # =========================================================
-# DOCUMENT ROOT LARAVEL
+# APACHE
 # =========================================================
+
+RUN rm -f /etc/apache2/mods-enabled/mpm_*.load \
+    /etc/apache2/mods-enabled/mpm_*.conf
+
+RUN a2enmod mpm_prefork rewrite
 
 ENV APACHE_DOCUMENT_ROOT=/app/public
 
-RUN sed -ri \
-    -e 's!/var/www/html!${APACHE_DOCUMENT_ROOT}!g' \
-    /etc/apache2/sites-available/000-default.conf
+RUN sed -ri "s!/var/www/html!${APACHE_DOCUMENT_ROOT}!g" \
+    /etc/apache2/sites-available/000-default.conf \
+    /etc/apache2/apache2.conf
+
 
 # =========================================================
 # PERMISSIONS LARAVEL
@@ -59,14 +98,11 @@ RUN sed -ri \
 RUN chown -R www-data:www-data /app/storage /app/bootstrap/cache \
     && chmod -R 775 /app/storage /app/bootstrap/cache
 
+
 # =========================================================
 # PORT
 # =========================================================
 
-EXPOSE 8080
+EXPOSE 80
 
-# =========================================================
-# DEMARRAGE LARAVEL
-# =========================================================
-
-CMD ["sh", "-c", "php artisan serve --host=0.0.0.0 --port=${PORT:-8080}"]
+CMD ["apache2-foreground"]
