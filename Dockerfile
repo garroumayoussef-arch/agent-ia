@@ -1,4 +1,4 @@
-FROM php:8.4-apache
+FROM php:8.4-cli
 
 # ============================================================
 # EXTENSIONS PHP POUR LARAVEL + POSTGRESQL
@@ -13,10 +13,10 @@ RUN apt-get update && apt-get install -y \
     libzip-dev \
     libpq-dev \
     && docker-php-ext-install \
-    pdo \
-    pdo_pgsql \
-    intl \
-    zip \
+        pdo \
+        pdo_pgsql \
+        intl \
+        zip \
     && rm -rf /var/lib/apt/lists/*
 
 # ============================================================
@@ -43,36 +43,6 @@ RUN composer install \
     --no-interaction
 
 # ============================================================
-# APACHE
-# ============================================================
-
-# L'image officielle php:8.4-apache utilise déjà MPM prefork.
-# On active uniquement le module rewrite nécessaire à Laravel.
-
-RUN a2enmod rewrite
-
-# ============================================================
-# DEBUG MPM APACHE
-# ============================================================
-
-RUN echo "===== MPM MODULES =====" \
-    && ls -la /etc/apache2/mods-enabled/ | grep mpm || true \
-    && echo "===== LOADMODULE MPM =====" \
-    && grep -Rni "LoadModule.*mpm_" /etc/apache2 2>/dev/null || true \
-    && echo "===== APACHE MODULES =====" \
-    && apache2ctl -M 2>&1 || true
-    
-# ============================================================
-# DOCUMENT ROOT LARAVEL
-# ============================================================
-
-ENV APACHE_DOCUMENT_ROOT=/app/public
-
-RUN sed -ri \
-    -e 's!/var/www/html!${APACHE_DOCUMENT_ROOT}!g' \
-    /etc/apache2/sites-available/000-default.conf
-
-# ============================================================
 # PERMISSIONS LARAVEL
 # ============================================================
 
@@ -80,13 +50,13 @@ RUN chown -R www-data:www-data /app/storage /app/bootstrap/cache \
     && chmod -R 775 /app/storage /app/bootstrap/cache
 
 # ============================================================
-# PORT
+# PORT RAILWAY
 # ============================================================
 
-EXPOSE 80
+EXPOSE 8080
 
 # ============================================================
-# DEMARRAGE APACHE
+# DEMARRAGE LARAVEL
 # ============================================================
 
-CMD ["apache2-foreground"]
+CMD ["sh", "-c", "php artisan serve --host=0.0.0.0 --port=${PORT:-8080}"]
