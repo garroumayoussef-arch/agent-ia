@@ -13,7 +13,6 @@ class ProductVariant extends Model
         'stock' => 'integer',
         'prix_achat' => 'decimal:2',
         'prix_vente' => 'decimal:2',
-        'status' => 'boolean',
     ];
 
     public function product(): BelongsTo
