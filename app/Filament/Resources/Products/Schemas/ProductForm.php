@@ -18,22 +18,29 @@ class ProductForm
             ->components([
 
                 TextInput::make('reference')
+                    ->label('Référence')
                     ->required()
                     ->unique(ignoreRecord: true),
 
                 TextInput::make('nom')
+                    ->label('Nom du produit')
                     ->required(),
 
-                Select::make('categorie')
-                    ->options([
-                        'Club' => 'Club',
-                        'Équipe nationale' => 'Équipe nationale',
-                        'Chaussures' => 'Chaussures',
-                        'Accessoires' => 'Accessoires',
-                    ])
+                Select::make('brand_id')
+                    ->label('Marque')
+                    ->relationship('brand', 'name')
+                    ->searchable()
+                    ->preload(),
+
+                Select::make('category_id')
+                    ->label('Catégorie')
+                    ->relationship('category', 'name')
+                    ->searchable()
+                    ->preload()
                     ->required(),
 
                 Select::make('type')
+                    ->label('Type')
                     ->options([
                         'Player Version' => 'Player Version',
                         'Fan Version' => 'Fan Version',
@@ -46,8 +53,8 @@ class ProductForm
                     ->required(),
 
                 Select::make('club_id')
+                    ->label('Club / Sélection')
                     ->relationship('club', 'name')
-                    ->label('Club')
                     ->searchable()
                     ->preload(),
 
@@ -57,6 +64,18 @@ class ProductForm
                 TextInput::make('taille')
                     ->label('Taille'),
 
+                Select::make('competition_id')
+                    ->label('Compétition')
+                    ->relationship('competition', 'name')
+                    ->searchable()
+                    ->preload(),
+
+                Select::make('supplier_id')
+                    ->label('Fournisseur')
+                    ->relationship('supplier', 'name')
+                    ->searchable()
+                    ->preload(),
+
                 TextInput::make('stock')
                     ->label('Stock actuel')
                     ->numeric()
@@ -65,15 +84,16 @@ class ProductForm
                     ->dehydrated(),
 
                 TextInput::make('prix_achat')
+                    ->label('Prix d’achat')
                     ->numeric()
+                    ->prefix('€')
                     ->required(),
 
                 TextInput::make('prix_vente')
+                    ->label('Prix de vente')
                     ->numeric()
+                    ->prefix('€')
                     ->required(),
-
-                TextInput::make('fournisseur')
-                    ->label('Fournisseur'),
 
                 CheckboxList::make('marketplaces')
                     ->label('Canaux de vente')
@@ -106,12 +126,6 @@ class ProductForm
                         'avito' => 'Avito Maroc',
                     ])
                     ->columnSpanFull(),
-
-                /*
-                 * =========================================================
-                 * VARIANTES DU PRODUIT
-                 * =========================================================
-                 */
 
                 Repeater::make('variants')
                     ->label('Variantes du produit')
@@ -199,11 +213,13 @@ class ProductForm
                     ->columnSpanFull(),
 
                 FileUpload::make('photos')
+                    ->label('Photos')
                     ->multiple()
                     ->image()
                     ->columnSpanFull(),
 
                 Textarea::make('description')
+                    ->label('Description')
                     ->columnSpanFull(),
 
             ]);

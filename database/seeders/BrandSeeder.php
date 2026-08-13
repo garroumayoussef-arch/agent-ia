@@ -4,6 +4,7 @@ namespace Database\Seeders;
 
 use Illuminate\Database\Seeder;
 use App\Models\Brand;
+use Illuminate\Support\Str;
 
 class BrandSeeder extends Seeder
 {
@@ -14,7 +15,9 @@ class BrandSeeder extends Seeder
     {
         $brands = [
 
-            // Sport
+            // =========================
+            // ⚽ SPORT
+            // =========================
             ['name' => 'Nike'],
             ['name' => 'Adidas'],
             ['name' => 'Puma'],
@@ -36,7 +39,9 @@ class BrandSeeder extends Seeder
             ['name' => 'Castore'],
             ['name' => 'Craft'],
 
-            // Sneakers
+            // =========================
+            // 👟 SNEAKERS
+            // =========================
             ['name' => 'Jordan'],
             ['name' => 'Converse'],
             ['name' => 'Vans'],
@@ -46,7 +51,9 @@ class BrandSeeder extends Seeder
             ['name' => 'The North Face'],
             ['name' => 'Columbia'],
 
-            // Luxe
+            // =========================
+            // 💎 LUXE / MODE
+            // =========================
             ['name' => 'Louis Vuitton'],
             ['name' => 'Gucci'],
             ['name' => 'Dior'],
@@ -74,8 +81,18 @@ class BrandSeeder extends Seeder
             ['name' => 'Brunello Cucinelli'],
             ['name' => 'Loro Piana'],
             ['name' => 'Zegna'],
+            ['name' => 'Armani'],
+            ['name' => 'Diesel'],
+            ['name' => 'Superdry'],
+            ['name' => 'Lacoste'],
+            ['name' => 'Tommy Hilfiger'],
+            ['name' => 'Calvin Klein'],
+            ['name' => 'Ralph Lauren'],
+            ['name' => 'Hugo Boss'],
 
-            // Horlogerie
+            // =========================
+            // ⌚ HORLOGERIE
+            // =========================
             ['name' => 'Rolex'],
             ['name' => 'Patek Philippe'],
             ['name' => 'Audemars Piguet'],
@@ -86,24 +103,83 @@ class BrandSeeder extends Seeder
             ['name' => 'TAG Heuer'],
             ['name' => 'Hublot'],
 
-            // Outdoor
+            // =========================
+            // 🏕️ OUTDOOR
+            // =========================
             ['name' => 'Patagonia'],
-            ['name' => 'Arc’teryx'],
+            ['name' => "Arc'teryx"],
 
-            // Autres
-            ['name' => 'Lacoste'],
-            ['name' => 'Tommy Hilfiger'],
-            ['name' => 'Calvin Klein'],
-            ['name' => 'Ralph Lauren'],
-            ['name' => 'Hugo Boss'],
-            ['name' => 'Armani'],
-            ['name' => 'Diesel'],
-            ['name' => 'Superdry'],
+            // =========================
+            // 🚗 AUTOMOBILE
+            // =========================
+            ['name' => 'Mercedes-Benz'],
+            ['name' => 'BMW'],
+            ['name' => 'Audi'],
+            ['name' => 'Volkswagen'],
+            ['name' => 'Porsche'],
+            ['name' => 'Toyota'],
+            ['name' => 'Honda'],
+            ['name' => 'Ford'],
+            ['name' => 'Tesla'],
+            ['name' => 'Peugeot'],
+            ['name' => 'Renault'],
+            ['name' => 'Citroën'],
+            ['name' => 'Dacia'],
+            ['name' => 'Fiat'],
+            ['name' => 'Land Rover'],
+            ['name' => 'Range Rover'],
+            ['name' => 'Volvo'],
+            ['name' => 'Lexus'],
+            ['name' => 'Nissan'],
+            ['name' => 'Hyundai'],
+            ['name' => 'Kia'],
+
+            // =========================
+            // 📱 HIGH-TECH
+            // =========================
+            ['name' => 'Apple'],
+            ['name' => 'Samsung'],
+            ['name' => 'Google'],
+            ['name' => 'Xiaomi'],
+            ['name' => 'Huawei'],
+            ['name' => 'OnePlus'],
+            ['name' => 'Oppo'],
+            ['name' => 'Sony'],
+            ['name' => 'LG'],
+            ['name' => 'Lenovo'],
+            ['name' => 'Asus'],
+            ['name' => 'Acer'],
+            ['name' => 'Microsoft'],
+
+            // =========================
+            // 🎮 GAMING
+            // =========================
+            ['name' => 'PlayStation'],
+            ['name' => 'Xbox'],
+            ['name' => 'Nintendo'],
+            ['name' => 'Valve'],
+            ['name' => 'Razer'],
+            ['name' => 'Logitech'],
+            ['name' => 'SteelSeries'],
+            ['name' => 'Corsair'],
+
+            // =========================
+            // 🏠 AUTRES
+            // =========================
+            ['name' => 'Dyson'],
+            ['name' => 'Philips'],
+            ['name' => 'Bosch'],
+            ['name' => 'DeWalt'],
+            ['name' => 'Makita'],
+            ['name' => 'Stanley'],
         ];
 
         foreach ($brands as $brand) {
+            $slug = Str::slug($brand['name']);
+
             Brand::firstOrCreate([
                 'name' => $brand['name'],
+                'slug' => $slug,
             ]);
         }
     }
