@@ -3,6 +3,7 @@
 namespace Database\Seeders;
 
 use Illuminate\Database\Seeder;
+use Illuminate\Support\Str;
 use App\Models\Competition;
 
 class CompetitionSeeder extends Seeder
@@ -34,6 +35,7 @@ class CompetitionSeeder extends Seeder
 
         foreach ($competitions as $competition) {
             Competition::firstOrCreate(
+                ['slug' => Str::slug($competition['name'])],
                 ['name' => $competition['name']]
             );
         }
