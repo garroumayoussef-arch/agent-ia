@@ -10,6 +10,7 @@ use App\Models\Product;
 use App\Models\ProductVariant;
 use App\Models\StockMovement;
 use App\Models\Supplier;
+use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
 
@@ -494,5 +495,68 @@ class StockMovementTest extends TestCase
         $product->refresh();
         $this->assertSame(3, $product->stock);
         $this->assertSame(0, StockMovement::count());
+    }
+
+    /*
+     * =================================================================
+     * user_id renseigné automatiquement à la création
+     * =================================================================
+     */
+
+    public function test_le_user_id_est_renseigne_automatiquement_avec_lutilisateur_authentifie(): void
+    {
+        $user = User::factory()->create();
+        $product = $this->makeProduct();
+        $variant = $this->makeVariant($product, ['stock' => 5]);
+
+        $this->actingAs($user);
+
+        $movement = StockMovement::create([
+            'product_id' => $product->id,
+            'product_variant_id' => $variant->id,
+            'type' => 'purchase',
+            'quantity' => 10,
+        ]);
+
+        $this->assertSame($user->id, $movement->user_id);
+    }
+
+    public function test_le_user_id_reste_null_sans_utilisateur_authentifie(): void
+    {
+        // Aucun `actingAs()` : simule un contexte système/CLI/job sans
+        // utilisateur connecté. La création ne doit pas être bloquée.
+        $product = $this->makeProduct();
+        $variant = $this->makeVariant($product, ['stock' => 5]);
+
+        $movement = StockMovement::create([
+            'product_id' => $product->id,
+            'product_variant_id' => $variant->id,
+            'type' => 'purchase',
+            'quantity' => 10,
+        ]);
+
+        $this->assertNull($movement->user_id);
+        $variant->refresh();
+        $this->assertSame(15, $variant->stock);
+    }
+
+    public function test_un_user_id_fourni_explicitement_nest_pas_ecrase(): void
+    {
+        $loggedInUser = User::factory()->create();
+        $attributedTo = User::factory()->create();
+        $product = $this->makeProduct();
+        $variant = $this->makeVariant($product, ['stock' => 5]);
+
+        $this->actingAs($loggedInUser);
+
+        $movement = StockMovement::create([
+            'product_id' => $product->id,
+            'product_variant_id' => $variant->id,
+            'type' => 'purchase',
+            'quantity' => 10,
+            'user_id' => $attributedTo->id,
+        ]);
+
+        $this->assertSame($attributedTo->id, $movement->user_id);
     }
 }

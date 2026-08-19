@@ -63,6 +63,21 @@ class StockMovement extends Model
 
             /*
              * =========================================================
+             * UTILISATEUR À L'ORIGINE DU MOUVEMENT
+             * =========================================================
+             *
+             * Renseigné automatiquement avec l'utilisateur authentifié,
+             * sans jamais écraser une valeur déjà fournie explicitement
+             * (ex : script d'import, tâche système attribuant le
+             * mouvement à un utilisateur précis). `auth()->id()` renvoie
+             * `null` en l'absence d'utilisateur connecté (CLI, tests,
+             * job en file d'attente...) : la colonne restant nullable,
+             * la création n'est jamais bloquée pour autant.
+             */
+            $movement->user_id ??= auth()->id();
+
+            /*
+             * =========================================================
              * VALIDATION DU TYPE ET DE LA QUANTITÉ
              * =========================================================
              */
