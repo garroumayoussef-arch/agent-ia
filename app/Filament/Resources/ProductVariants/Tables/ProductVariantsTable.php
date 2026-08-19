@@ -49,7 +49,7 @@ class ProductVariantsTable
                     ->badge()
                     ->color(fn ($state) => match (true) {
                         $state <= 0 => 'danger',
-                        $state <= 5 => 'warning',
+                        $state <= Product::LOW_STOCK_THRESHOLD => 'warning',
                         default => 'success',
                     })
                     ->sortable(),

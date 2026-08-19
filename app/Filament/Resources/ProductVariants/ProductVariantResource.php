@@ -7,6 +7,7 @@ use App\Filament\Resources\ProductVariants\Pages\EditProductVariant;
 use App\Filament\Resources\ProductVariants\Pages\ListProductVariants;
 use App\Filament\Resources\ProductVariants\Schemas\ProductVariantForm;
 use App\Filament\Resources\ProductVariants\Tables\ProductVariantsTable;
+use App\Models\Product;
 use App\Models\ProductVariant;
 use BackedEnum;
 use Filament\Resources\Resource;
@@ -27,6 +28,41 @@ class ProductVariantResource extends Resource
     protected static ?string $pluralModelLabel = 'Variantes';
 
     protected static ?string $navigationLabel = 'Variantes';
+
+    /**
+     * Pastille de compteur sur le menu "Variantes" : nombre de
+     * variantes en stock bas ou en rupture.
+     */
+    public static function getNavigationBadge(): ?string
+    {
+        $count = static::getLowStockCount();
+
+        return $count > 0 ? (string) $count : null;
+    }
+
+    public static function getNavigationBadgeColor(): ?string
+    {
+        return static::hasOutOfStockVariants() ? 'danger' : 'warning';
+    }
+
+    public static function getNavigationBadgeTooltip(): ?string
+    {
+        return 'Variantes en stock bas ou en rupture (≤ '.Product::LOW_STOCK_THRESHOLD.')';
+    }
+
+    private static function getLowStockCount(): int
+    {
+        return ProductVariant::query()
+            ->where('stock', '<=', Product::LOW_STOCK_THRESHOLD)
+            ->count();
+    }
+
+    private static function hasOutOfStockVariants(): bool
+    {
+        return ProductVariant::query()
+            ->where('stock', '<=', 0)
+            ->exists();
+    }
 
     public static function form(Schema $schema): Schema
     {

@@ -2,6 +2,7 @@
 
 namespace App\Filament\Resources\StockMovements\Schemas;
 
+use App\Models\Product;
 use App\Models\StockMovement;
 use Filament\Infolists\Components\TextEntry;
 use Filament\Schemas\Components\Section;
@@ -77,7 +78,7 @@ class StockMovementInfolist
                             ->badge()
                             ->color(fn ($state): string => match (true) {
                                 $state <= 0 => 'danger',
-                                $state <= 5 => 'warning',
+                                $state <= Product::LOW_STOCK_THRESHOLD => 'warning',
                                 default => 'success',
                             }),
                     ]),

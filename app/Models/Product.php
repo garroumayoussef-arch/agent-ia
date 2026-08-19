@@ -21,6 +21,15 @@ class Product extends Model
         'status' => 'boolean',
     ];
 
+    /**
+     * Seuil en dessous (ou à hauteur) duquel un stock est considéré
+     * "bas". Utilisé à la fois pour la coloration des badges de stock
+     * (ProductsTable, ProductVariantsTable) et pour les alertes stock
+     * bas (badges de navigation, widget LowStockAlert) : un seul point
+     * de vérité pour ne pas laisser deux endroits diverger.
+     */
+    public const LOW_STOCK_THRESHOLD = 5;
+
     protected static function booted(): void
     {
         static::saving(function (self $product): void {
