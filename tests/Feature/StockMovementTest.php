@@ -73,6 +73,80 @@ class StockMovementTest extends TestCase
         $this->assertSame('N/A', $product->taille);
     }
 
+    /*
+     * =================================================================
+     * Champs miroirs categorie / marque / fournisseur
+     * =================================================================
+     */
+
+    public function test_categorie_marque_fournisseur_se_resynchronisent_quand_la_relation_change(): void
+    {
+        $brandA = Brand::create(['name' => 'Nike', 'slug' => 'nike']);
+        $brandB = Brand::create(['name' => 'Adidas', 'slug' => 'adidas']);
+        $categoryA = Category::create(['name' => 'Football', 'slug' => 'football']);
+        $categoryB = Category::create(['name' => 'Basketball', 'slug' => 'basketball']);
+        $supplierA = Supplier::create(['name' => 'AliExpress']);
+        $supplierB = Supplier::create(['name' => 'CJ Dropshipping']);
+
+        $product = Product::create([
+            'reference' => 'REF-SYNC',
+            'nom' => 'Maillot Test',
+            'type' => 'Player Version',
+            'brand_id' => $brandA->id,
+            'category_id' => $categoryA->id,
+            'supplier_id' => $supplierA->id,
+            'stock' => 0,
+            'prix_achat' => 10,
+            'prix_vente' => 20,
+        ]);
+
+        $this->assertSame('Football', $product->categorie);
+        $this->assertSame('Nike', $product->marque);
+        $this->assertSame('AliExpress', $product->fournisseur);
+
+        // On change la marque, la catégorie et le fournisseur du produit.
+        $product->update([
+            'brand_id' => $brandB->id,
+            'category_id' => $categoryB->id,
+            'supplier_id' => $supplierB->id,
+        ]);
+
+        $product->refresh();
+
+        // Les champs miroirs doivent refléter la NOUVELLE relation,
+        // pas rester figés sur les anciennes valeurs.
+        $this->assertSame('Basketball', $product->categorie);
+        $this->assertSame('Adidas', $product->marque);
+        $this->assertSame('CJ Dropshipping', $product->fournisseur);
+    }
+
+    public function test_categorie_conserve_la_valeur_legacy_si_aucune_relation_nest_definie(): void
+    {
+        $product = $this->makeProduct(['categorie' => 'Ancienne Catégorie Texte']);
+
+        // Une autre sauvegarde (sans jamais définir category_id) ne doit
+        // pas écraser la valeur legacy par 'N/A'.
+        $product->update(['nom' => 'Nom mis à jour']);
+
+        $product->refresh();
+
+        $this->assertNull($product->category_id);
+        $this->assertSame('Ancienne Catégorie Texte', $product->categorie);
+    }
+
+    public function test_marque_repasse_a_na_quand_la_marque_est_explicitement_retiree(): void
+    {
+        $brand = Brand::create(['name' => 'Nike', 'slug' => 'nike']);
+
+        $product = $this->makeProduct(['brand_id' => $brand->id]);
+        $this->assertSame('Nike', $product->marque);
+
+        $product->update(['brand_id' => null]);
+        $product->refresh();
+
+        $this->assertSame('N/A', $product->marque);
+    }
+
     public function test_un_achat_sur_variante_met_a_jour_le_stock_de_la_variante_et_du_produit(): void
     {
         $product = $this->makeProduct();

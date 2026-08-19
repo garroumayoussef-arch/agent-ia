@@ -20,15 +20,67 @@ class Product extends Model
     protected static function booted(): void
     {
         static::saving(function (self $product): void {
-            $product->categorie ??= $product->category()->value('name') ?? 'N/A';
-            $product->marque ??= $product->brand()->value('name') ?? 'N/A';
-            $product->fournisseur ??= $product->supplier()->value('name') ?? 'N/A';
+            /*
+             * categorie / marque / fournisseur sont de purs "miroirs" de
+             * category_id / brand_id / supplier_id : aucun champ du
+             * formulaire Produit ne permet de les éditer manuellement,
+             * la relation est donc la SEULE source de vérité. On les
+             * recalcule à CHAQUE sauvegarde (pas uniquement à la
+             * création) pour éviter qu'ils restent figés après un
+             * changement de marque/catégorie/fournisseur.
+             *
+             * Si la relation est absente ET n'a jamais été renseignée
+             * (aucun *_id historique), on conserve la valeur existante
+             * afin de ne pas écraser d'éventuelles données legacy
+             * saisies avant l'introduction des relations. Si la relation
+             * vient d'être explicitement retirée (*_id passé à null),
+             * le champ miroir est remis à 'N/A' plutôt que de garder une
+             * ancienne valeur périmée.
+             */
+            static::syncMirroredRelationField($product, 'categorie', 'category_id', 'category');
+            static::syncMirroredRelationField($product, 'marque', 'brand_id', 'brand');
+            static::syncMirroredRelationField($product, 'fournisseur', 'supplier_id', 'supplier');
+
+            /*
+             * equipe / taille restent des champs éditables manuellement
+             * dans le formulaire (TextInput dédié) : on ne les renseigne
+             * que s'ils sont vides, sans jamais écraser une saisie
+             * volontaire de l'administrateur.
+             */
             $product->equipe ??= $product->club()->value('name') ?? 'N/A';
 
             if (empty($product->taille)) {
                 $product->taille = $product->variants()->value('size') ?? 'N/A';
             }
         });
+    }
+
+    /**
+     * Synchronise un champ texte "miroir" d'une relation BelongsTo
+     * (categorie <-> category_id, marque <-> brand_id, fournisseur <->
+     * supplier_id) : source de vérité = la relation quand elle existe.
+     */
+    private static function syncMirroredRelationField(
+        self $product,
+        string $field,
+        string $foreignKey,
+        string $relation,
+    ): void {
+        if ($product->{$foreignKey}) {
+            $product->{$field} = $product->{$relation}()->value('name') ?? 'N/A';
+
+            return;
+        }
+
+        if ($product->isDirty($foreignKey)) {
+            // La relation vient d'être explicitement retirée.
+            $product->{$field} = 'N/A';
+
+            return;
+        }
+
+        // Aucune relation n'a jamais été définie : valeur legacy conservée.
+        $product->{$field} ??= 'N/A';
     }
 
     /**
