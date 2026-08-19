@@ -17,6 +17,10 @@ class DatabaseSeeder extends Seeder
             CompetitionSeeder::class,
             ClubSeeder::class,
             SupplierSeeder::class,
+            // ProductSeeder s'exécute en dernier : il s'appuie sur les
+            // données injectées par les seeders ci-dessus pour associer
+            // ses produits de démo à une marque/catégorie/club/etc.
+            ProductSeeder::class,
         ]);
     }
 }
