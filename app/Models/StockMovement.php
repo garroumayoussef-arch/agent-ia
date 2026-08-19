@@ -402,4 +402,15 @@ class StockMovement extends Model
             'product_variant_id'
         );
     }
+
+    /*
+     * =============================================================
+     * RELATION : UTILISATEUR À L'ORIGINE DU MOUVEMENT
+     * =============================================================
+     */
+
+    public function user(): BelongsTo
+    {
+        return $this->belongsTo(User::class);
+    }
 }

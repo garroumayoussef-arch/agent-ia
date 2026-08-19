@@ -633,4 +633,23 @@ class StockMovementTest extends TestCase
 
         $this->assertSame($attributedTo->id, $movement->user_id);
     }
+
+    public function test_un_mouvement_expose_une_relation_vers_lutilisateur_qui_la_cree(): void
+    {
+        $user = User::factory()->create();
+        $product = $this->makeProduct();
+        $variant = $this->makeVariant($product, ['stock' => 5]);
+
+        $this->actingAs($user);
+
+        $movement = StockMovement::create([
+            'product_id' => $product->id,
+            'product_variant_id' => $variant->id,
+            'type' => 'purchase',
+            'quantity' => 10,
+        ]);
+
+        $this->assertInstanceOf(User::class, $movement->user);
+        $this->assertSame($user->id, $movement->user->id);
+    }
 }
