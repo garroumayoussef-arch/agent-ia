@@ -31,6 +31,12 @@ class StockMovementForm
                     ->afterStateUpdated(function (Set $set) {
                         $set('product_variant_id', null);
                     })
+                    // Changer le produit d'un mouvement existant romprait
+                    // l'historique de stock de deux cibles différentes :
+                    // ce n'est autorisé qu'à la création (voir aussi le
+                    // garde-fou correspondant dans StockMovement::updating()).
+                    ->disabled(fn (string $operation): bool => $operation === 'edit')
+                    ->dehydrated()
                     ->required(),
 
                 Select::make('product_variant_id')
@@ -78,9 +84,27 @@ class StockMovementForm
                     })
                     ->searchable()
                     ->preload()
-                    ->disabled(fn (Get $get): bool => ! $get('product_id'))
-                    ->required()
-                    ->helperText('Sélectionnez d’abord un produit.'),
+                    // Requise uniquement si le produit sélectionné possède
+                    // réellement des variantes : un produit sans variante
+                    // doit pouvoir recevoir un mouvement directement sur
+                    // son stock global (cf. StockMovement::creating(), CAS 2).
+                    ->disabled(fn (Get $get, string $operation): bool => $operation === 'edit'
+                        || ! $get('product_id')
+                        || ! static::productHasVariants($get('product_id')))
+                    ->dehydrated()
+                    ->required(fn (Get $get, string $operation): bool => $operation !== 'edit'
+                        && static::productHasVariants($get('product_id')))
+                    ->helperText(function (Get $get): string {
+                        if (! $get('product_id')) {
+                            return 'Sélectionnez d’abord un produit.';
+                        }
+
+                        if (static::productHasVariants($get('product_id'))) {
+                            return 'Ce produit a des variantes : sélectionnez celle concernée par ce mouvement.';
+                        }
+
+                        return "Ce produit n'a pas de variantes : le mouvement s'appliquera directement sur son stock global.";
+                    }),
 
                 Select::make('type')
                     ->label('Type de mouvement')
@@ -114,5 +138,22 @@ class StockMovementForm
                     ->rows(4)
                     ->columnSpanFull(),
             ]);
+    }
+
+    /**
+     * Un produit sans aucune variante peut recevoir un mouvement de
+     * stock directement (cf. StockMovement CAS 2) ; un produit qui a
+     * des variantes doit obligatoirement passer par l'une d'elles pour
+     * ne pas rompre la synchronisation Product.stock <-> variantes.
+     */
+    private static function productHasVariants(?int $productId): bool
+    {
+        if (! $productId) {
+            return false;
+        }
+
+        return ProductVariant::query()
+            ->where('product_id', $productId)
+            ->exists();
     }
 }
