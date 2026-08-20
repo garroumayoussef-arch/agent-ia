@@ -424,4 +424,15 @@ class StockMovement extends Model
     {
         return $this->belongsTo(PurchaseOrder::class);
     }
+
+    /*
+     * =============================================================
+     * RELATION : COMMANDE DE VENTE D'ORIGINE (si généré par une expédition)
+     * =============================================================
+     */
+
+    public function salesOrder(): BelongsTo
+    {
+        return $this->belongsTo(SalesOrder::class);
+    }
 }
