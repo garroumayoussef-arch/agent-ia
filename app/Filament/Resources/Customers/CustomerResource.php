@@ -2,6 +2,7 @@
 
 namespace App\Filament\Resources\Customers;
 
+use App\Filament\Concerns\HasRoleBasedAuthorization;
 use App\Filament\Resources\Customers\Pages\CreateCustomer;
 use App\Filament\Resources\Customers\Pages\EditCustomer;
 use App\Filament\Resources\Customers\Pages\ListCustomers;
@@ -16,6 +17,8 @@ use Filament\Tables\Table;
 
 class CustomerResource extends Resource
 {
+    use HasRoleBasedAuthorization;
+
     protected static ?string $model = Customer::class;
 
     protected static string|BackedEnum|null $navigationIcon = Heroicon::OutlinedUsers;

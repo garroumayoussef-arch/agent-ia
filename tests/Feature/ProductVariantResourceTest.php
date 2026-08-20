@@ -8,6 +8,7 @@ use App\Filament\Resources\ProductVariants\ProductVariantResource;
 use App\Models\Product;
 use App\Models\ProductVariant;
 use App\Models\User;
+use Database\Seeders\RoleSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Livewire\Livewire;
 use Tests\TestCase;
@@ -15,6 +16,15 @@ use Tests\TestCase;
 class ProductVariantResourceTest extends TestCase
 {
     use RefreshDatabase;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        // Les rôles (admin/manager/viewer) doivent exister avant tout
+        // assignRole() dans les tests ci-dessous.
+        $this->seed(RoleSeeder::class);
+    }
 
     private function makeProduct(array $attributes = []): Product
     {
@@ -38,7 +48,7 @@ class ProductVariantResourceTest extends TestCase
 
     public function test_les_pages_de_la_ressource_sont_accessibles(): void
     {
-        $this->actingAs(User::factory()->create());
+        $this->actingAs(User::factory()->create()->assignRole('manager'));
 
         $product = $this->makeProduct();
         $variant = ProductVariant::create([
@@ -62,7 +72,7 @@ class ProductVariantResourceTest extends TestCase
 
     public function test_creer_une_variante_depuis_le_formulaire_synchronise_le_stock_du_produit(): void
     {
-        $this->actingAs(User::factory()->create());
+        $this->actingAs(User::factory()->create()->assignRole('manager'));
 
         $product = $this->makeProduct(['stock' => 0]);
 
@@ -90,7 +100,7 @@ class ProductVariantResourceTest extends TestCase
 
     public function test_le_sku_doit_etre_unique_a_la_creation(): void
     {
-        $this->actingAs(User::factory()->create());
+        $this->actingAs(User::factory()->create()->assignRole('manager'));
 
         $productA = $this->makeProduct();
         ProductVariant::create([
@@ -124,7 +134,7 @@ class ProductVariantResourceTest extends TestCase
 
     public function test_modifier_le_stock_dune_variante_depuis_le_formulaire_resynchronise_le_produit(): void
     {
-        $this->actingAs(User::factory()->create());
+        $this->actingAs(User::factory()->create()->assignRole('manager'));
 
         $product = $this->makeProduct();
         $variant = ProductVariant::create([

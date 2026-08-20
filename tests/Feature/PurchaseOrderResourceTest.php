@@ -11,6 +11,7 @@ use App\Models\PurchaseOrder;
 use App\Models\PurchaseOrderItem;
 use App\Models\Supplier;
 use App\Models\User;
+use Database\Seeders\RoleSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Livewire\Livewire;
 use Tests\TestCase;
@@ -18,6 +19,13 @@ use Tests\TestCase;
 class PurchaseOrderResourceTest extends TestCase
 {
     use RefreshDatabase;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        $this->seed(RoleSeeder::class);
+    }
 
     private function makeProduct(array $attributes = []): Product
     {
@@ -41,7 +49,7 @@ class PurchaseOrderResourceTest extends TestCase
 
     public function test_les_pages_de_la_ressource_sont_accessibles(): void
     {
-        $this->actingAs(User::factory()->create());
+        $this->actingAs(User::factory()->create()->assignRole('manager'));
 
         $product = $this->makeProduct();
         $order = PurchaseOrder::create(['reference' => 'BC-UI-1']);
@@ -65,7 +73,7 @@ class PurchaseOrderResourceTest extends TestCase
 
     public function test_creer_un_bon_de_commande_avec_une_ligne_via_le_formulaire(): void
     {
-        $this->actingAs(User::factory()->create());
+        $this->actingAs(User::factory()->create()->assignRole('manager'));
 
         $supplier = Supplier::create(['name' => 'AliExpress']);
         $product = $this->makeProduct();
@@ -101,7 +109,7 @@ class PurchaseOrderResourceTest extends TestCase
 
     public function test_confirmer_puis_receptionner_un_bon_via_les_actions_synchronise_le_stock(): void
     {
-        $this->actingAs(User::factory()->create());
+        $this->actingAs(User::factory()->create()->assignRole('manager'));
 
         $product = $this->makeProduct();
         $variant = ProductVariant::create([
@@ -142,7 +150,7 @@ class PurchaseOrderResourceTest extends TestCase
 
     public function test_annuler_un_bon_de_commande_via_laction(): void
     {
-        $this->actingAs(User::factory()->create());
+        $this->actingAs(User::factory()->create()->assignRole('manager'));
 
         $product = $this->makeProduct();
         $order = PurchaseOrder::create(['reference' => 'BC-UI-4']);
@@ -160,7 +168,7 @@ class PurchaseOrderResourceTest extends TestCase
 
     public function test_laction_receptionner_nest_pas_visible_sur_un_bon_en_brouillon(): void
     {
-        $this->actingAs(User::factory()->create());
+        $this->actingAs(User::factory()->create()->assignRole('manager'));
 
         $product = $this->makeProduct();
         $order = PurchaseOrder::create(['reference' => 'BC-UI-5']);

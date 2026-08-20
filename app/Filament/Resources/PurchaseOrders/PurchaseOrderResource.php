@@ -2,6 +2,7 @@
 
 namespace App\Filament\Resources\PurchaseOrders;
 
+use App\Filament\Concerns\HasRoleBasedAuthorization;
 use App\Filament\Resources\PurchaseOrders\Pages\CreatePurchaseOrder;
 use App\Filament\Resources\PurchaseOrders\Pages\EditPurchaseOrder;
 use App\Filament\Resources\PurchaseOrders\Pages\ListPurchaseOrders;
@@ -18,6 +19,8 @@ use Filament\Tables\Table;
 
 class PurchaseOrderResource extends Resource
 {
+    use HasRoleBasedAuthorization;
+
     protected static ?string $model = PurchaseOrder::class;
 
     protected static string|BackedEnum|null $navigationIcon = Heroicon::OutlinedTruck;

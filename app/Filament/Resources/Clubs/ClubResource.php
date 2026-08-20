@@ -2,6 +2,7 @@
 
 namespace App\Filament\Resources\Clubs;
 
+use App\Filament\Concerns\HasRoleBasedAuthorization;
 use App\Filament\Resources\Clubs\Pages\CreateClub;
 use App\Filament\Resources\Clubs\Pages\EditClub;
 use App\Filament\Resources\Clubs\Pages\ListClubs;
@@ -16,6 +17,8 @@ use Filament\Tables\Table;
 
 class ClubResource extends Resource
 {
+    use HasRoleBasedAuthorization;
+
     protected static ?string $model = Club::class;
 
     protected static string|BackedEnum|null $navigationIcon = Heroicon::OutlinedRectangleStack;

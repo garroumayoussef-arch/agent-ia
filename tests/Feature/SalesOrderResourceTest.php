@@ -11,6 +11,7 @@ use App\Models\ProductVariant;
 use App\Models\SalesOrder;
 use App\Models\SalesOrderItem;
 use App\Models\User;
+use Database\Seeders\RoleSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Livewire\Livewire;
 use Tests\TestCase;
@@ -18,6 +19,13 @@ use Tests\TestCase;
 class SalesOrderResourceTest extends TestCase
 {
     use RefreshDatabase;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        $this->seed(RoleSeeder::class);
+    }
 
     private function makeProduct(array $attributes = []): Product
     {
@@ -41,7 +49,7 @@ class SalesOrderResourceTest extends TestCase
 
     public function test_les_pages_de_la_ressource_sont_accessibles(): void
     {
-        $this->actingAs(User::factory()->create());
+        $this->actingAs(User::factory()->create()->assignRole('manager'));
 
         $product = $this->makeProduct();
         $order = SalesOrder::create(['reference' => 'CMD-UI-1']);
@@ -59,7 +67,7 @@ class SalesOrderResourceTest extends TestCase
 
     public function test_les_pages_customer_sont_accessibles(): void
     {
-        $this->actingAs(User::factory()->create());
+        $this->actingAs(User::factory()->create()->assignRole('manager'));
 
         $this->get(\App\Filament\Resources\Customers\CustomerResource::getUrl('index'))->assertSuccessful();
         $this->get(\App\Filament\Resources\Customers\CustomerResource::getUrl('create'))->assertSuccessful();
@@ -73,7 +81,7 @@ class SalesOrderResourceTest extends TestCase
 
     public function test_creer_une_commande_avec_une_ligne_via_le_formulaire(): void
     {
-        $this->actingAs(User::factory()->create());
+        $this->actingAs(User::factory()->create()->assignRole('manager'));
 
         $customer = Customer::create(['name' => 'Jean Dupont']);
         $product = $this->makeProduct();
@@ -108,7 +116,7 @@ class SalesOrderResourceTest extends TestCase
 
     public function test_confirmer_puis_expedier_une_commande_via_les_actions_decremente_le_stock(): void
     {
-        $this->actingAs(User::factory()->create());
+        $this->actingAs(User::factory()->create()->assignRole('manager'));
 
         $product = $this->makeProduct();
         $variant = ProductVariant::create([
@@ -149,7 +157,7 @@ class SalesOrderResourceTest extends TestCase
 
     public function test_annuler_une_commande_via_laction(): void
     {
-        $this->actingAs(User::factory()->create());
+        $this->actingAs(User::factory()->create()->assignRole('manager'));
 
         $product = $this->makeProduct();
         $order = SalesOrder::create(['reference' => 'CMD-UI-4']);
@@ -167,7 +175,7 @@ class SalesOrderResourceTest extends TestCase
 
     public function test_laction_expedier_nest_pas_visible_sur_une_commande_en_brouillon(): void
     {
-        $this->actingAs(User::factory()->create());
+        $this->actingAs(User::factory()->create()->assignRole('manager'));
 
         $product = $this->makeProduct();
         $order = SalesOrder::create(['reference' => 'CMD-UI-5']);

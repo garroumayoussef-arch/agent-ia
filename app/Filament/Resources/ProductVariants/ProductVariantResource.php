@@ -2,6 +2,7 @@
 
 namespace App\Filament\Resources\ProductVariants;
 
+use App\Filament\Concerns\HasRoleBasedAuthorization;
 use App\Filament\Resources\ProductVariants\Pages\CreateProductVariant;
 use App\Filament\Resources\ProductVariants\Pages\EditProductVariant;
 use App\Filament\Resources\ProductVariants\Pages\ListProductVariants;
@@ -17,6 +18,8 @@ use Filament\Tables\Table;
 
 class ProductVariantResource extends Resource
 {
+    use HasRoleBasedAuthorization;
+
     protected static ?string $model = ProductVariant::class;
 
     protected static string|BackedEnum|null $navigationIcon = Heroicon::OutlinedSwatch;

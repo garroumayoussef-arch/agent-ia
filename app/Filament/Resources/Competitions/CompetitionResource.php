@@ -2,6 +2,7 @@
 
 namespace App\Filament\Resources\Competitions;
 
+use App\Filament\Concerns\HasRoleBasedAuthorization;
 use App\Filament\Resources\Competitions\Pages\CreateCompetition;
 use App\Filament\Resources\Competitions\Pages\EditCompetition;
 use App\Filament\Resources\Competitions\Pages\ListCompetitions;
@@ -18,6 +19,8 @@ use Filament\Tables\Table;
 
 class CompetitionResource extends Resource
 {
+    use HasRoleBasedAuthorization;
+
     protected static ?string $model = Competition::class;
 
     protected static string|BackedEnum|null $navigationIcon = Heroicon::OutlinedRectangleStack;

@@ -2,6 +2,7 @@
 
 namespace App\Filament\Resources\SalesOrders;
 
+use App\Filament\Concerns\HasRoleBasedAuthorization;
 use App\Filament\Resources\SalesOrders\Pages\CreateSalesOrder;
 use App\Filament\Resources\SalesOrders\Pages\EditSalesOrder;
 use App\Filament\Resources\SalesOrders\Pages\ListSalesOrders;
@@ -18,6 +19,8 @@ use Filament\Tables\Table;
 
 class SalesOrderResource extends Resource
 {
+    use HasRoleBasedAuthorization;
+
     protected static ?string $model = SalesOrder::class;
 
     protected static string|BackedEnum|null $navigationIcon = Heroicon::OutlinedShoppingCart;
