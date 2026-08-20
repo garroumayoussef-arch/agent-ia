@@ -3,6 +3,7 @@
 namespace App\Filament\Widgets;
 
 use App\Models\Product;
+use App\Models\ProductVariant;
 use App\Models\Supplier;
 use App\Models\StockMovement;
 use Filament\Widgets\StatsOverviewWidget;
@@ -17,7 +18,7 @@ class StockOverview extends StatsOverviewWidget
                 ->description('Produits enregistrés')
                 ->color('success'),
 
-            Stat::make('Stock total', Product::sum('stock'))
+            Stat::make('Stock total', ProductVariant::sum('stock'))
                 ->description('Articles en stock')
                 ->color('primary'),
 

@@ -3,6 +3,7 @@
 namespace App\Filament\Resources\Categories;
 
 use UnitEnum;
+use App\Filament\Concerns\HasRoleBasedAuthorization;
 use App\Filament\Resources\Categories\Pages\CreateCategory;
 use App\Filament\Resources\Categories\Pages\EditCategory;
 use App\Filament\Resources\Categories\Pages\ListCategories;
@@ -17,6 +18,8 @@ use Filament\Tables\Table;
 
 class CategoryResource extends Resource
 {
+    use HasRoleBasedAuthorization;
+
     protected static ?string $model = Category::class;
 
     protected static string|BackedEnum|null $navigationIcon = Heroicon::OutlinedRectangleStack;

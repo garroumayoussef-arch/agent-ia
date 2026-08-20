@@ -2,6 +2,7 @@
 
 namespace App\Filament\Resources\Products\Tables;
 
+use App\Models\Product;
 use Filament\Actions\BulkActionGroup;
 use Filament\Actions\DeleteBulkAction;
 use Filament\Actions\EditAction;
@@ -43,7 +44,7 @@ class ProductsTable
                     ->badge()
                     ->color(fn ($state) => match (true) {
                         $state <= 0 => 'danger',
-                        $state <= 5 => 'warning',
+                        $state <= Product::LOW_STOCK_THRESHOLD => 'warning',
                         default => 'success',
                     })
                     ->sortable(),

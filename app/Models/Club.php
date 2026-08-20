@@ -9,4 +9,6 @@ class Club extends Model
 {
     /** @use HasFactory<\Database\Factories\ClubFactory> */
     use HasFactory;
+
+    protected $guarded = [];
 }

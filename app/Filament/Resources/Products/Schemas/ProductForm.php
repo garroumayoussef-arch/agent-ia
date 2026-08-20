@@ -59,10 +59,12 @@ class ProductForm
                     ->preload(),
 
                 TextInput::make('equipe')
-                    ->label('Équipe'),
+                    ->label('Équipe')
+                    ->default('N/A'),
 
                 TextInput::make('taille')
-                    ->label('Taille'),
+                    ->label('Taille')
+                    ->default('N/A'),
 
                 Select::make('competition_id')
                     ->label('Compétition')

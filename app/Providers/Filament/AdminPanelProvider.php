@@ -11,8 +11,10 @@ use Filament\Pages\Dashboard;
 use Filament\Panel;
 use Filament\PanelProvider;
 use Filament\Support\Colors\Color;
+use Filament\View\PanelsRenderHook;
 use Filament\Widgets\AccountWidget;
 use Filament\Widgets\FilamentInfoWidget;
+use Illuminate\Contracts\View\View;
 use Illuminate\Cookie\Middleware\AddQueuedCookiesToResponse;
 use Illuminate\Cookie\Middleware\EncryptCookies;
 use Illuminate\Foundation\Http\Middleware\ValidateCsrfToken;
@@ -29,6 +31,17 @@ class AdminPanelProvider extends PanelProvider
             ->id('admin')
             ->path('admin')
             ->login()
+            ->brandName('Magarrou Group ERP')
+            ->brandLogo(asset('images/branding/logoMagarrou.jpeg'))
+            ->brandLogoHeight('2.5rem')
+            ->favicon(asset('images/branding/logoM.png'))
+            // Rail latéral réductible sur desktop : logo complet ouvert,
+            // symbole M seul en mode réduit (voir le hook ci-dessous).
+            ->sidebarCollapsibleOnDesktop()
+            ->renderHook(
+                PanelsRenderHook::SIDEBAR_LOGO_AFTER,
+                fn (): View => view('filament.branding.collapsed-sidebar-logo'),
+            )
             ->colors([
                 'primary' => Color::Amber,
             ])
