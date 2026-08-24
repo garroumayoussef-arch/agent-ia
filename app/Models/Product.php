@@ -207,6 +207,24 @@ class Product extends Model
     }
 
     /**
+     * Taux de TVA par défaut de ce produit à l'achat. Distinct de
+     * saleTaxRate() : un même produit peut avoir un taux différent à
+     * l'achat et à la vente.
+     */
+    public function purchaseTaxRate(): BelongsTo
+    {
+        return $this->belongsTo(TaxRate::class, 'purchase_tax_rate_id');
+    }
+
+    /**
+     * Taux de TVA par défaut de ce produit à la vente.
+     */
+    public function saleTaxRate(): BelongsTo
+    {
+        return $this->belongsTo(TaxRate::class, 'sale_tax_rate_id');
+    }
+
+    /**
      * Relation avec les variantes du produit.
      */
     public function variants(): HasMany

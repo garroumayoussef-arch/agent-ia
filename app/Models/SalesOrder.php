@@ -19,6 +19,8 @@ class SalesOrder extends Model
         'order_date' => 'date',
         'total' => 'decimal:2',
         'discount_amount' => 'decimal:2',
+        'tax_amount' => 'decimal:2',
+        'total_ttc' => 'decimal:2',
     ];
 
     /*
@@ -78,7 +80,7 @@ class SalesOrder extends Model
                 return;
             }
 
-            foreach (['discount_amount', 'total'] as $field) {
+            foreach (['discount_amount', 'total', 'tax_amount', 'total_ttc'] as $field) {
                 if ($order->isDirty($field)) {
                     throw new \Exception(
                         "Impossible de modifier les montants d'une commande qui n'est plus en brouillon."
@@ -89,19 +91,24 @@ class SalesOrder extends Model
 
         /*
          * discount_amount est modifiable indépendamment des lignes :
-         * son changement doit donc redéclencher le recalcul de total.
+         * son changement doit donc redéclencher le recalcul de
+         * total/tax_amount/total_ttc, ce qui implique de réallouer la
+         * TVA de TOUTES les lignes (cf. applyTaxAllocation).
          *
-         * Important : on modifie $order->total ICI, dans `saving`, pour
-         * qu'il soit écrit dans le MÊME UPDATE SQL que discount_amount
-         * — surtout ne pas appeler recalculateTotal() (qui fait son
-         * propre ->update()) depuis un hook `updated`/`saved` de ce
-         * même modèle : Eloquent ne resynchronise `original` qu'après
-         * la fin complète du `save()` en cours (cf. finishSave), donc
-         * discount_amount resterait vu comme "dirty" par ce second
-         * appel imbriqué sur la même instance, qui redéclencherait
-         * updated -> recalcul -> update -> updated -> ... à l'infini
-         * (testé : memory_limit atteint après quelques dizaines de
-         * milliers d'itérations).
+         * Important : on modifie $order->total/tax_amount/total_ttc ICI,
+         * dans `saving`, pour qu'ils soient écrits dans le MÊME UPDATE
+         * SQL que discount_amount — surtout ne pas appeler
+         * recalculateTotal() (qui fait son propre ->update()) depuis un
+         * hook `updated`/`saved` de ce même modèle : Eloquent ne
+         * resynchronise `original` qu'après la fin complète du `save()`
+         * en cours (cf. finishSave), donc discount_amount resterait vu
+         * comme "dirty" par ce second appel imbriqué sur la même
+         * instance, qui redéclencherait updated -> recalcul -> update ->
+         * updated -> ... à l'infini (testé : memory_limit atteint après
+         * quelques dizaines de milliers d'itérations lors de la mise au
+         * point de discount_amount). La réécriture des lignes elles-mêmes
+         * (par requête directe, dans applyTaxAllocation) reste sans
+         * risque : ce sont des lignes d'un AUTRE modèle, pas $this.
          */
         static::saving(function (SalesOrder $order) {
             if ($order->status !== self::STATUS_DRAFT) {
@@ -109,7 +116,10 @@ class SalesOrder extends Model
             }
 
             if ($order->isDirty('discount_amount')) {
-                $order->total = $order->computeTotalFromSubtotals();
+                $amounts = $order->applyTaxAllocation();
+                $order->total = $amounts['total'];
+                $order->tax_amount = $amounts['tax_amount'];
+                $order->total_ttc = $amounts['total_ttc'];
             }
         });
     }
@@ -256,9 +266,9 @@ class SalesOrder extends Model
     }
 
     /**
-     * Recalcule total à partir de la somme des subtotal de ses lignes
-     * (cf. computeTotalFromSubtotals). Appelée par SalesOrderItem à
-     * chaque ajout/modification/suppression de ligne — sur une instance
+     * Recalcule total/tax_amount/total_ttc à partir des lignes (cf.
+     * applyTaxAllocation). Appelée par SalesOrderItem à chaque
+     * ajout/modification/suppression de ligne — sur une instance
      * fraîchement chargée (`$item->salesOrder()->first()`), jamais en
      * ré-entrance sur elle-même, donc son propre ->update() est sûr ici
      * (contrairement à un changement de discount_amount, cf.
@@ -278,30 +288,86 @@ class SalesOrder extends Model
             return;
         }
 
-        $this->update(['total' => $this->computeTotalFromSubtotals()]);
+        $this->update($this->applyTaxAllocation());
     }
 
     /**
-     * total = somme des subtotal des lignes - discount_amount (remise
-     * fixe en EUR), jamais en dessous de 0.
+     * Calcule total (HT après remise), tax_amount et total_ttc, et
+     * réécrit au passage le tax_amount de CHAQUE ligne au prorata de la
+     * remise — c'est ce qui garantit que le tax_amount de la commande
+     * (somme exacte des tax_amount de lignes déjà arrondis, aucun
+     * ajustement séparé nécessaire) reste toujours réconciliable avec
+     * ses lignes.
      *
-     * Si au moins une ligne n'a pas de subtotal connu (unit_price non
-     * renseigné), retourne NULL plutôt que de sommer partiellement et
-     * donner une fausse impression de complétude — même règle que
-     * celle déjà appliquée à subtotal au niveau de la ligne ; la remise
-     * ne s'applique alors pas non plus, faute de montant de base connu.
+     * Allocation de la remise (fixe, en EUR) au prorata de la base HT
+     * de chaque ligne, PUIS taxation de la base ainsi réduite :
+     *   part_remise_ligne = subtotal_ligne / somme(subtotal) * discount_amount
+     *   base_taxable_ligne = max(0, subtotal_ligne - part_remise_ligne)
+     *   tax_amount_ligne = base_taxable_ligne * tax_rate_ligne / 100
+     *     (0 si la ligne est exonérée, NULL si son taux n'a pas pu
+     *     être résolu)
+     *
+     * gross_tax_amount (calculé localement par chaque ligne dans son
+     * propre `saving`, cf. SalesOrderItem) n'est jamais modifié ici :
+     * il reste la TVA théorique SANS remise, à titre de traçabilité
+     * interne, jamais confondue avec tax_amount.
+     *
+     * Propagation de l'inconnu, comme pour subtotal/total : si au
+     * moins une ligne n'a pas de subtotal connu, tout redevient NULL
+     * (impossible de répartir une remise sur une base partiellement
+     * inconnue). Si le total est connu mais qu'au moins une ligne n'a
+     * pas de taux résolu, tax_amount/total_ttc de la commande
+     * deviennent NULL (chaque ligne affiche néanmoins ce qu'elle peut).
+     *
+     * Écrit les lignes par requête directe (`whereKey()->update()`),
+     * jamais via `save()` : cela réécrirait `tax_amount` en passant par
+     * `saving()`/`updating()` de SalesOrderItem et redéclencherait son
+     * propre hook `saved` -> recalculateTotal() -> ... en boucle.
+     *
+     * @return array{total: ?float, tax_amount: ?float, total_ttc: ?float}
      */
-    private function computeTotalFromSubtotals(): ?float
+    private function applyTaxAllocation(): array
     {
-        $subtotals = $this->items()->get(['subtotal'])->pluck('subtotal');
+        $items = $this->items()->get(['id', 'subtotal', 'tax_rate_id', 'tax_rate']);
 
-        if ($subtotals->contains(null)) {
-            return null;
+        if ($items->contains(fn (SalesOrderItem $item): bool => $item->subtotal === null)) {
+            SalesOrderItem::whereIn('id', $items->pluck('id'))->update(['tax_amount' => null]);
+
+            return ['total' => null, 'tax_amount' => null, 'total_ttc' => null];
         }
 
-        $subtotalSum = round((float) $subtotals->sum(), 2);
+        $subtotalSum = round((float) $items->sum('subtotal'), 2);
+        $total = max(0.0, round($subtotalSum - (float) $this->discount_amount, 2));
 
-        return max(0.0, round($subtotalSum - (float) $this->discount_amount, 2));
+        $anyUnresolved = false;
+        $orderTax = 0.0;
+
+        foreach ($items as $item) {
+            if ($item->tax_rate_id === null) {
+                $anyUnresolved = true;
+                SalesOrderItem::whereKey($item->id)->update(['tax_amount' => null]);
+
+                continue;
+            }
+
+            $discountShare = $subtotalSum > 0
+                ? ((float) $item->subtotal / $subtotalSum) * (float) $this->discount_amount
+                : 0.0;
+            $taxableBase = max(0.0, round((float) $item->subtotal - $discountShare, 2));
+
+            $lineTax = $item->tax_rate === null
+                ? 0.0 // ligne exonérée (type=exempt)
+                : round($taxableBase * (float) $item->tax_rate / 100, 2);
+
+            SalesOrderItem::whereKey($item->id)->update(['tax_amount' => $lineTax]);
+
+            $orderTax += $lineTax;
+        }
+
+        $taxAmount = $anyUnresolved ? null : round($orderTax, 2);
+        $totalTtc = $taxAmount === null ? null : round($total + $taxAmount, 2);
+
+        return ['total' => $total, 'tax_amount' => $taxAmount, 'total_ttc' => $totalTtc];
     }
 
     /*

@@ -18,6 +18,9 @@ class SalesOrderItem extends Model
         'quantity_shipped' => 'integer',
         'unit_price' => 'decimal:2',
         'subtotal' => 'decimal:2',
+        'tax_rate' => 'decimal:2',
+        'gross_tax_amount' => 'decimal:2',
+        'tax_amount' => 'decimal:2',
     ];
 
     protected static function booted(): void
@@ -76,6 +79,41 @@ class SalesOrderItem extends Model
             $item->subtotal = $item->unit_price !== null
                 ? round((int) $item->quantity_ordered * (float) $item->unit_price, 2)
                 : null;
+
+            /*
+             * Résolution du taux de TVA applicable à cette ligne
+             * (explicite sur la ligne > taux de vente par défaut du
+             * produit > taux de vente par défaut système). gross_tax_amount
+             * est la TVA théorique sur le subtotal SANS tenir compte de
+             * la remise de commande — c'est une valeur intermédiaire,
+             * jamais affichée comme "la" TVA de la ligne.
+             *
+             * tax_amount est initialisé à gross_tax_amount ici (cas
+             * "aucune remise") : il sera immédiatement recalculé au
+             * prorata de la remise réelle par
+             * SalesOrder::recalculateTotal(), appelé juste après par le
+             * hook `saved` ci-dessous — cf. sa documentation pour le
+             * détail de l'allocation.
+             */
+            $taxRate = $item->resolveSaleTaxRate();
+
+            if ($taxRate === null) {
+                $item->tax_rate_id = null;
+                $item->tax_rate = null;
+                $item->gross_tax_amount = null;
+            } elseif ($taxRate->isExempt()) {
+                $item->tax_rate_id = $taxRate->id;
+                $item->tax_rate = null;
+                $item->gross_tax_amount = $item->subtotal !== null ? 0.0 : null;
+            } else {
+                $item->tax_rate_id = $taxRate->id;
+                $item->tax_rate = (float) $taxRate->rate;
+                $item->gross_tax_amount = $item->subtotal !== null
+                    ? round((float) $item->subtotal * (float) $taxRate->rate / 100, 2)
+                    : null;
+            }
+
+            $item->tax_amount = $item->gross_tax_amount;
         });
 
         static::updating(function (SalesOrderItem $item) {
@@ -92,7 +130,10 @@ class SalesOrderItem extends Model
                 return;
             }
 
-            foreach (['product_id', 'product_variant_id', 'quantity_ordered', 'unit_price', 'subtotal'] as $field) {
+            foreach ([
+                'product_id', 'product_variant_id', 'quantity_ordered', 'unit_price', 'subtotal',
+                'tax_rate_id', 'tax_rate', 'gross_tax_amount', 'tax_amount',
+            ] as $field) {
                 if ($item->isDirty($field)) {
                     throw new \Exception(
                         "Impossible de modifier une ligne dont la commande n'est plus en brouillon."
@@ -146,5 +187,30 @@ class SalesOrderItem extends Model
     public function productVariant(): BelongsTo
     {
         return $this->belongsTo(ProductVariant::class);
+    }
+
+    public function taxRate(): BelongsTo
+    {
+        return $this->belongsTo(TaxRate::class);
+    }
+
+    /**
+     * Résout le taux de TVA applicable à cette ligne de vente :
+     * explicite sur la ligne > taux de vente par défaut du produit >
+     * taux de vente par défaut système. Requêtes fraîches (pas les
+     * accesseurs de relation) pour ne rien mettre en cache sur cette
+     * instance, appelée depuis `saving` (cf. sa documentation pour la
+     * raison exacte).
+     */
+    private function resolveSaleTaxRate(): ?TaxRate
+    {
+        if ($this->tax_rate_id) {
+            return $this->taxRate()->first();
+        }
+
+        $product = $this->product()->first();
+
+        return $product?->saleTaxRate()->first()
+            ?? TaxRate::where('is_default_sale', true)->first();
     }
 }

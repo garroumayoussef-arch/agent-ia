@@ -8,6 +8,7 @@ use App\Models\ProductVariant;
 use App\Models\SalesOrder;
 use App\Models\SalesOrderItem;
 use App\Models\StockMovement;
+use App\Models\TaxRate;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
@@ -802,5 +803,275 @@ class SalesOrderTest extends TestCase
 
         $this->expectException(\Exception::class);
         $order->update(['discount_amount' => 10]);
+    }
+
+    /*
+     * =================================================================
+     * TVA (tax_rate, gross_tax_amount, tax_amount, total_ttc)
+     * =================================================================
+     */
+
+    public function test_le_taux_de_tva_se_resout_depuis_le_produit_puis_le_taux_par_defaut_systeme(): void
+    {
+        $defaultRate = TaxRate::create([
+            'label' => 'Taux normal',
+            'type' => TaxRate::TYPE_PERCENTAGE,
+            'rate' => 20,
+            'is_default_sale' => true,
+        ]);
+        $reducedRate = TaxRate::create([
+            'label' => 'Taux réduit',
+            'type' => TaxRate::TYPE_PERCENTAGE,
+            'rate' => 5,
+        ]);
+
+        $order = SalesOrder::create(['reference' => 'CMD-TEST-35']);
+
+        // Produit sans taux spécifique -> taux par défaut système.
+        $productA = $this->makeProduct();
+        $itemA = SalesOrderItem::create([
+            'sales_order_id' => $order->id,
+            'product_id' => $productA->id,
+            'quantity_ordered' => 1,
+            'unit_price' => 100,
+        ]);
+        $this->assertSame($defaultRate->id, $itemA->tax_rate_id);
+        $this->assertSame('20.00', $itemA->tax_rate);
+
+        // Produit avec un taux de vente spécifique -> prime sur le défaut.
+        $productB = $this->makeProduct(['sale_tax_rate_id' => $reducedRate->id]);
+        $itemB = SalesOrderItem::create([
+            'sales_order_id' => $order->id,
+            'product_id' => $productB->id,
+            'quantity_ordered' => 1,
+            'unit_price' => 100,
+        ]);
+        $this->assertSame($reducedRate->id, $itemB->tax_rate_id);
+        $this->assertSame('5.00', $itemB->tax_rate);
+    }
+
+    public function test_sans_remise_le_tax_amount_de_ligne_est_egal_au_gross_tax_amount(): void
+    {
+        TaxRate::create([
+            'label' => 'Taux normal',
+            'type' => TaxRate::TYPE_PERCENTAGE,
+            'rate' => 20,
+            'is_default_sale' => true,
+        ]);
+
+        $product = $this->makeProduct();
+        $order = SalesOrder::create(['reference' => 'CMD-TEST-36']);
+
+        $item = SalesOrderItem::create([
+            'sales_order_id' => $order->id,
+            'product_id' => $product->id,
+            'quantity_ordered' => 5,
+            'unit_price' => 10,
+        ]);
+
+        $this->assertSame('10.00', $item->gross_tax_amount);
+        $this->assertSame('10.00', $item->tax_amount);
+        $this->assertSame('60.00', $order->fresh()->total_ttc);
+    }
+
+    /**
+     * L'exemple exact validé : 2 lignes à 2 taux différents, remise
+     * globale de 20 € répartie au prorata des bases HT.
+     */
+    public function test_remise_repartie_au_prorata_entre_deux_taux_differents(): void
+    {
+        $rate20 = TaxRate::create(['label' => 'Taux normal', 'type' => TaxRate::TYPE_PERCENTAGE, 'rate' => 20]);
+        $rate10 = TaxRate::create(['label' => 'Taux réduit', 'type' => TaxRate::TYPE_PERCENTAGE, 'rate' => 10]);
+
+        $productA = $this->makeProduct(['sale_tax_rate_id' => $rate20->id]);
+        $productB = $this->makeProduct(['sale_tax_rate_id' => $rate10->id]);
+
+        $order = SalesOrder::create(['reference' => 'CMD-TEST-37']);
+
+        $itemA = SalesOrderItem::create([
+            'sales_order_id' => $order->id,
+            'product_id' => $productA->id,
+            'quantity_ordered' => 1,
+            'unit_price' => 100,
+        ]);
+        $itemB = SalesOrderItem::create([
+            'sales_order_id' => $order->id,
+            'product_id' => $productB->id,
+            'quantity_ordered' => 1,
+            'unit_price' => 100,
+        ]);
+
+        $order->update(['discount_amount' => 20]);
+
+        $itemA->refresh();
+        $itemB->refresh();
+        $order->refresh();
+
+        $this->assertSame('20.00', $itemA->gross_tax_amount);
+        $this->assertSame('18.00', $itemA->tax_amount);
+
+        $this->assertSame('10.00', $itemB->gross_tax_amount);
+        $this->assertSame('9.00', $itemB->tax_amount);
+
+        $this->assertSame('180.00', $order->total);
+        $this->assertSame('27.00', $order->tax_amount);
+        $this->assertSame('207.00', $order->total_ttc);
+
+        // Réconciliation explicite : la somme des tax_amount de lignes
+        // doit toujours égaler le tax_amount de la commande.
+        $sumOfLineTaxAmounts = round((float) $itemA->tax_amount + (float) $itemB->tax_amount, 2);
+        $this->assertSame($sumOfLineTaxAmounts, (float) $order->tax_amount);
+    }
+
+    public function test_ajouter_une_ligne_recalcule_le_tax_amount_des_lignes_existantes(): void
+    {
+        $rate20 = TaxRate::create(['label' => 'Taux normal', 'type' => TaxRate::TYPE_PERCENTAGE, 'rate' => 20]);
+
+        $product = $this->makeProduct(['sale_tax_rate_id' => $rate20->id]);
+        $order = SalesOrder::create(['reference' => 'CMD-TEST-38', 'discount_amount' => 20]);
+
+        $itemA = SalesOrderItem::create([
+            'sales_order_id' => $order->id,
+            'product_id' => $product->id,
+            'quantity_ordered' => 1,
+            'unit_price' => 100,
+        ]);
+        // Seule : toute la remise lui est allouée.
+        $this->assertSame('16.00', $itemA->fresh()->tax_amount);
+
+        SalesOrderItem::create([
+            'sales_order_id' => $order->id,
+            'product_id' => $product->id,
+            'quantity_ordered' => 1,
+            'unit_price' => 100,
+        ]);
+
+        // À deux, la remise se répartit désormais moitié-moitié.
+        $this->assertSame('18.00', $itemA->fresh()->tax_amount);
+    }
+
+    public function test_ligne_exoneree_a_un_tax_amount_a_zero_distinct_de_non_resolu(): void
+    {
+        $exempt = TaxRate::create([
+            'label' => 'Franchise en base',
+            'type' => TaxRate::TYPE_EXEMPT,
+            'legal_mention' => 'TVA non applicable, article 293 B du CGI',
+        ]);
+
+        $product = $this->makeProduct();
+        $order = SalesOrder::create(['reference' => 'CMD-TEST-39']);
+
+        $item = SalesOrderItem::create([
+            'sales_order_id' => $order->id,
+            'product_id' => $product->id,
+            'quantity_ordered' => 5,
+            'unit_price' => 10,
+            'tax_rate_id' => $exempt->id,
+        ]);
+
+        $this->assertNull($item->tax_rate);
+        $this->assertSame('0.00', $item->gross_tax_amount);
+        $this->assertSame('0.00', $item->tax_amount);
+        $this->assertSame('50.00', $order->fresh()->total_ttc);
+    }
+
+    public function test_ligne_sans_taux_resolu_a_un_tax_amount_null_mais_total_ht_reste_connu(): void
+    {
+        // Aucun TaxRate configuré nulle part : ni sur le produit, ni de
+        // taux par défaut système.
+        $product = $this->makeProduct();
+        $order = SalesOrder::create(['reference' => 'CMD-TEST-40']);
+
+        $item = SalesOrderItem::create([
+            'sales_order_id' => $order->id,
+            'product_id' => $product->id,
+            'quantity_ordered' => 5,
+            'unit_price' => 10,
+        ]);
+
+        $this->assertNull($item->tax_rate_id);
+        $this->assertNull($item->gross_tax_amount);
+        $this->assertNull($item->tax_amount);
+
+        $order->refresh();
+        // Le HT reste connu (quantité/prix le sont) : seule la partie
+        // fiscale, elle, est inconnue.
+        $this->assertSame('50.00', $order->total);
+        $this->assertNull($order->tax_amount);
+        $this->assertNull($order->total_ttc);
+    }
+
+    public function test_la_tva_est_figee_apres_confirmation_et_ship_ny_touche_pas(): void
+    {
+        TaxRate::create([
+            'label' => 'Taux normal',
+            'type' => TaxRate::TYPE_PERCENTAGE,
+            'rate' => 20,
+            'is_default_sale' => true,
+        ]);
+
+        $product = $this->makeProduct();
+        $variant = $this->makeVariant($product, ['stock' => 10]);
+        $order = SalesOrder::create(['reference' => 'CMD-TEST-41']);
+
+        $item = SalesOrderItem::create([
+            'sales_order_id' => $order->id,
+            'product_id' => $product->id,
+            'product_variant_id' => $variant->id,
+            'quantity_ordered' => 5,
+            'unit_price' => 10,
+        ]);
+        $this->assertSame('10.00', $item->tax_amount);
+
+        $order->markAsConfirmed();
+        $order->ship([$item->id => 3]);
+
+        $item->refresh();
+        $order->refresh();
+
+        $this->assertSame('10.00', $item->tax_amount);
+        $this->assertSame('10.00', $order->tax_amount);
+        $this->assertSame('60.00', $order->total_ttc);
+    }
+
+    public function test_modifier_le_tax_rate_dune_ligne_confirmee_est_rejete(): void
+    {
+        $product = $this->makeProduct();
+        $order = SalesOrder::create(['reference' => 'CMD-TEST-42']);
+        $item = SalesOrderItem::create([
+            'sales_order_id' => $order->id,
+            'product_id' => $product->id,
+            'quantity_ordered' => 5,
+            'unit_price' => 10,
+        ]);
+        $order->markAsConfirmed();
+
+        $this->expectException(\Exception::class);
+        $item->update(['tax_amount' => 999]);
+    }
+
+    public function test_modifier_le_taux_par_defaut_dun_produit_apres_confirmation_ne_change_pas_lhistorique(): void
+    {
+        $rateOriginal = TaxRate::create(['label' => 'Taux A', 'type' => TaxRate::TYPE_PERCENTAGE, 'rate' => 20]);
+        $rateNouveau = TaxRate::create(['label' => 'Taux B', 'type' => TaxRate::TYPE_PERCENTAGE, 'rate' => 5]);
+
+        $product = $this->makeProduct(['sale_tax_rate_id' => $rateOriginal->id]);
+        $order = SalesOrder::create(['reference' => 'CMD-TEST-43']);
+
+        $item = SalesOrderItem::create([
+            'sales_order_id' => $order->id,
+            'product_id' => $product->id,
+            'quantity_ordered' => 5,
+            'unit_price' => 10,
+        ]);
+        $order->markAsConfirmed();
+
+        // Le taux par défaut du produit change APRÈS confirmation.
+        $product->update(['sale_tax_rate_id' => $rateNouveau->id]);
+
+        $item->refresh();
+        $this->assertSame($rateOriginal->id, $item->tax_rate_id);
+        $this->assertSame('20.00', $item->tax_rate);
+        $this->assertSame('10.00', $item->tax_amount);
     }
 }
