@@ -32,4 +32,26 @@ class Driver extends Model
     {
         return $this->hasMany(VtcRide::class);
     }
+
+    /**
+     * Étape 5.11 : vtc_rides.driver_id est en nullOnDelete — supprimer
+     * ce chauffeur ne détruirait aucune course, mais lui ferait perdre
+     * la trace de qui l'a réellement effectuée, y compris pour une
+     * course déjà confirmée (historique figé, cf. VtcRide::updating()).
+     * Même principe que ProductVariant::deleting() (FK nullOnDelete,
+     * même risque de perte de traçabilité) : bloque dès qu'UNE
+     * VtcRide existe, brouillon compris — décision explicite, pas
+     * seulement les courses confirmées, pour rester cohérent avec ce
+     * précédent plutôt que d'introduire une règle différente ici.
+     */
+    protected static function booted(): void
+    {
+        static::deleting(function (self $driver): void {
+            if ($driver->vtcRides()->exists()) {
+                throw new \Exception(
+                    'Impossible de supprimer ce chauffeur : il est référencé par au moins une course VTC. Désactivez-le plutôt que de le supprimer.'
+                );
+            }
+        });
+    }
 }
