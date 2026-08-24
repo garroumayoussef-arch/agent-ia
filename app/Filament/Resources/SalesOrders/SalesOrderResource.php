@@ -2,6 +2,7 @@
 
 namespace App\Filament\Resources\SalesOrders;
 
+use App\Filament\Concerns\BlocksChauffeurReadAccess;
 use App\Filament\Concerns\HasRoleBasedAuthorization;
 use App\Filament\Resources\SalesOrders\Pages\CreateSalesOrder;
 use App\Filament\Resources\SalesOrders\Pages\EditSalesOrder;
@@ -20,6 +21,7 @@ use Filament\Tables\Table;
 class SalesOrderResource extends Resource
 {
     use HasRoleBasedAuthorization;
+    use BlocksChauffeurReadAccess;
 
     protected static ?string $model = SalesOrder::class;
 

@@ -12,6 +12,7 @@ use App\Filament\Resources\ProductVariants\ProductVariantResource;
 use App\Filament\Resources\Products\Pages\CreateProduct;
 use App\Filament\Resources\Products\Pages\EditProduct;
 use App\Filament\Resources\Products\ProductResource;
+use App\Filament\Resources\PurchaseOrders\PurchaseOrderResource;
 use App\Filament\Resources\SalesOrders\SalesOrderResource;
 use App\Filament\Resources\Suppliers\SupplierResource;
 use App\Filament\Resources\Users\UserResource;
@@ -22,6 +23,7 @@ use App\Models\Driver;
 use App\Models\FiscalSetting;
 use App\Models\Product;
 use App\Models\ProductVariant;
+use App\Models\PurchaseOrder;
 use App\Models\SalesOrder;
 use App\Models\Supplier;
 use App\Models\TaxRate;
@@ -881,5 +883,93 @@ class RoleBasedAuthorizationTest extends TestCase
 
         $this->get(\App\Filament\Resources\StockMovements\StockMovementResource::getUrl('index'))->assertSuccessful();
         $this->get(\App\Filament\Resources\StockMovements\StockMovementResource::getUrl('view', ['record' => $stockMovement]))->assertSuccessful();
+    }
+
+    /*
+     * =================================================================
+     * PurchaseOrder/SalesOrder — chantier transversal T7
+     * (BlocksChauffeurReadAccess), réutilisé tel quel depuis T3-T6.
+     * StockMovement (T8) et TaxRate (T9) restent explicitement hors
+     * périmètre. StockOverview/LowStockAlert restent hors périmètre
+     * (décision T6). Aucune dépendance avec le module VTC (VtcRide ne
+     * référence jamais PurchaseOrder/SalesOrder, cf. étape 5.1) — non
+     * re-testé ici, vérifié par la suite complète VTC après ce commit.
+     *
+     * Différence structurelle avec T3-T6 : PurchaseOrderResource ET
+     * SalesOrderResource ont chacune une page "view" dédiée
+     * (ViewPurchaseOrder/ViewSalesOrder) — canView() est donc
+     * atteignable par une vraie route HTTP, pas seulement par appel
+     * statique direct.
+     * =================================================================
+     */
+
+    public function test_ladmin_et_le_manager_conservent_lacces_en_lecture_a_purchaseorder_et_salesorder(): void
+    {
+        $supplier = Supplier::create(['name' => 'Fournisseur T7']);
+        $customer = Customer::create(['name' => 'Client T7']);
+        $purchaseOrder = PurchaseOrder::create(['reference' => 'BC-T7-1', 'supplier_id' => $supplier->id]);
+        $salesOrder = SalesOrder::create(['reference' => 'CMD-T7-1', 'customer_id' => $customer->id]);
+
+        $this->actingAs(User::factory()->create()->assignRole('admin'));
+        $this->get(PurchaseOrderResource::getUrl('index'))->assertSuccessful();
+        $this->get(PurchaseOrderResource::getUrl('view', ['record' => $purchaseOrder]))->assertSuccessful();
+        $this->get(SalesOrderResource::getUrl('index'))->assertSuccessful();
+        $this->get(SalesOrderResource::getUrl('view', ['record' => $salesOrder]))->assertSuccessful();
+
+        $this->actingAs(User::factory()->create()->assignRole('manager'));
+        $this->get(PurchaseOrderResource::getUrl('index'))->assertSuccessful();
+        $this->get(PurchaseOrderResource::getUrl('view', ['record' => $purchaseOrder]))->assertSuccessful();
+        $this->get(SalesOrderResource::getUrl('index'))->assertSuccessful();
+        $this->get(SalesOrderResource::getUrl('view', ['record' => $salesOrder]))->assertSuccessful();
+    }
+
+    public function test_un_chauffeur_ne_peut_plus_consulter_les_bons_de_commande(): void
+    {
+        $this->actingAs($this->makeChauffeurAccount());
+
+        $this->get(PurchaseOrderResource::getUrl('index'))->assertForbidden();
+    }
+
+    public function test_un_chauffeur_ne_peut_plus_consulter_les_commandes_de_vente(): void
+    {
+        $this->actingAs($this->makeChauffeurAccount());
+
+        $this->get(SalesOrderResource::getUrl('index'))->assertForbidden();
+    }
+
+    public function test_un_chauffeur_ne_peut_pas_consulter_la_fiche_dun_bon_de_commande_par_url_directe(): void
+    {
+        $supplier = Supplier::create(['name' => 'Fournisseur T7 bis']);
+        $purchaseOrder = PurchaseOrder::create(['reference' => 'BC-T7-2', 'supplier_id' => $supplier->id]);
+
+        $this->actingAs($this->makeChauffeurAccount());
+
+        $this->get(PurchaseOrderResource::getUrl('view', ['record' => $purchaseOrder]))->assertForbidden();
+    }
+
+    public function test_un_chauffeur_ne_peut_pas_consulter_la_fiche_dune_commande_de_vente_par_url_directe(): void
+    {
+        $customer = Customer::create(['name' => 'Client T7 bis']);
+        $salesOrder = SalesOrder::create(['reference' => 'CMD-T7-2', 'customer_id' => $customer->id]);
+
+        $this->actingAs($this->makeChauffeurAccount());
+
+        $this->get(SalesOrderResource::getUrl('view', ['record' => $salesOrder]))->assertForbidden();
+    }
+
+    public function test_un_utilisateur_sans_role_ni_driver_associe_conserve_son_acces_a_purchaseorder_et_salesorder(): void
+    {
+        $this->actingAs(User::factory()->create()); // ni rôle, ni Driver lié
+
+        $this->get(PurchaseOrderResource::getUrl('index'))->assertSuccessful();
+        $this->get(SalesOrderResource::getUrl('index'))->assertSuccessful();
+    }
+
+    public function test_un_chauffeur_ne_peut_pas_creer_de_bon_de_commande_ou_de_commande_de_vente(): void
+    {
+        $this->actingAs($this->makeChauffeurAccount());
+
+        $this->get(PurchaseOrderResource::getUrl('create'))->assertForbidden();
+        $this->get(SalesOrderResource::getUrl('create'))->assertForbidden();
     }
 }

@@ -2,6 +2,7 @@
 
 namespace App\Filament\Resources\PurchaseOrders;
 
+use App\Filament\Concerns\BlocksChauffeurReadAccess;
 use App\Filament\Concerns\HasRoleBasedAuthorization;
 use App\Filament\Resources\PurchaseOrders\Pages\CreatePurchaseOrder;
 use App\Filament\Resources\PurchaseOrders\Pages\EditPurchaseOrder;
@@ -20,6 +21,7 @@ use Filament\Tables\Table;
 class PurchaseOrderResource extends Resource
 {
     use HasRoleBasedAuthorization;
+    use BlocksChauffeurReadAccess;
 
     protected static ?string $model = PurchaseOrder::class;
 
