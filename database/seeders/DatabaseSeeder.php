@@ -28,10 +28,16 @@ class DatabaseSeeder extends Seeder
             CompetitionSeeder::class,
             ClubSeeder::class,
             SupplierSeeder::class,
-            // ProductSeeder s'exécute en dernier : il s'appuie sur les
-            // données injectées par les seeders ci-dessus pour associer
-            // ses produits de démo à une marque/catégorie/club/etc.
+            // ProductSeeder s'exécute en dernier avant WarehouseSeeder : il
+            // s'appuie sur les données injectées par les seeders ci-dessus
+            // pour associer ses produits de démo à une marque/catégorie/
+            // club/etc.
             ProductSeeder::class,
+            // Étape T10 : WarehouseSeeder lit products/product_variants.warehouse
+            // en lecture seule (jamais en écriture) — doit donc s'exécuter
+            // après ProductSeeder pour réconcilier les valeurs réellement
+            // présentes.
+            WarehouseSeeder::class,
         ]);
     }
 }

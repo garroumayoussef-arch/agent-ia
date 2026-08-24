@@ -20,6 +20,7 @@ use App\Filament\Resources\TaxRates\TaxRateResource;
 use App\Filament\Resources\Users\UserResource;
 use App\Filament\Resources\Vehicles\VehicleResource;
 use App\Filament\Resources\VtcRides\VtcRideResource;
+use App\Filament\Resources\Warehouses\WarehouseResource;
 use App\Models\Customer;
 use App\Models\Driver;
 use App\Models\FiscalSetting;
@@ -33,6 +34,7 @@ use App\Models\TaxRate;
 use App\Models\User;
 use App\Models\Vehicle;
 use App\Models\VtcRide;
+use App\Models\Warehouse;
 use Database\Seeders\RoleSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Livewire\Livewire;
@@ -1208,5 +1210,53 @@ class RoleBasedAuthorizationTest extends TestCase
 
         $this->get(ProductResource::getUrl('index'))->assertForbidden();
         $this->get(ProductResource::getUrl('create'))->assertForbidden();
+    }
+
+    /*
+     * =================================================================
+     * Warehouse — étape T10 (fondation multi-entrepôts). Réutilise
+     * BlocksChauffeurReadAccess tel quel depuis T3-T9, aucune nouvelle
+     * logique d'autorisation. Même structure que Brand/Category/Club/
+     * Supplier/Customer/TaxRate (aucune page "view").
+     * =================================================================
+     */
+
+    public function test_ladmin_et_le_manager_conservent_lacces_en_lecture_a_warehouseresource(): void
+    {
+        $this->actingAs(User::factory()->create()->assignRole('admin'));
+        $this->get(WarehouseResource::getUrl('index'))->assertSuccessful();
+
+        $this->actingAs(User::factory()->create()->assignRole('manager'));
+        $this->get(WarehouseResource::getUrl('index'))->assertSuccessful();
+    }
+
+    public function test_un_chauffeur_ne_peut_plus_consulter_les_entrepots(): void
+    {
+        $this->actingAs($this->makeChauffeurAccount());
+
+        $this->get(WarehouseResource::getUrl('index'))->assertForbidden();
+    }
+
+    public function test_canview_refuse_un_chauffeur_pour_warehouseresource(): void
+    {
+        $warehouse = Warehouse::create(['name' => 'Entrepôt T10', 'code' => 'entrepot-t10']);
+
+        $this->actingAs($this->makeChauffeurAccount());
+
+        $this->assertFalse(WarehouseResource::canView($warehouse));
+    }
+
+    public function test_un_utilisateur_sans_role_ni_driver_associe_conserve_son_acces_a_warehouseresource(): void
+    {
+        $this->actingAs(User::factory()->create()); // ni rôle, ni Driver lié
+
+        $this->get(WarehouseResource::getUrl('index'))->assertSuccessful();
+    }
+
+    public function test_un_chauffeur_ne_peut_pas_creer_dentrepot(): void
+    {
+        $this->actingAs($this->makeChauffeurAccount());
+
+        $this->get(WarehouseResource::getUrl('create'))->assertForbidden();
     }
 }
