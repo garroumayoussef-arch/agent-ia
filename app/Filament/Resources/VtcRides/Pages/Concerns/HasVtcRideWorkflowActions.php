@@ -75,4 +75,23 @@ trait HasVtcRideWorkflowActions
                 }
             });
     }
+
+    /**
+     * Étape 5.9 — reçu récapitulatif imprimable, uniquement pour une
+     * course confirmée (le reçu n'a de sens que sur des montants
+     * définitifs). Simple lien vers une route dédiée
+     * (VtcRideReceiptController) plutôt qu'un ->action() : rien à
+     * valider côté serveur au clic, la garde d'accès vit dans le
+     * contrôleur (qui réutilise VtcRideResource::canView()).
+     */
+    protected function receiptAction(): Action
+    {
+        return Action::make('receipt')
+            ->label('Reçu')
+            ->icon('heroicon-o-document-text')
+            ->color('gray')
+            ->visible(fn (VtcRide $record): bool => $record->status === VtcRide::STATUS_CONFIRMED)
+            ->url(fn (VtcRide $record): string => route('vtc-rides.receipt', $record))
+            ->openUrlInNewTab();
+    }
 }

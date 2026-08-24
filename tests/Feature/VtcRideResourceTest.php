@@ -319,6 +319,48 @@ class VtcRideResourceTest extends TestCase
 
     /*
      * =================================================================
+     * Reçu récapitulatif (étape 5.9) : action visible uniquement pour
+     * une course confirmée — le contenu/l'autorisation de la route
+     * elle-même sont couverts par VtcRideReceiptTest.php
+     * =================================================================
+     */
+
+    public function test_laction_recu_nest_pas_visible_pour_une_course_en_brouillon(): void
+    {
+        $ride = VtcRide::create(['reference' => 'VTC-UI-15']);
+
+        Livewire::test(EditVtcRide::class, ['record' => $ride->getKey()])
+            ->assertActionHidden('receipt');
+    }
+
+    public function test_laction_recu_devient_visible_apres_confirmation(): void
+    {
+        $rate10 = TaxRate::create(['label' => 'VTC', 'type' => TaxRate::TYPE_PERCENTAGE, 'rate' => 10]);
+        $this->setVtcFiscalSetting($rate10);
+
+        $ride = VtcRide::create([
+            'reference' => 'VTC-UI-16',
+            'price_ht' => 100,
+            'driver_id' => $this->makeDriver()->id,
+            'vehicle_id' => $this->makeVehicle()->id,
+        ]);
+        $ride->markAsConfirmed();
+
+        Livewire::test(EditVtcRide::class, ['record' => $ride->getKey()])
+            ->assertActionVisible('receipt');
+    }
+
+    public function test_laction_recu_nest_plus_visible_apres_annulation(): void
+    {
+        $ride = VtcRide::create(['reference' => 'VTC-UI-17']);
+        $ride->cancel();
+
+        Livewire::test(EditVtcRide::class, ['record' => $ride->getKey()])
+            ->assertActionHidden('receipt');
+    }
+
+    /*
+     * =================================================================
      * Protection des champs financiers / historique après confirmation
      * =================================================================
      */

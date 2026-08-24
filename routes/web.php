@@ -1,6 +1,7 @@
 <?php
 
 use App\Http\Controllers\ProfileController;
+use App\Http\Controllers\VtcRideReceiptController;
 use Illuminate\Foundation\Application;
 use Illuminate\Support\Facades\Route;
 use Inertia\Inertia;
@@ -22,6 +23,13 @@ Route::middleware('auth')->group(function () {
     Route::get('/profile', [ProfileController::class, 'edit'])->name('profile.edit');
     Route::patch('/profile', [ProfileController::class, 'update'])->name('profile.update');
     Route::delete('/profile', [ProfileController::class, 'destroy'])->name('profile.destroy');
+
+    // Étape 5.9 : reçu récapitulatif imprimable d'une course VTC
+    // confirmée. Hors du panel Filament (pas de layout admin, pensé
+    // pour l'impression) — l'autorisation est vérifiée dans le
+    // contrôleur, pas ici (cf. VtcRideReceiptController).
+    Route::get('/vtc-rides/{vtcRide}/receipt', [VtcRideReceiptController::class, 'show'])
+        ->name('vtc-rides.receipt');
 });
 
 require __DIR__.'/auth.php';

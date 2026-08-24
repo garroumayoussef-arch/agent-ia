@@ -21,6 +21,7 @@ class EditVtcRide extends EditRecord
         return [
             $this->confirmRideAction(),
             $this->cancelRideAction(),
+            $this->receiptAction(),
             ViewAction::make(),
             DeleteAction::make()
                 // Le modèle refuse la suppression d'une course qui
