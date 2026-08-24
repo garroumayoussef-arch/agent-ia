@@ -10,10 +10,17 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
  * PurchaseOrder/SalesOrder), sans aucune interaction avec le stock :
  * aucune référence à Product/ProductVariant/StockMovement.
  *
- * La logique métier (résolution du taux, calculs HT/TVA/TTC, gel après
- * confirmation, obligation driver/vehicle à la confirmation) est
- * volontairement absente à ce stade (étape 1 = migrations + modèles +
- * relations uniquement) — elle sera ajoutée à l'étape 2.
+ * Architecture fiscale : réutilise intégralement TaxRate et
+ * FiscalSetting (déjà construits à l'étape 4 / 5.1). Aucune nouvelle
+ * abstraction fiscale partagée n'est créée ici — l'arithmétique
+ * (base × taux / 100) reste volontairement locale à ce modèle, sur le
+ * même principe que le projet duplique déjà cette même arithmétique
+ * entre PurchaseOrder et SalesOrder plutôt que de la mutualiser
+ * (décision explicite de l'étape 4 : ne jamais mélanger les logiques
+ * fiscales de contextes différents). Une course n'ayant qu'une seule
+ * "ligne" (elle-même), la logique de répartition au prorata entre
+ * plusieurs lignes de PurchaseOrder/SalesOrder ne s'applique pas ici :
+ * il n'y a rien à dupliquer de ce côté-là.
  */
 class VtcRide extends Model
 {
@@ -63,6 +70,177 @@ class VtcRide extends Model
     public const TAX_STATUS_EXEMPT = 'exempt';
 
     public const TAX_STATUS_UNRESOLVED = 'unresolved';
+
+    protected static function booted(): void
+    {
+        static::creating(function (VtcRide $ride) {
+            $ride->status ??= self::STATUS_DRAFT;
+            $ride->user_id ??= auth()->id();
+        });
+
+        /*
+         * Recalcule total_ht/tax_rate_id/tax_rate/tax_amount/total_ttc/
+         * tax_status/legal_mention tant que la course est en brouillon.
+         * Une fois confirmée, ce hook ne fait plus rien : $ride->status
+         * est déjà passé à 'confirmed' en mémoire au moment où
+         * markAsConfirmed() déclenche ce save() (fill() a lieu avant
+         * l'événement `saving`), donc les valeurs calculées lors du
+         * dernier enregistrement en brouillon restent telles quelles —
+         * c'est ce qui fige l'historique fiscal, sans mécanisme
+         * supplémentaire.
+         *
+         * `status` peut encore être NULL ici lors d'une création : dans
+         * Eloquent, `saving` se déclenche AVANT `creating` (qui est ce
+         * qui fixe status à 'draft' par défaut ci-dessus) — un statut
+         * absent est donc traité comme brouillon, sans quoi aucune
+         * nouvelle course ne verrait jamais ses montants calculés.
+         */
+        static::saving(function (VtcRide $ride) {
+            if (! in_array($ride->status, [null, self::STATUS_DRAFT], true)) {
+                return;
+            }
+
+            $taxRate = $ride->resolveTaxRate();
+
+            if ($taxRate === null) {
+                $ride->tax_rate_id = null;
+                $ride->tax_rate = null;
+                $ride->tax_status = self::TAX_STATUS_UNRESOLVED;
+                $ride->legal_mention = null;
+            } elseif ($taxRate->isExempt()) {
+                $ride->tax_rate_id = $taxRate->id;
+                $ride->tax_rate = null;
+                $ride->tax_status = self::TAX_STATUS_EXEMPT;
+                $ride->legal_mention = $taxRate->legal_mention;
+            } else {
+                $ride->tax_rate_id = $taxRate->id;
+                $ride->tax_rate = (float) $taxRate->rate;
+                $ride->tax_status = self::TAX_STATUS_TAXABLE;
+                $ride->legal_mention = null;
+            }
+
+            $ride->total_ht = $ride->price_ht !== null
+                ? max(0.0, round((float) $ride->price_ht - (float) $ride->discount_amount, 2))
+                : null;
+
+            if ($ride->total_ht === null || $ride->tax_status === self::TAX_STATUS_UNRESOLVED) {
+                // Base inconnue, ou taux inconnu : TVA inconnue. Ne
+                // jamais inventer une valeur, y compris 0.
+                $ride->tax_amount = null;
+                $ride->total_ttc = null;
+            } elseif ($ride->tax_status === self::TAX_STATUS_EXEMPT) {
+                // TVA connue comme nulle (exonération/franchise en
+                // base) : 0 explicite, jamais confondu avec l'inconnu.
+                $ride->tax_amount = 0.0;
+                $ride->total_ttc = $ride->total_ht;
+            } else {
+                $ride->tax_amount = round($ride->total_ht * $ride->tax_rate / 100, 2);
+                $ride->total_ttc = round($ride->total_ht + $ride->tax_amount, 2);
+            }
+        });
+
+        /*
+         * Une fois confirmée (ou annulée), une course est un historique
+         * permanent : ses montants et sa qualification fiscale sont
+         * figés, au même titre que product_id/quantity_ordered le sont
+         * sur une ligne de PurchaseOrder/SalesOrder une fois la
+         * commande sortie du brouillon. Un changement ultérieur de
+         * TaxRate ou de FiscalSetting ne peut donc jamais l'atteindre :
+         * ce hook bloque toute tentative de modification directe, et
+         * `saving` ci-dessus a de toute façon cessé de recalculer quoi
+         * que ce soit dès que le statut n'est plus 'draft'.
+         */
+        static::updating(function (VtcRide $ride) {
+            if ($ride->status === self::STATUS_DRAFT) {
+                return;
+            }
+
+            foreach ([
+                'price_ht', 'discount_amount', 'total_ht',
+                'tax_rate_id', 'tax_rate', 'tax_amount', 'total_ttc',
+                'tax_status', 'legal_mention',
+            ] as $field) {
+                if ($ride->isDirty($field)) {
+                    throw new \Exception(
+                        "Impossible de modifier les montants d'une course qui n'est plus en brouillon."
+                    );
+                }
+            }
+        });
+
+        /*
+         * Une fois confirmée, une course devient un historique
+         * permanent : même logique de protection que
+         * PurchaseOrder::deleting()/SalesOrder::deleting() une fois
+         * qu'une réception/expédition a eu lieu.
+         */
+        static::deleting(function (VtcRide $ride) {
+            if ($ride->status !== self::STATUS_DRAFT) {
+                throw new \Exception(
+                    'Impossible de supprimer une course qui n\'est plus en brouillon.'
+                );
+            }
+        });
+    }
+
+    /**
+     * Confirme une course en brouillon : chauffeur et véhicule
+     * deviennent obligatoires à cet instant précis (pas avant — une
+     * course peut être préparée sans eux), et la qualification fiscale
+     * doit être résolue (pas de TVA inconnue sur une course confirmée).
+     * Une fois confirmée, les montants sont figés (cf. static::updating
+     * ci-dessus).
+     */
+    public function markAsConfirmed(): void
+    {
+        if ($this->status !== self::STATUS_DRAFT) {
+            throw new \Exception('Seule une course en brouillon peut être confirmée.');
+        }
+
+        if (! $this->driver_id) {
+            throw new \Exception('Un chauffeur doit être renseigné avant de confirmer cette course.');
+        }
+
+        if (! $this->vehicle_id) {
+            throw new \Exception('Un véhicule doit être renseigné avant de confirmer cette course.');
+        }
+
+        if ($this->total_ht === null) {
+            throw new \Exception('Le prix HT de cette course doit être renseigné avant de la confirmer.');
+        }
+
+        if ($this->tax_status === self::TAX_STATUS_UNRESOLVED) {
+            throw new \Exception(
+                "Aucun taux de TVA n'a pu être résolu pour cette course : configurez le régime fiscal VTC (FiscalSetting) avant de la confirmer."
+            );
+        }
+
+        $this->update(['status' => self::STATUS_CONFIRMED]);
+    }
+
+    /**
+     * Résout le taux de TVA applicable à cette course : explicite sur
+     * la course > configuration fiscale VTC (FiscalSetting) > non
+     * résolu. Ne retombe JAMAIS sur un taux par défaut "marchandises"
+     * (TaxRate::is_default_sale) : une course sans régime VTC configuré
+     * doit rester non résolue plutôt que d'être taxée par erreur au
+     * taux des produits physiques.
+     *
+     * Requêtes fraîches (pas les accesseurs de relation), comme dans
+     * PurchaseOrderItem/SalesOrderItem, pour ne rien mettre en cache
+     * sur cette instance appelée depuis `saving`.
+     */
+    private function resolveTaxRate(): ?TaxRate
+    {
+        if ($this->tax_rate_id) {
+            return $this->taxRate()->first();
+        }
+
+        return FiscalSetting::where('activity', FiscalSetting::ACTIVITY_VTC)
+            ->first()
+            ?->taxRate()
+            ->first();
+    }
 
     /*
      * =============================================================
