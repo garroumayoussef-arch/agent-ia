@@ -14,6 +14,7 @@ class DatabaseSeeder extends Seeder
         $this->call([
             RoleSeeder::class,
             TaxRateSeeder::class,
+            FiscalSettingSeeder::class,
             BrandSeeder::class,
             CategorySeeder::class,
             CompetitionSeeder::class,
