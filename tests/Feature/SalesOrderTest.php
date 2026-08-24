@@ -1074,4 +1074,32 @@ class SalesOrderTest extends TestCase
         $this->assertSame('20.00', $item->tax_rate);
         $this->assertSame('10.00', $item->tax_amount);
     }
+
+    /**
+     * Régression : SalesOrder::applyTaxAllocation() réécrit tax_amount
+     * par requête directe (whereKey()->update()), donc sur une instance
+     * PHP différente de celle retournée par create(). Sans le
+     * ->refresh() ajouté dans le hook `saved`, l'objet $item gardait en
+     * mémoire gross_tax_amount (valeur AVANT remise) au lieu du
+     * tax_amount réellement persisté (APRÈS remise) — ce test échoue si
+     * cette régression revient, sans jamais appeler ->fresh().
+     */
+    public function test_tax_amount_en_memoire_reflete_la_remise_sans_fresh(): void
+    {
+        $rate = TaxRate::create(['label' => 'Taux normal', 'type' => TaxRate::TYPE_PERCENTAGE, 'rate' => 20]);
+        $product = $this->makeProduct(['sale_tax_rate_id' => $rate->id]);
+        $order = SalesOrder::create(['reference' => 'CMD-TEST-44', 'discount_amount' => 10]);
+
+        $item = SalesOrderItem::create([
+            'sales_order_id' => $order->id,
+            'product_id' => $product->id,
+            'quantity_ordered' => 1,
+            'unit_price' => 100,
+        ]);
+
+        // subtotal=100, remise=10 -> base taxable=90 -> TVA 20%=18.
+        $this->assertSame('20.00', $item->gross_tax_amount);
+        $this->assertSame('18.00', $item->tax_amount);
+        $this->assertNotSame($item->gross_tax_amount, $item->tax_amount);
+    }
 }

@@ -158,9 +158,20 @@ class PurchaseOrderItem extends Model
          * elle-même la garde "brouillon uniquement", donc cet appel
          * reste un no-op inoffensif pendant receive() (qui ne modifie
          * que quantity_received).
+         *
+         * recalculateTotal() réécrit tax_amount de CETTE ligne (au
+         * prorata de la remise) par requête directe, via
+         * PurchaseOrder::applyTaxAllocation() — donc sur une instance
+         * PHP différente de $item. Sans le refresh() ci-dessous,
+         * l'objet $item resterait avec la valeur initiale (gross_tax_amount,
+         * posée par le hook `saving` avant l'écriture) au lieu du
+         * montant net réellement persisté : quiconque inspecte
+         * $item->tax_amount juste après un create()/update() sans
+         * ->fresh() verrait alors la TVA AVANT remise au lieu d'APRÈS.
          */
         static::saved(function (PurchaseOrderItem $item): void {
             $item->purchaseOrder()->first()?->recalculateTotal();
+            $item->refresh();
         });
 
         static::deleted(function (PurchaseOrderItem $item): void {
