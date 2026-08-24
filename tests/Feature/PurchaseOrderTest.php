@@ -467,4 +467,126 @@ class PurchaseOrderTest extends TestCase
         $this->assertSame(1, $order->stockMovements()->count());
         $this->assertSame($order->id, $order->stockMovements()->first()->purchaseOrder->id);
     }
+
+    /*
+     * =================================================================
+     * Sous-total (subtotal)
+     * =================================================================
+     */
+
+    public function test_le_sous_total_dune_ligne_est_calcule_automatiquement_a_la_creation(): void
+    {
+        $product = $this->makeProduct();
+        $order = PurchaseOrder::create(['reference' => 'BC-TEST-22']);
+
+        $item = PurchaseOrderItem::create([
+            'purchase_order_id' => $order->id,
+            'product_id' => $product->id,
+            'quantity_ordered' => 5,
+            'unit_price' => 12.50,
+        ]);
+
+        $this->assertSame('62.50', $item->subtotal);
+    }
+
+    public function test_le_sous_total_est_recalcule_quand_la_quantite_ou_le_prix_change_en_brouillon(): void
+    {
+        $product = $this->makeProduct();
+        $order = PurchaseOrder::create(['reference' => 'BC-TEST-23']);
+
+        $item = PurchaseOrderItem::create([
+            'purchase_order_id' => $order->id,
+            'product_id' => $product->id,
+            'quantity_ordered' => 5,
+            'unit_price' => 10,
+        ]);
+        $this->assertSame('50.00', $item->subtotal);
+
+        $item->update(['quantity_ordered' => 8]);
+        $this->assertSame('80.00', $item->fresh()->subtotal);
+
+        $item->update(['unit_price' => 15]);
+        $this->assertSame('120.00', $item->fresh()->subtotal);
+    }
+
+    public function test_le_sous_total_est_nul_si_aucun_prix_unitaire_nest_renseigne(): void
+    {
+        $product = $this->makeProduct();
+        $order = PurchaseOrder::create(['reference' => 'BC-TEST-24']);
+
+        $item = PurchaseOrderItem::create([
+            'purchase_order_id' => $order->id,
+            'product_id' => $product->id,
+            'quantity_ordered' => 5,
+        ]);
+
+        $this->assertNull($item->unit_price);
+        $this->assertNull($item->subtotal);
+    }
+
+    public function test_le_sous_total_est_fige_apres_confirmation_et_receive_ny_touche_pas(): void
+    {
+        $product = $this->makeProduct();
+        $variant = $this->makeVariant($product, ['stock' => 0]);
+        $order = PurchaseOrder::create(['reference' => 'BC-TEST-25']);
+
+        $item = PurchaseOrderItem::create([
+            'purchase_order_id' => $order->id,
+            'product_id' => $product->id,
+            'product_variant_id' => $variant->id,
+            'quantity_ordered' => 5,
+            'unit_price' => 10,
+        ]);
+        $this->assertSame('50.00', $item->subtotal);
+
+        $order->markAsOrdered();
+        $order->receive([$item->id => 3]);
+
+        $item->refresh();
+
+        // receive() ne modifie que quantity_received : le sous-total
+        // figé à la confirmation ne doit pas bouger.
+        $this->assertSame(3, $item->quantity_received);
+        $this->assertSame('50.00', $item->subtotal);
+    }
+
+    public function test_modifier_le_prix_unitaire_dune_ligne_est_rejete_hors_brouillon(): void
+    {
+        $product = $this->makeProduct();
+        $order = PurchaseOrder::create(['reference' => 'BC-TEST-26']);
+        $item = PurchaseOrderItem::create([
+            'purchase_order_id' => $order->id,
+            'product_id' => $product->id,
+            'quantity_ordered' => 5,
+            'unit_price' => 10,
+        ]);
+        $order->markAsOrdered();
+
+        $this->expectException(\Exception::class);
+        $item->update(['unit_price' => 20]);
+    }
+
+    public function test_supprimer_une_ligne_ne_touche_pas_le_sous_total_des_autres_lignes(): void
+    {
+        $product = $this->makeProduct();
+        $order = PurchaseOrder::create(['reference' => 'BC-TEST-27']);
+
+        $itemA = PurchaseOrderItem::create([
+            'purchase_order_id' => $order->id,
+            'product_id' => $product->id,
+            'quantity_ordered' => 2,
+            'unit_price' => 10,
+        ]);
+        $itemB = PurchaseOrderItem::create([
+            'purchase_order_id' => $order->id,
+            'product_id' => $product->id,
+            'quantity_ordered' => 3,
+            'unit_price' => 20,
+        ]);
+
+        $itemA->delete();
+
+        $this->assertSame(1, PurchaseOrderItem::count());
+        $this->assertSame('60.00', $itemB->fresh()->subtotal);
+    }
 }

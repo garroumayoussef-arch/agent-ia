@@ -17,6 +17,7 @@ class SalesOrderItem extends Model
         'quantity_ordered' => 'integer',
         'quantity_shipped' => 'integer',
         'unit_price' => 'decimal:2',
+        'subtotal' => 'decimal:2',
     ];
 
     protected static function booted(): void
@@ -45,11 +46,44 @@ class SalesOrderItem extends Model
             }
         });
 
+        /*
+         * subtotal = quantity_ordered * unit_price, recalculé
+         * automatiquement tant que la commande est en brouillon (ou n'a
+         * pas encore de commande associée). Une fois sortie du
+         * brouillon, ce hook ne touche plus subtotal : les montants
+         * sont figés, exactement comme product_id/quantity_ordered
+         * ci-dessous (SalesOrder::ship() ne modifie que
+         * quantity_shipped, jamais quantity_ordered/unit_price, donc
+         * rien ne redéclencherait ce calcul après confirmation).
+         *
+         * unit_price est nullable et aucune règle de prix par défaut
+         * n'a été validée : subtotal reste alors NULL plutôt que
+         * d'inventer un prix implicite de 0.
+         */
+        static::saving(function (SalesOrderItem $item): void {
+            // Requête fraîche (pas l'accesseur de relation) : ce hook
+            // s'exécute aussi à la création, et mettre `salesOrder` en
+            // cache sur l'instance à ce moment-là ferait lire un statut
+            // "draft" périmé au hook `updating` ci-dessous lors d'une
+            // modification ultérieure sur cette même instance.
+            $order = $item->salesOrder()->first();
+            $isDraft = ! $order || $order->status === SalesOrder::STATUS_DRAFT;
+
+            if (! $isDraft) {
+                return;
+            }
+
+            $item->subtotal = $item->unit_price !== null
+                ? round((int) $item->quantity_ordered * (float) $item->unit_price, 2)
+                : null;
+        });
+
         static::updating(function (SalesOrderItem $item) {
             /*
              * Une fois la commande sortie du brouillon, la définition de
-             * la ligne (produit/variante/quantité commandée) est figée :
-             * seule SalesOrder::ship() peut encore la faire évoluer
+             * la ligne (produit/variante/quantité commandée) et ses
+             * montants (prix unitaire, sous-total) sont figés : seule
+             * SalesOrder::ship() peut encore faire évoluer la ligne
              * (quantity_shipped).
              */
             $order = $item->salesOrder;
@@ -58,7 +92,7 @@ class SalesOrderItem extends Model
                 return;
             }
 
-            foreach (['product_id', 'product_variant_id', 'quantity_ordered'] as $field) {
+            foreach (['product_id', 'product_variant_id', 'quantity_ordered', 'unit_price', 'subtotal'] as $field) {
                 if ($item->isDirty($field)) {
                     throw new \Exception(
                         "Impossible de modifier une ligne dont la commande n'est plus en brouillon."
