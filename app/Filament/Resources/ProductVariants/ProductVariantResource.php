@@ -2,6 +2,7 @@
 
 namespace App\Filament\Resources\ProductVariants;
 
+use App\Filament\Concerns\BlocksChauffeurReadAccess;
 use App\Filament\Concerns\HasRoleBasedAuthorization;
 use App\Filament\Resources\ProductVariants\Pages\CreateProductVariant;
 use App\Filament\Resources\ProductVariants\Pages\EditProductVariant;
@@ -19,6 +20,7 @@ use Filament\Tables\Table;
 class ProductVariantResource extends Resource
 {
     use HasRoleBasedAuthorization;
+    use BlocksChauffeurReadAccess;
 
     protected static ?string $model = ProductVariant::class;
 

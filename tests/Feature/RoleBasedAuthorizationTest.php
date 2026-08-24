@@ -8,6 +8,7 @@ use App\Filament\Resources\Clubs\ClubResource;
 use App\Filament\Resources\Competitions\CompetitionResource;
 use App\Filament\Resources\Customers\CustomerResource;
 use App\Filament\Resources\Drivers\DriverResource;
+use App\Filament\Resources\ProductVariants\ProductVariantResource;
 use App\Filament\Resources\Products\Pages\CreateProduct;
 use App\Filament\Resources\Products\Pages\EditProduct;
 use App\Filament\Resources\Products\ProductResource;
@@ -20,6 +21,7 @@ use App\Models\Customer;
 use App\Models\Driver;
 use App\Models\FiscalSetting;
 use App\Models\Product;
+use App\Models\ProductVariant;
 use App\Models\SalesOrder;
 use App\Models\Supplier;
 use App\Models\TaxRate;
@@ -758,5 +760,126 @@ class RoleBasedAuthorizationTest extends TestCase
         $this->actingAs(User::factory()->create()->assignRole('admin'));
 
         $this->get(SalesOrderResource::getUrl('index'))->assertSuccessful();
+    }
+
+    /*
+     * =================================================================
+     * Product/ProductVariant — chantier transversal T6
+     * (BlocksChauffeurReadAccess), réutilisé tel quel depuis T3/T4/T5.
+     * Dépendances avec PurchaseOrder, SalesOrder ET StockMovement
+     * vérifiées explicitement avant implémentation (aucune des trois
+     * ne référence ProductResource/ProductVariantResource pour ses
+     * champs product_id/product_variant_id — Select::make(...)->options()
+     * interroge Product/ProductVariant directement) : cf. l'analyse T6.
+     * StockOverview/LowStockAlert (exposition ambiante sur le dashboard)
+     * restent explicitement hors périmètre, non modifiés.
+     * =================================================================
+     */
+
+    private function makeProductVariant(Product $product, array $attributes = []): ProductVariant
+    {
+        return ProductVariant::create(array_merge([
+            'product_id' => $product->id,
+            'sku' => 'SKU-'.uniqid(),
+            'size' => 'M',
+            'stock' => 0,
+            'status' => 'active',
+        ], $attributes));
+    }
+
+    public function test_ladmin_et_le_manager_conservent_lacces_en_lecture_a_product_et_productvariant(): void
+    {
+        $this->actingAs(User::factory()->create()->assignRole('admin'));
+        $this->get(ProductResource::getUrl('index'))->assertSuccessful();
+        $this->get(ProductVariantResource::getUrl('index'))->assertSuccessful();
+
+        $this->actingAs(User::factory()->create()->assignRole('manager'));
+        $this->get(ProductResource::getUrl('index'))->assertSuccessful();
+        $this->get(ProductVariantResource::getUrl('index'))->assertSuccessful();
+    }
+
+    public function test_un_chauffeur_ne_peut_plus_consulter_les_produits(): void
+    {
+        $this->actingAs($this->makeChauffeurAccount());
+
+        $this->get(ProductResource::getUrl('index'))->assertForbidden();
+    }
+
+    public function test_un_chauffeur_ne_peut_plus_consulter_les_variantes(): void
+    {
+        $this->actingAs($this->makeChauffeurAccount());
+
+        $this->get(ProductVariantResource::getUrl('index'))->assertForbidden();
+    }
+
+    /**
+     * Ni Product ni ProductVariant n'ont de page "view" (cf.
+     * getPages()) : canView() n'est atteignable par aucune route HTTP —
+     * seul un appel statique direct le vérifie, même principe qu'en
+     * T3/T4/T5.
+     */
+    public function test_canview_refuse_un_chauffeur_pour_product_et_productvariant(): void
+    {
+        $product = $this->makeProduct();
+        $variant = $this->makeProductVariant($product);
+
+        $this->actingAs($this->makeChauffeurAccount());
+
+        $this->assertFalse(ProductResource::canView($product));
+        $this->assertFalse(ProductVariantResource::canView($variant));
+    }
+
+    public function test_un_utilisateur_sans_role_ni_driver_associe_conserve_son_acces_a_product_et_productvariant(): void
+    {
+        $this->actingAs(User::factory()->create()); // ni rôle, ni Driver lié
+
+        $this->get(ProductResource::getUrl('index'))->assertSuccessful();
+        $this->get(ProductVariantResource::getUrl('index'))->assertSuccessful();
+    }
+
+    public function test_un_chauffeur_ne_peut_pas_creer_de_produit_ou_de_variante(): void
+    {
+        $this->actingAs($this->makeChauffeurAccount());
+
+        $this->get(ProductResource::getUrl('create'))->assertForbidden();
+        $this->get(ProductVariantResource::getUrl('create'))->assertForbidden();
+    }
+
+    /**
+     * Non-régression explicite demandée : PurchaseOrderResource,
+     * SalesOrderResource ET StockMovementResource (les 3 dépendances de
+     * Product, hors périmètre, non modifiées) restent pleinement
+     * fonctionnels pour un manager après T6.
+     */
+    public function test_purchaseorder_salesorder_et_stockmovement_restent_fonctionnels_pour_un_manager_apres_t6(): void
+    {
+        $product = $this->makeProduct();
+        $supplier = Supplier::create(['name' => 'Fournisseur T6']);
+        $customer = Customer::create(['name' => 'Client T6']);
+
+        $purchaseOrder = \App\Models\PurchaseOrder::create([
+            'reference' => 'BC-T6-1',
+            'supplier_id' => $supplier->id,
+        ]);
+        $salesOrder = SalesOrder::create([
+            'reference' => 'CMD-T6-1',
+            'customer_id' => $customer->id,
+        ]);
+        $stockMovement = \App\Models\StockMovement::create([
+            'product_id' => $product->id,
+            'type' => 'purchase',
+            'quantity' => 5,
+        ]);
+
+        $this->actingAs(User::factory()->create()->assignRole('manager'));
+
+        $this->get(\App\Filament\Resources\PurchaseOrders\PurchaseOrderResource::getUrl('index'))->assertSuccessful();
+        $this->get(\App\Filament\Resources\PurchaseOrders\PurchaseOrderResource::getUrl('view', ['record' => $purchaseOrder]))->assertSuccessful();
+
+        $this->get(SalesOrderResource::getUrl('index'))->assertSuccessful();
+        $this->get(SalesOrderResource::getUrl('view', ['record' => $salesOrder]))->assertSuccessful();
+
+        $this->get(\App\Filament\Resources\StockMovements\StockMovementResource::getUrl('index'))->assertSuccessful();
+        $this->get(\App\Filament\Resources\StockMovements\StockMovementResource::getUrl('view', ['record' => $stockMovement]))->assertSuccessful();
     }
 }
