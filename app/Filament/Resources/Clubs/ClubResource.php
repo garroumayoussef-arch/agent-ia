@@ -2,6 +2,7 @@
 
 namespace App\Filament\Resources\Clubs;
 
+use App\Filament\Concerns\BlocksChauffeurReadAccess;
 use App\Filament\Concerns\HasRoleBasedAuthorization;
 use App\Filament\Resources\Clubs\Pages\CreateClub;
 use App\Filament\Resources\Clubs\Pages\EditClub;
@@ -18,6 +19,7 @@ use Filament\Tables\Table;
 class ClubResource extends Resource
 {
     use HasRoleBasedAuthorization;
+    use BlocksChauffeurReadAccess;
 
     protected static ?string $model = Club::class;
 

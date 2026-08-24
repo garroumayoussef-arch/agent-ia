@@ -2,6 +2,10 @@
 
 namespace Tests\Feature;
 
+use App\Filament\Resources\Brands\BrandResource;
+use App\Filament\Resources\Categories\CategoryResource;
+use App\Filament\Resources\Clubs\ClubResource;
+use App\Filament\Resources\Competitions\CompetitionResource;
 use App\Filament\Resources\Drivers\DriverResource;
 use App\Filament\Resources\Products\Pages\CreateProduct;
 use App\Filament\Resources\Products\Pages\EditProduct;
@@ -320,5 +324,155 @@ class RoleBasedAuthorizationTest extends TestCase
         $this->get(DriverResource::getUrl('edit', ['record' => $driver]))->assertSuccessful();
         $this->get(VehicleResource::getUrl('index'))->assertSuccessful();
         $this->get(VehicleResource::getUrl('edit', ['record' => $vehicle]))->assertSuccessful();
+    }
+
+    /*
+     * =================================================================
+     * Brand/Category/Club/Competition — chantier transversal T3
+     * (BlocksChauffeurReadAccess), séparé du module VTC
+     * =================================================================
+     *
+     * T2 : un chauffeur est EXCLUSIVEMENT un utilisateur authentifié
+     * lié à un Driver (Driver.user_id) — jamais déduit de l'absence de
+     * rôle. Un utilisateur sans rôle NI Driver associé reste un
+     * utilisateur classique, dont l'accès en lecture (déjà ouvert par
+     * HasRoleBasedAuthorization) ne change pas ici.
+     *
+     * Remplace les tests "avant T3" de T1 (qui vérifiaient que la
+     * lecture était encore ouverte au chauffeur) : ce comportement
+     * vient précisément de changer pour ce seul profil.
+     */
+
+    private function makeChauffeurAccount(): User
+    {
+        $user = User::factory()->create(); // aucun rôle Spatie
+        Driver::create(['name' => 'Chauffeur T3', 'user_id' => $user->id]);
+
+        return $user;
+    }
+
+    public function test_ladmin_et_le_manager_conservent_lacces_en_lecture_aux_4_resources_taxonomiques(): void
+    {
+        $this->actingAs(User::factory()->create()->assignRole('admin'));
+        $this->get(BrandResource::getUrl('index'))->assertSuccessful();
+        $this->get(CategoryResource::getUrl('index'))->assertSuccessful();
+        $this->get(ClubResource::getUrl('index'))->assertSuccessful();
+        $this->get(CompetitionResource::getUrl('index'))->assertSuccessful();
+
+        $this->actingAs(User::factory()->create()->assignRole('manager'));
+        $this->get(BrandResource::getUrl('index'))->assertSuccessful();
+        $this->get(CategoryResource::getUrl('index'))->assertSuccessful();
+        $this->get(ClubResource::getUrl('index'))->assertSuccessful();
+        $this->get(CompetitionResource::getUrl('index'))->assertSuccessful();
+    }
+
+    public function test_un_chauffeur_ne_peut_plus_consulter_les_marques(): void
+    {
+        $this->actingAs($this->makeChauffeurAccount());
+
+        $this->get(BrandResource::getUrl('index'))->assertForbidden();
+    }
+
+    public function test_un_chauffeur_ne_peut_plus_consulter_les_categories(): void
+    {
+        $this->actingAs($this->makeChauffeurAccount());
+
+        $this->get(CategoryResource::getUrl('index'))->assertForbidden();
+    }
+
+    public function test_un_chauffeur_ne_peut_plus_consulter_les_clubs(): void
+    {
+        $this->actingAs($this->makeChauffeurAccount());
+
+        $this->get(ClubResource::getUrl('index'))->assertForbidden();
+    }
+
+    public function test_un_chauffeur_ne_peut_plus_consulter_les_competitions(): void
+    {
+        $this->actingAs($this->makeChauffeurAccount());
+
+        $this->get(CompetitionResource::getUrl('index'))->assertForbidden();
+    }
+
+    /**
+     * CompetitionResource est la seule des 4 à avoir une page "view"
+     * dédiée (ViewCompetition) — donc la seule où canView() est
+     * atteignable par une vraie route HTTP, pas seulement par appel
+     * statique direct.
+     */
+    public function test_un_chauffeur_ne_peut_pas_consulter_la_fiche_dune_competition_par_url_directe(): void
+    {
+        $competition = \App\Models\Competition::create(['name' => 'Compétition T3', 'slug' => 'competition-t3']);
+
+        $this->actingAs($this->makeChauffeurAccount());
+
+        $this->get(CompetitionResource::getUrl('view', ['record' => $competition]))->assertForbidden();
+    }
+
+    /**
+     * Brand/Category/Club n'ont aucune page "view" (cf. getPages()) :
+     * canView() n'est donc atteignable par aucune route HTTP pour ces
+     * 3-là — seul un appel statique direct le vérifie, même principe
+     * que test_canview_refuse_un_chauffeur_pour_driverresource_et_vehicleresource
+     * (étape 5.8).
+     */
+    public function test_canview_refuse_un_chauffeur_pour_brand_category_et_club(): void
+    {
+        $brand = \App\Models\Brand::create(['name' => 'Marque T3', 'slug' => 'marque-t3']);
+        $category = \App\Models\Category::create(['name' => 'Catégorie T3', 'slug' => 'categorie-t3']);
+        $club = \App\Models\Club::create(['name' => 'Club T3', 'slug' => 'club-t3']);
+
+        $this->actingAs($this->makeChauffeurAccount());
+
+        $this->assertFalse(BrandResource::canView($brand));
+        $this->assertFalse(CategoryResource::canView($category));
+        $this->assertFalse(ClubResource::canView($club));
+    }
+
+    /**
+     * Preuve explicite du respect du T2 : un utilisateur sans rôle ET
+     * sans Driver associé reste un utilisateur classique — son accès
+     * en lecture, déjà ouvert par HasRoleBasedAuthorization, n'est PAS
+     * touché par ce chantier.
+     */
+    public function test_un_utilisateur_sans_role_ni_driver_associe_conserve_son_acces_en_lecture(): void
+    {
+        $this->actingAs(User::factory()->create()); // ni rôle, ni Driver lié
+
+        $this->get(BrandResource::getUrl('index'))->assertSuccessful();
+        $this->get(CategoryResource::getUrl('index'))->assertSuccessful();
+        $this->get(ClubResource::getUrl('index'))->assertSuccessful();
+        $this->get(CompetitionResource::getUrl('index'))->assertSuccessful();
+    }
+
+    /**
+     * Cas limite : la clause admin/manager prime toujours sur le
+     * blocage chauffeur, même si l'utilisateur est aussi lié à un
+     * Driver. Un seul test suffit (logique partagée par les 4 via le
+     * même trait) — pas besoin de le répéter sur chacune.
+     */
+    public function test_un_admin_egalement_lie_a_un_driver_conserve_lacces_en_lecture(): void
+    {
+        $admin = User::factory()->create()->assignRole('admin');
+        Driver::create(['name' => 'Chauffeur Admin T3', 'user_id' => $admin->id]);
+
+        $this->actingAs($admin);
+
+        $this->get(CategoryResource::getUrl('index'))->assertSuccessful();
+    }
+
+    /**
+     * Écriture déjà restreinte à admin/manager (HasRoleBasedAuthorization,
+     * inchangé par ce chantier) : photographié ici pour les 4 Resources
+     * spécifiquement, plutôt que supposé par analogie avec Product.
+     */
+    public function test_un_chauffeur_ne_peut_pas_creer_de_marque_categorie_club_ou_competition(): void
+    {
+        $this->actingAs($this->makeChauffeurAccount());
+
+        $this->get(BrandResource::getUrl('create'))->assertForbidden();
+        $this->get(CategoryResource::getUrl('create'))->assertForbidden();
+        $this->get(ClubResource::getUrl('create'))->assertForbidden();
+        $this->get(CompetitionResource::getUrl('create'))->assertForbidden();
     }
 }

@@ -2,6 +2,7 @@
 
 namespace App\Filament\Resources\Brands;
 
+use App\Filament\Concerns\BlocksChauffeurReadAccess;
 use App\Filament\Concerns\HasRoleBasedAuthorization;
 use App\Filament\Resources\Brands\Pages\CreateBrand;
 use App\Filament\Resources\Brands\Pages\EditBrand;
@@ -19,6 +20,7 @@ use UnitEnum;
 class BrandResource extends Resource
 {
     use HasRoleBasedAuthorization;
+    use BlocksChauffeurReadAccess;
 
     protected static ?string $model = Brand::class;
 

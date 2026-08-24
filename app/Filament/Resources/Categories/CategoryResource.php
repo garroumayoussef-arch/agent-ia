@@ -3,6 +3,7 @@
 namespace App\Filament\Resources\Categories;
 
 use UnitEnum;
+use App\Filament\Concerns\BlocksChauffeurReadAccess;
 use App\Filament\Concerns\HasRoleBasedAuthorization;
 use App\Filament\Resources\Categories\Pages\CreateCategory;
 use App\Filament\Resources\Categories\Pages\EditCategory;
@@ -19,6 +20,7 @@ use Filament\Tables\Table;
 class CategoryResource extends Resource
 {
     use HasRoleBasedAuthorization;
+    use BlocksChauffeurReadAccess;
 
     protected static ?string $model = Category::class;
 
