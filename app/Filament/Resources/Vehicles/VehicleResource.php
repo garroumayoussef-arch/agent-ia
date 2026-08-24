@@ -3,6 +3,7 @@
 namespace App\Filament\Resources\Vehicles;
 
 use App\Filament\Concerns\HasRoleBasedAuthorization;
+use App\Filament\Concerns\ScopesToOwnDriver;
 use App\Filament\Resources\Vehicles\Pages\CreateVehicle;
 use App\Filament\Resources\Vehicles\Pages\EditVehicle;
 use App\Filament\Resources\Vehicles\Pages\ListVehicles;
@@ -14,10 +15,12 @@ use Filament\Resources\Resource;
 use Filament\Schemas\Schema;
 use Filament\Support\Icons\Heroicon;
 use Filament\Tables\Table;
+use Illuminate\Database\Eloquent\Model;
 
 class VehicleResource extends Resource
 {
     use HasRoleBasedAuthorization;
+    use ScopesToOwnDriver;
 
     protected static ?string $model = Vehicle::class;
 
@@ -30,6 +33,30 @@ class VehicleResource extends Resource
     protected static ?string $pluralModelLabel = 'Véhicules';
 
     protected static ?string $navigationLabel = 'Véhicules';
+
+    /*
+     * =============================================================
+     * AUTORISATION — RÉSERVÉE À ADMIN/MANAGER, Y COMPRIS EN LECTURE
+     * (étape 5.8)
+     * =============================================================
+     *
+     * Même principe que DriverResource (cf. son commentaire détaillé) :
+     * HasRoleBasedAuthorization ne restreint que les mutations, donc
+     * sans ce chevauchement, un chauffeur pourrait parcourir TOUT le
+     * parc de véhicules. Vehicle n'a de toute façon aucune notion de
+     * "propriétaire" (pas de colonne driver_id : un véhicule est
+     * référencé par n'importe quelle course), donc un scoping "own"
+     * n'aurait ici aucun sens métier — c'est admin/manager ou rien.
+     */
+    public static function canViewAny(): bool
+    {
+        return static::isAdminOrManager();
+    }
+
+    public static function canView(Model $record): bool
+    {
+        return static::isAdminOrManager();
+    }
 
     public static function form(Schema $schema): Schema
     {

@@ -2,12 +2,16 @@
 
 namespace Tests\Feature;
 
+use App\Filament\Resources\Drivers\DriverResource;
 use App\Filament\Resources\Products\Pages\CreateProduct;
 use App\Filament\Resources\Products\Pages\EditProduct;
 use App\Filament\Resources\Products\ProductResource;
 use App\Filament\Resources\Users\UserResource;
+use App\Filament\Resources\Vehicles\VehicleResource;
+use App\Models\Driver;
 use App\Models\Product;
 use App\Models\User;
+use App\Models\Vehicle;
 use Database\Seeders\RoleSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Livewire\Livewire;
@@ -230,5 +234,91 @@ class RoleBasedAuthorizationTest extends TestCase
             ->assertHasNoFormErrors();
 
         $this->assertTrue($target->fresh()->hasRole('manager'));
+    }
+
+    /*
+     * =================================================================
+     * DriverResource/VehicleResource — réservées à admin/manager, y
+     * compris en lecture (étape 5.8).
+     *
+     * Objectif : un chauffeur (lié via Driver.user_id, sans rôle Spatie
+     * — cas normal, rien ne lui en attribue) ne doit pas pouvoir
+     * parcourir la fiche de TOUS les chauffeurs/véhicules. Son accès à
+     * ses propres VtcRide reste, lui, ouvert — déjà couvert par
+     * VtcRideAuthorizationTest.php (étape 5.5), non modifié ici et
+     * donc non re-testé dans ce fichier.
+     * =================================================================
+     */
+
+    public function test_un_chauffeur_ne_peut_pas_consulter_la_liste_des_chauffeurs(): void
+    {
+        $user = User::factory()->create(); // aucun rôle
+        Driver::create(['name' => 'Chauffeur A', 'user_id' => $user->id]);
+
+        $this->actingAs($user);
+
+        $this->get(DriverResource::getUrl('index'))->assertForbidden();
+    }
+
+    public function test_un_chauffeur_ne_peut_pas_consulter_la_liste_des_vehicules(): void
+    {
+        $user = User::factory()->create(); // aucun rôle
+        Driver::create(['name' => 'Chauffeur A', 'user_id' => $user->id]);
+
+        $this->actingAs($user);
+
+        $this->get(VehicleResource::getUrl('index'))->assertForbidden();
+    }
+
+    public function test_canview_refuse_un_chauffeur_pour_driverresource_et_vehicleresource(): void
+    {
+        $user = User::factory()->create();
+        $driver = Driver::create(['name' => 'Chauffeur A', 'user_id' => $user->id]);
+        $vehicle = Vehicle::create(['plate_number' => 'AA-'.uniqid().'-ZZ']);
+
+        $this->actingAs($user);
+
+        // Même la fiche de SON PROPRE Driver reste hors périmètre :
+        // aucun besoin de self-service ici (cf. commentaire de
+        // DriverResource), contrairement à VtcRideResource.
+        $this->assertFalse(DriverResource::canView($driver));
+        $this->assertFalse(VehicleResource::canView($vehicle));
+    }
+
+    public function test_un_utilisateur_sans_role_ni_driver_associe_ne_peut_pas_consulter_les_chauffeurs(): void
+    {
+        $user = User::factory()->create(); // ni rôle, ni Driver lié
+
+        $this->actingAs($user);
+
+        $this->get(DriverResource::getUrl('index'))->assertForbidden();
+    }
+
+    public function test_un_manager_conserve_lacces_complet_a_driverresource_et_vehicleresource(): void
+    {
+        $driver = Driver::create(['name' => 'Chauffeur A']);
+        $vehicle = Vehicle::create(['plate_number' => 'AA-'.uniqid().'-ZZ']);
+        $manager = User::factory()->create()->assignRole('manager');
+
+        $this->actingAs($manager);
+
+        $this->get(DriverResource::getUrl('index'))->assertSuccessful();
+        $this->get(DriverResource::getUrl('edit', ['record' => $driver]))->assertSuccessful();
+        $this->get(VehicleResource::getUrl('index'))->assertSuccessful();
+        $this->get(VehicleResource::getUrl('edit', ['record' => $vehicle]))->assertSuccessful();
+    }
+
+    public function test_un_admin_conserve_lacces_complet_a_driverresource_et_vehicleresource(): void
+    {
+        $driver = Driver::create(['name' => 'Chauffeur A']);
+        $vehicle = Vehicle::create(['plate_number' => 'AA-'.uniqid().'-ZZ']);
+        $admin = User::factory()->create()->assignRole('admin');
+
+        $this->actingAs($admin);
+
+        $this->get(DriverResource::getUrl('index'))->assertSuccessful();
+        $this->get(DriverResource::getUrl('edit', ['record' => $driver]))->assertSuccessful();
+        $this->get(VehicleResource::getUrl('index'))->assertSuccessful();
+        $this->get(VehicleResource::getUrl('edit', ['record' => $vehicle]))->assertSuccessful();
     }
 }
