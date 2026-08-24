@@ -723,4 +723,183 @@ class PurchaseOrderTest extends TestCase
         // total figé à la confirmation ne doit pas bouger.
         $this->assertSame('50.00', $order->fresh()->total);
     }
+
+    /*
+     * =================================================================
+     * Remise (discount_amount)
+     * =================================================================
+     */
+
+    public function test_remise_a_zero_le_total_est_inchange(): void
+    {
+        $product = $this->makeProduct();
+        $order = PurchaseOrder::create(['reference' => 'BC-TEST-34']);
+
+        PurchaseOrderItem::create([
+            'purchase_order_id' => $order->id,
+            'product_id' => $product->id,
+            'quantity_ordered' => 5,
+            'unit_price' => 10,
+        ]);
+
+        $this->assertSame('0.00', $order->fresh()->discount_amount);
+        $this->assertSame('50.00', $order->fresh()->total);
+    }
+
+    public function test_remise_inferieure_au_subtotal(): void
+    {
+        $product = $this->makeProduct();
+        $order = PurchaseOrder::create(['reference' => 'BC-TEST-35']);
+
+        PurchaseOrderItem::create([
+            'purchase_order_id' => $order->id,
+            'product_id' => $product->id,
+            'quantity_ordered' => 5,
+            'unit_price' => 10,
+        ]);
+        $this->assertSame('50.00', $order->fresh()->total);
+
+        $order->update(['discount_amount' => 20]);
+
+        $this->assertSame('30.00', $order->fresh()->total);
+    }
+
+    public function test_remise_egale_au_subtotal(): void
+    {
+        $product = $this->makeProduct();
+        $order = PurchaseOrder::create(['reference' => 'BC-TEST-36']);
+
+        PurchaseOrderItem::create([
+            'purchase_order_id' => $order->id,
+            'product_id' => $product->id,
+            'quantity_ordered' => 5,
+            'unit_price' => 10,
+        ]);
+
+        $order->update(['discount_amount' => 50]);
+
+        $this->assertSame('0.00', $order->fresh()->total);
+    }
+
+    public function test_remise_superieure_au_subtotal_le_total_est_borne_a_zero(): void
+    {
+        $product = $this->makeProduct();
+        $order = PurchaseOrder::create(['reference' => 'BC-TEST-37']);
+
+        PurchaseOrderItem::create([
+            'purchase_order_id' => $order->id,
+            'product_id' => $product->id,
+            'quantity_ordered' => 5,
+            'unit_price' => 10,
+        ]);
+
+        $order->update(['discount_amount' => 999]);
+
+        $this->assertSame('0.00', $order->fresh()->total);
+    }
+
+    public function test_remise_avec_plusieurs_lignes(): void
+    {
+        $product = $this->makeProduct();
+        $order = PurchaseOrder::create(['reference' => 'BC-TEST-38']);
+
+        PurchaseOrderItem::create([
+            'purchase_order_id' => $order->id,
+            'product_id' => $product->id,
+            'quantity_ordered' => 5,
+            'unit_price' => 10,
+        ]);
+        PurchaseOrderItem::create([
+            'purchase_order_id' => $order->id,
+            'product_id' => $product->id,
+            'quantity_ordered' => 2,
+            'unit_price' => 25,
+        ]);
+        $this->assertSame('100.00', $order->fresh()->total);
+
+        $order->update(['discount_amount' => 30]);
+
+        $this->assertSame('70.00', $order->fresh()->total);
+    }
+
+    public function test_modifier_la_remise_en_brouillon_recalcule_le_total(): void
+    {
+        $product = $this->makeProduct();
+        $order = PurchaseOrder::create(['reference' => 'BC-TEST-39']);
+
+        PurchaseOrderItem::create([
+            'purchase_order_id' => $order->id,
+            'product_id' => $product->id,
+            'quantity_ordered' => 5,
+            'unit_price' => 10,
+        ]);
+
+        $order->update(['discount_amount' => 10]);
+        $this->assertSame('40.00', $order->fresh()->total);
+
+        $order->update(['discount_amount' => 25]);
+        $this->assertSame('25.00', $order->fresh()->total);
+    }
+
+    public function test_modifier_une_ligne_apres_application_dune_remise_recalcule_correctement_le_total(): void
+    {
+        $product = $this->makeProduct();
+        $order = PurchaseOrder::create(['reference' => 'BC-TEST-40']);
+
+        $item = PurchaseOrderItem::create([
+            'purchase_order_id' => $order->id,
+            'product_id' => $product->id,
+            'quantity_ordered' => 5,
+            'unit_price' => 10,
+        ]);
+        $order->update(['discount_amount' => 15]);
+        $this->assertSame('35.00', $order->fresh()->total);
+
+        // La ligne change (toujours en brouillon) : le total doit
+        // refléter le nouveau subtotal moins la même remise.
+        $item->update(['quantity_ordered' => 8]);
+
+        $this->assertSame('65.00', $order->fresh()->total);
+    }
+
+    public function test_la_remise_est_figee_apres_confirmation_et_receive_ny_touche_pas(): void
+    {
+        $product = $this->makeProduct();
+        $variant = $this->makeVariant($product, ['stock' => 0]);
+        $order = PurchaseOrder::create(['reference' => 'BC-TEST-41']);
+
+        $item = PurchaseOrderItem::create([
+            'purchase_order_id' => $order->id,
+            'product_id' => $product->id,
+            'product_variant_id' => $variant->id,
+            'quantity_ordered' => 5,
+            'unit_price' => 10,
+        ]);
+        $order->update(['discount_amount' => 10]);
+        $this->assertSame('40.00', $order->fresh()->total);
+
+        $order->markAsOrdered();
+        $order->receive([$item->id => 3]);
+
+        $order->refresh();
+        $this->assertSame('10.00', $order->discount_amount);
+        $this->assertSame('40.00', $order->total);
+    }
+
+    public function test_modifier_la_remise_dune_commande_confirmee_est_rejete(): void
+    {
+        $product = $this->makeProduct();
+        $order = PurchaseOrder::create(['reference' => 'BC-TEST-42']);
+
+        PurchaseOrderItem::create([
+            'purchase_order_id' => $order->id,
+            'product_id' => $product->id,
+            'quantity_ordered' => 5,
+            'unit_price' => 10,
+        ]);
+        $order->markAsOrdered();
+
+        $this->expectException(\Exception::class);
+        $order->update(['discount_amount' => 10]);
+    }
 }
