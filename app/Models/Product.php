@@ -66,6 +66,38 @@ class Product extends Model
                 $product->taille = $product->variants()->value('size') ?? 'N/A';
             }
         });
+
+        /*
+         * Un produit ayant un historique de mouvements de stock, ou
+         * référencé dans un bon de commande fournisseur / une commande
+         * client, ne doit jamais être supprimé : contrairement à
+         * ProductVariant (FK en nullOnDelete), les tables stock_movements,
+         * purchase_order_items et sales_order_items sont en
+         * cascadeOnDelete sur product_id — une suppression détruirait
+         * silencieusement tout cet historique (audit stock, lignes de
+         * commandes déjà (partiellement) réceptionnées/expédiées).
+         * Même logique de protection que PurchaseOrder::deleting() /
+         * SalesOrder::deleting(), appliquée un cran plus bas.
+         */
+        static::deleting(function (self $product): void {
+            if ($product->stockMovements()->exists()) {
+                throw new \Exception(
+                    "Impossible de supprimer ce produit : il possède un historique de mouvements de stock. Désactivez-le plutôt que de le supprimer."
+                );
+            }
+
+            if ($product->purchaseOrderItems()->exists()) {
+                throw new \Exception(
+                    'Impossible de supprimer ce produit : il est référencé dans au moins un bon de commande fournisseur.'
+                );
+            }
+
+            if ($product->salesOrderItems()->exists()) {
+                throw new \Exception(
+                    'Impossible de supprimer ce produit : il est référencé dans au moins une commande client.'
+                );
+            }
+        });
     }
 
     /**
@@ -150,5 +182,22 @@ class Product extends Model
     public function stockMovements(): HasMany
     {
         return $this->hasMany(StockMovement::class);
+    }
+
+    /**
+     * Relation avec les lignes de bons de commande fournisseur
+     * référençant ce produit.
+     */
+    public function purchaseOrderItems(): HasMany
+    {
+        return $this->hasMany(PurchaseOrderItem::class);
+    }
+
+    /**
+     * Relation avec les lignes de commande client référençant ce produit.
+     */
+    public function salesOrderItems(): HasMany
+    {
+        return $this->hasMany(SalesOrderItem::class);
     }
 }

@@ -37,6 +37,36 @@ class ProductVariant extends Model
             }
         });
 
+        /*
+         * Une variante ayant un historique de mouvements de stock ou
+         * apparaissant dans un bon de commande fournisseur / une commande
+         * client ne doit jamais être supprimée : contrairement à
+         * Product.stockMovements (cascadeOnDelete), les FK ici sont en
+         * nullOnDelete, donc une suppression ne détruirait pas ces lignes
+         * mais leur ferait perdre la trace de la variante (taille/couleur)
+         * réellement vendue ou achetée. Même logique de protection que
+         * PurchaseOrderItem::deleting() / SalesOrderItem::deleting().
+         */
+        static::deleting(function (ProductVariant $variant) {
+            if ($variant->stockMovements()->exists()) {
+                throw new \Exception(
+                    "Impossible de supprimer cette variante : elle possède un historique de mouvements de stock. Passez-la plutôt en rupture de stock ou inactive."
+                );
+            }
+
+            if ($variant->purchaseOrderItems()->exists()) {
+                throw new \Exception(
+                    'Impossible de supprimer cette variante : elle est référencée dans au moins un bon de commande fournisseur.'
+                );
+            }
+
+            if ($variant->salesOrderItems()->exists()) {
+                throw new \Exception(
+                    'Impossible de supprimer cette variante : elle est référencée dans au moins une commande client.'
+                );
+            }
+        });
+
         static::deleted(function (ProductVariant $variant) {
             $variant->syncProductStock();
         });
@@ -71,6 +101,30 @@ class ProductVariant extends Model
     {
         return $this->hasMany(
             StockMovement::class,
+            'product_variant_id'
+        );
+    }
+
+    /**
+     * Relation avec les lignes de bons de commande fournisseur
+     * référençant cette variante.
+     */
+    public function purchaseOrderItems(): HasMany
+    {
+        return $this->hasMany(
+            PurchaseOrderItem::class,
+            'product_variant_id'
+        );
+    }
+
+    /**
+     * Relation avec les lignes de commande client
+     * référençant cette variante.
+     */
+    public function salesOrderItems(): HasMany
+    {
+        return $this->hasMany(
+            SalesOrderItem::class,
             'product_variant_id'
         );
     }
