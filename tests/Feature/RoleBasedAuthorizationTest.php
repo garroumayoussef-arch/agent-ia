@@ -6,18 +6,26 @@ use App\Filament\Resources\Brands\BrandResource;
 use App\Filament\Resources\Categories\CategoryResource;
 use App\Filament\Resources\Clubs\ClubResource;
 use App\Filament\Resources\Competitions\CompetitionResource;
+use App\Filament\Resources\Customers\CustomerResource;
 use App\Filament\Resources\Drivers\DriverResource;
 use App\Filament\Resources\Products\Pages\CreateProduct;
 use App\Filament\Resources\Products\Pages\EditProduct;
 use App\Filament\Resources\Products\ProductResource;
+use App\Filament\Resources\SalesOrders\SalesOrderResource;
 use App\Filament\Resources\Suppliers\SupplierResource;
 use App\Filament\Resources\Users\UserResource;
 use App\Filament\Resources\Vehicles\VehicleResource;
+use App\Filament\Resources\VtcRides\VtcRideResource;
+use App\Models\Customer;
 use App\Models\Driver;
+use App\Models\FiscalSetting;
 use App\Models\Product;
+use App\Models\SalesOrder;
 use App\Models\Supplier;
+use App\Models\TaxRate;
 use App\Models\User;
 use App\Models\Vehicle;
+use App\Models\VtcRide;
 use Database\Seeders\RoleSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Livewire\Livewire;
@@ -558,5 +566,197 @@ class RoleBasedAuthorizationTest extends TestCase
         $this->get(\App\Filament\Resources\PurchaseOrders\PurchaseOrderResource::getUrl('create'))->assertSuccessful();
         $this->get(\App\Filament\Resources\PurchaseOrders\PurchaseOrderResource::getUrl('view', ['record' => $order]))->assertSuccessful();
         $this->get(\App\Filament\Resources\PurchaseOrders\PurchaseOrderResource::getUrl('edit', ['record' => $order]))->assertSuccessful();
+    }
+
+    /*
+     * =================================================================
+     * Customer — chantier transversal T5 (BlocksChauffeurReadAccess),
+     * réutilisé tel quel depuis T3/T4. Dépendances avec SalesOrder ET
+     * VtcRide vérifiées explicitement avant implémentation (aucune des
+     * deux ne référence CustomerResource — couplage strictement au
+     * niveau du modèle Customer, jamais de l'autorisation Filament) :
+     * cf. l'analyse T5. Aucune modification de VtcRide/VtcRideResource/
+     * SalesOrderResource n'a été nécessaire.
+     * =================================================================
+     */
+
+    private function makeVtcVehicle(): Vehicle
+    {
+        return Vehicle::create(['plate_number' => 'AA-'.uniqid().'-ZZ']);
+    }
+
+    private function setVtcFiscalSetting(TaxRate $taxRate): FiscalSetting
+    {
+        return FiscalSetting::updateOrCreate(
+            ['activity' => FiscalSetting::ACTIVITY_VTC],
+            ['tax_rate_id' => $taxRate->id],
+        );
+    }
+
+    /**
+     * Chauffeur (Driver + compte utilisateur lié) avec une course VTC
+     * CONFIRMÉE associée à un client donné — le cas exact que la règle
+     * 6 (« un chauffeur doit toujours voir les informations client
+     * nécessaires à ses propres courses ») doit préserver.
+     */
+    private function makeChauffeurWithConfirmedRideForCustomer(Customer $customer): array
+    {
+        $rate10 = TaxRate::firstOrCreate(
+            ['label' => 'VTC T5'],
+            ['type' => TaxRate::TYPE_PERCENTAGE, 'rate' => 10],
+        );
+        $this->setVtcFiscalSetting($rate10);
+
+        $user = User::factory()->create();
+        $driver = Driver::create(['name' => 'Chauffeur T5', 'user_id' => $user->id]);
+
+        $ride = VtcRide::create([
+            'reference' => 'VTC-T5-'.uniqid(),
+            'price_ht' => 100,
+            'driver_id' => $driver->id,
+            'vehicle_id' => $this->makeVtcVehicle()->id,
+            'customer_id' => $customer->id,
+        ]);
+        $ride->markAsConfirmed();
+
+        return [$user, $driver, $ride->fresh()];
+    }
+
+    public function test_ladmin_et_le_manager_conservent_lacces_en_lecture_a_customerresource(): void
+    {
+        $this->actingAs(User::factory()->create()->assignRole('admin'));
+        $this->get(CustomerResource::getUrl('index'))->assertSuccessful();
+
+        $this->actingAs(User::factory()->create()->assignRole('manager'));
+        $this->get(CustomerResource::getUrl('index'))->assertSuccessful();
+    }
+
+    public function test_un_chauffeur_ne_peut_plus_consulter_le_catalogue_clients(): void
+    {
+        $this->actingAs($this->makeChauffeurAccount());
+
+        $this->get(CustomerResource::getUrl('index'))->assertForbidden();
+    }
+
+    public function test_un_utilisateur_sans_role_ni_driver_associe_conserve_son_acces_a_customerresource(): void
+    {
+        $this->actingAs(User::factory()->create()); // ni rôle, ni Driver lié
+
+        $this->get(CustomerResource::getUrl('index'))->assertSuccessful();
+    }
+
+    public function test_un_chauffeur_ne_peut_pas_creer_de_client(): void
+    {
+        $this->actingAs($this->makeChauffeurAccount());
+
+        $this->get(CustomerResource::getUrl('create'))->assertForbidden();
+    }
+
+    /**
+     * Règle obligatoire : un chauffeur voit toujours le nom du client
+     * sur SA PROPRE course confirmée — via VtcRideResource, jamais via
+     * CustomerResource (non modifié, non nécessaire). Preuve que la
+     * restriction de T5 n'a aucun effet sur l'usage VTC légitime.
+     */
+    public function test_un_chauffeur_voit_le_nom_du_client_sur_sa_propre_course_vtc_confirmee(): void
+    {
+        $customer = Customer::create(['name' => 'Client T5 Alpha']);
+        [$user, , $ride] = $this->makeChauffeurWithConfirmedRideForCustomer($customer);
+
+        $this->actingAs($user);
+
+        $this->get(VtcRideResource::getUrl('view', ['record' => $ride]))
+            ->assertSuccessful()
+            ->assertSeeText('Client T5 Alpha');
+    }
+
+    /**
+     * Même règle, sur le reçu récapitulatif (étape 5.9) — la surface la
+     * plus riche en informations client (nom, société, adresse, ville,
+     * email, téléphone), toutes lues directement sur le modèle
+     * Customer, jamais via CustomerResource.
+     */
+    public function test_un_chauffeur_voit_les_informations_client_sur_le_recu_de_sa_propre_course(): void
+    {
+        $customer = Customer::create([
+            'name' => 'Client T5 Beta',
+            'company' => 'Société Beta',
+            'address' => '10 rue du Test',
+        ]);
+        [$user, , $ride] = $this->makeChauffeurWithConfirmedRideForCustomer($customer);
+
+        $this->actingAs($user);
+
+        $this->get(route('vtc-rides.receipt', $ride))
+            ->assertSuccessful()
+            ->assertSeeText('Client T5 Beta')
+            ->assertSeeText('Société Beta')
+            ->assertSeeText('10 rue du Test');
+    }
+
+    /**
+     * Règle obligatoire : un chauffeur ne doit JAMAIS pouvoir utiliser
+     * l'exception ci-dessus pour consulter le catalogue Customer — même
+     * le client de SA PROPRE course reste inaccessible via
+     * CustomerResource (aucune exception "own record" n'existe pour
+     * cette Resource, contrairement à VtcRideResource) ; et le client
+     * d'une AUTRE course/chauffeur reste évidemment hors de portée.
+     */
+    public function test_un_chauffeur_ne_peut_pas_consulter_le_catalogue_customer_meme_pour_son_propre_client(): void
+    {
+        $ownCustomer = Customer::create(['name' => 'Client T5 Gamma (le sien)']);
+        [$user, , ] = $this->makeChauffeurWithConfirmedRideForCustomer($ownCustomer);
+
+        $otherCustomer = Customer::create(['name' => 'Client T5 Delta (autre course)']);
+        $otherDriver = Driver::create(['name' => 'Chauffeur T5 Autre']);
+        $otherRide = VtcRide::create([
+            'reference' => 'VTC-T5-OTHER',
+            'price_ht' => 100,
+            'driver_id' => $otherDriver->id,
+            'vehicle_id' => $this->makeVtcVehicle()->id,
+            'customer_id' => $otherCustomer->id,
+        ]);
+        $otherRide->markAsConfirmed();
+
+        $this->actingAs($user);
+
+        // Ni son propre client...
+        $this->assertFalse(CustomerResource::canView($ownCustomer));
+        // ...ni celui d'un autre chauffeur.
+        $this->assertFalse(CustomerResource::canView($otherCustomer));
+        // Le catalogue reste entièrement fermé, sans aucune exception.
+        $this->get(CustomerResource::getUrl('index'))->assertForbidden();
+    }
+
+    /**
+     * Non-régression explicite demandée : SalesOrderResource (hors
+     * périmètre, non modifié) reste pleinement fonctionnel pour un
+     * manager après T5 — même vérification que pour PurchaseOrder en
+     * T4, cf. l'analyse T5 (Select::relationship() sur customer_id,
+     * jamais via CustomerResource).
+     */
+    public function test_salesorderresource_reste_pleinement_fonctionnel_pour_un_manager_apres_t5(): void
+    {
+        $customer = Customer::create(['name' => 'Client T5 SalesOrder']);
+        $order = SalesOrder::create(['reference' => 'CMD-T5-1', 'customer_id' => $customer->id]);
+
+        $this->actingAs(User::factory()->create()->assignRole('manager'));
+
+        $this->get(SalesOrderResource::getUrl('index'))->assertSuccessful();
+        $this->get(SalesOrderResource::getUrl('create'))->assertSuccessful();
+        $this->get(SalesOrderResource::getUrl('view', ['record' => $order]))->assertSuccessful();
+        $this->get(SalesOrderResource::getUrl('edit', ['record' => $order]))->assertSuccessful();
+    }
+
+    /**
+     * Non-régression explicite demandée : SalesOrderResource reste
+     * accessible en lecture à l'admin (comportement HasRoleBasedAuthorization
+     * inchangé, hors périmètre de ce chantier).
+     */
+    public function test_salesorderresource_reste_accessible_a_ladmin_apres_t5(): void
+    {
+        $this->actingAs(User::factory()->create()->assignRole('admin'));
+
+        $this->get(SalesOrderResource::getUrl('index'))->assertSuccessful();
     }
 }
