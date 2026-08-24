@@ -229,6 +229,104 @@ class VtcRideTest extends TestCase
         $ride->markAsConfirmed();
     }
 
+    /*
+     * =================================================================
+     * Confirmation : chauffeur/véhicule ACTIFS (étape 5.10). Un
+     * brouillon référençant un chauffeur/véhicule inactif reste
+     * consultable/modifiable (rien ici n'empêche VtcRide::create() ou
+     * ->update() de le faire) — seule markAsConfirmed() est concernée.
+     * =================================================================
+     */
+
+    public function test_confirmation_autorisee_si_chauffeur_et_vehicule_actifs(): void
+    {
+        $rate10 = TaxRate::create(['label' => 'VTC', 'type' => TaxRate::TYPE_PERCENTAGE, 'rate' => 10]);
+        $this->setVtcFiscalSetting($rate10);
+
+        $ride = VtcRide::create([
+            'reference' => 'VTC-28',
+            'price_ht' => 100,
+            'driver_id' => $this->makeDriver(['is_active' => true])->id,
+            'vehicle_id' => $this->makeVehicle(['is_active' => true])->id,
+        ]);
+
+        $ride->markAsConfirmed();
+
+        $this->assertSame(VtcRide::STATUS_CONFIRMED, $ride->fresh()->status);
+    }
+
+    public function test_confirmation_refusee_si_chauffeur_inactif(): void
+    {
+        $ride = VtcRide::create([
+            'reference' => 'VTC-29',
+            'price_ht' => 100,
+            'driver_id' => $this->makeDriver(['is_active' => false])->id,
+            'vehicle_id' => $this->makeVehicle()->id,
+        ]);
+
+        try {
+            $ride->markAsConfirmed();
+            $this->fail('markAsConfirmed() aurait dû lever une exception.');
+        } catch (\Exception $e) {
+            $this->assertStringContainsString('chauffeur', $e->getMessage());
+            $this->assertStringContainsString('inactif', $e->getMessage());
+        }
+
+        $this->assertSame(VtcRide::STATUS_DRAFT, $ride->fresh()->status);
+    }
+
+    public function test_confirmation_refusee_si_vehicule_inactif(): void
+    {
+        $ride = VtcRide::create([
+            'reference' => 'VTC-30',
+            'price_ht' => 100,
+            'driver_id' => $this->makeDriver()->id,
+            'vehicle_id' => $this->makeVehicle(['is_active' => false])->id,
+        ]);
+
+        try {
+            $ride->markAsConfirmed();
+            $this->fail('markAsConfirmed() aurait dû lever une exception.');
+        } catch (\Exception $e) {
+            $this->assertStringContainsString('véhicule', $e->getMessage());
+            $this->assertStringContainsString('inactif', $e->getMessage());
+        }
+
+        $this->assertSame(VtcRide::STATUS_DRAFT, $ride->fresh()->status);
+    }
+
+    /**
+     * Un brouillon référençant un chauffeur devenu inactif ENTRE-TEMPS
+     * (après création, pas au moment de l'assignation) reste
+     * consultable/modifiable normalement — seule la confirmation lui
+     * est refusée. Aucun filtrage n'existe côté formulaire pour cette
+     * étape (décision explicite) : VtcRide::update() ne vérifie jamais
+     * is_active en dehors de markAsConfirmed().
+     */
+    public function test_un_brouillon_reste_modifiable_meme_si_son_chauffeur_devient_inactif_apres_coup(): void
+    {
+        $driver = $this->makeDriver(['is_active' => true]);
+        $ride = VtcRide::create([
+            'reference' => 'VTC-31',
+            'price_ht' => 100,
+            'driver_id' => $driver->id,
+            'vehicle_id' => $this->makeVehicle()->id,
+        ]);
+
+        $driver->update(['is_active' => false]);
+
+        // Ne doit lever aucune exception : rien n'empêche de modifier
+        // un brouillon, quel que soit l'état is_active du chauffeur
+        // référencé.
+        $ride->update(['notes' => 'Toujours modifiable en brouillon.']);
+
+        $this->assertSame('Toujours modifiable en brouillon.', $ride->fresh()->notes);
+
+        // Mais confirmer reste refusé tant que le chauffeur est inactif.
+        $this->expectException(\Exception::class);
+        $ride->markAsConfirmed();
+    }
+
     public function test_confirmation_refusee_si_prix_ht_manquant(): void
     {
         $ride = VtcRide::create([

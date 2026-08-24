@@ -203,10 +203,21 @@ class VtcRide extends Model
     /**
      * Confirme une course en brouillon : chauffeur et véhicule
      * deviennent obligatoires à cet instant précis (pas avant — une
-     * course peut être préparée sans eux), et la qualification fiscale
-     * doit être résolue (pas de TVA inconnue sur une course confirmée).
-     * Une fois confirmée, les montants sont figés (cf. static::updating
-     * ci-dessus).
+     * course peut être préparée sans eux), tous deux ACTIFS (étape
+     * 5.10), et la qualification fiscale doit être résolue (pas de TVA
+     * inconnue sur une course confirmée). Une fois confirmée, les
+     * montants sont figés (cf. static::updating ci-dessus).
+     *
+     * is_active n'est vérifié qu'ICI, pas ailleurs : un brouillon
+     * référençant un chauffeur/véhicule devenu inactif entre-temps
+     * reste normalement consultable et modifiable (cf. VtcRideForm,
+     * qui ne filtre volontairement pas ses select sur is_active pour
+     * cette étape — seule la confirmation doit être bloquée). Aucun
+     * effet rétroactif sur une course déjà confirmée : is_active n'est
+     * qu'une porte d'entrée, jamais revérifiée après coup.
+     *
+     * Requêtes fraîches ($this->driver()->first(), pas l'accesseur de
+     * relation $this->driver) — même précaution que resolveTaxRate().
      */
     public function markAsConfirmed(): void
     {
@@ -218,8 +229,16 @@ class VtcRide extends Model
             throw new \Exception('Un chauffeur doit être renseigné avant de confirmer cette course.');
         }
 
+        if (! $this->driver()->first()?->is_active) {
+            throw new \Exception('Le chauffeur assigné à cette course est inactif : impossible de confirmer.');
+        }
+
         if (! $this->vehicle_id) {
             throw new \Exception('Un véhicule doit être renseigné avant de confirmer cette course.');
+        }
+
+        if (! $this->vehicle()->first()?->is_active) {
+            throw new \Exception('Le véhicule assigné à cette course est inactif : impossible de confirmer.');
         }
 
         if ($this->total_ht === null) {
