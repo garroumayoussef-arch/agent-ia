@@ -1129,4 +1129,84 @@ class RoleBasedAuthorizationTest extends TestCase
             ->assertSuccessful()
             ->assertSeeText('VTC T5'); // libellé du TaxRate créé par le helper partagé
     }
+
+    /*
+     * =================================================================
+     * Durcissement final (post T3-T9) — point 1 : edit/canDelete/
+     * canDeleteAny jamais testés explicitement pour un chauffeur sur
+     * aucune des 12 Resources T3-T9 (seuls index/view/create
+     * l'étaient). Product (sans page "view") et PurchaseOrder (avec
+     * page "view") suffisent comme représentatives : les 12 partagent
+     * exactement le même mécanisme d'écriture
+     * (HasRoleBasedAuthorization::currentUserCanMutate()), donc tester
+     * les 10 autres n'apporterait aucune information supplémentaire.
+     * "delete" n'est jamais une page (aucune clé 'delete' dans
+     * getPages() sur les 12) : seul un appel statique à
+     * canDelete()/canDeleteAny() le vérifie, même principe que les
+     * tests canView() déjà écrits pour les Resources sans page "view".
+     * =================================================================
+     */
+
+    public function test_un_chauffeur_ne_peut_pas_modifier_un_produit_par_url_directe(): void
+    {
+        $product = $this->makeProduct();
+
+        $this->actingAs($this->makeChauffeurAccount());
+
+        $this->get(ProductResource::getUrl('edit', ['record' => $product]))->assertForbidden();
+    }
+
+    public function test_candelete_et_candeleteany_refusent_un_chauffeur_pour_product(): void
+    {
+        $product = $this->makeProduct();
+
+        $this->actingAs($this->makeChauffeurAccount());
+
+        $this->assertFalse(ProductResource::canDelete($product));
+        $this->assertFalse(ProductResource::canDeleteAny());
+    }
+
+    public function test_un_chauffeur_ne_peut_pas_modifier_un_bon_de_commande_par_url_directe(): void
+    {
+        $supplier = Supplier::create(['name' => 'Fournisseur Durcissement 1']);
+        $purchaseOrder = PurchaseOrder::create(['reference' => 'BC-HARDEN-1', 'supplier_id' => $supplier->id]);
+
+        $this->actingAs($this->makeChauffeurAccount());
+
+        $this->get(PurchaseOrderResource::getUrl('edit', ['record' => $purchaseOrder]))->assertForbidden();
+    }
+
+    public function test_candelete_et_candeleteany_refusent_un_chauffeur_pour_purchaseorder(): void
+    {
+        $supplier = Supplier::create(['name' => 'Fournisseur Durcissement 2']);
+        $purchaseOrder = PurchaseOrder::create(['reference' => 'BC-HARDEN-2', 'supplier_id' => $supplier->id]);
+
+        $this->actingAs($this->makeChauffeurAccount());
+
+        $this->assertFalse(PurchaseOrderResource::canDelete($purchaseOrder));
+        $this->assertFalse(PurchaseOrderResource::canDeleteAny());
+    }
+
+    /*
+     * =================================================================
+     * Durcissement final — point 2 : combinaison rôle "viewer" + Driver
+     * lié, jamais testée. isAdminOrManager()/currentUserCanMutate()
+     * reposent sur hasAnyRole(['admin','manager']) — une liste
+     * d'autorisation fermée, jamais une vérification d'absence de
+     * rôle — donc "viewer" ne peut structurellement pas se comporter
+     * différemment de "aucun rôle" ici. Test préventif (anti-
+     * régression future), pas correctif : aucun risque actuel identifié.
+     * =================================================================
+     */
+
+    public function test_un_utilisateur_viewer_et_chauffeur_reste_bloque_en_lecture_et_en_ecriture(): void
+    {
+        $user = User::factory()->create()->assignRole('viewer');
+        Driver::create(['name' => 'Chauffeur Viewer', 'user_id' => $user->id]);
+
+        $this->actingAs($user);
+
+        $this->get(ProductResource::getUrl('index'))->assertForbidden();
+        $this->get(ProductResource::getUrl('create'))->assertForbidden();
+    }
 }

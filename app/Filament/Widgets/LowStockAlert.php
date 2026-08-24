@@ -2,6 +2,7 @@
 
 namespace App\Filament\Widgets;
 
+use App\Filament\Concerns\ScopesToOwnDriver;
 use App\Filament\Resources\Products\ProductResource;
 use App\Models\Product;
 use Filament\Actions\EditAction;
@@ -11,11 +12,40 @@ use Filament\Widgets\TableWidget;
 
 class LowStockAlert extends TableWidget
 {
+    use ScopesToOwnDriver;
+
     // Priorité d'affichage la plus haute du dashboard : une alerte de
     // stock bas doit être vue en premier, avant les statistiques.
     protected static ?int $sort = -10;
 
     protected int|string|array $columnSpan = 'full';
+
+    /**
+     * Durcissement final (post T3-T9) : ce widget interroge Product
+     * directement (->query() ci-dessous), sans jamais passer par
+     * ProductResource::canViewAny()/canView() — il contournait donc
+     * intégralement la restriction chauffeur posée en T6
+     * (BlocksChauffeurReadAccess), exposant les mêmes données
+     * (référence, nom, catégorie, stock) par une autre porte.
+     *
+     * BlocksChauffeurReadAccess n'est PAS réutilisable ici par simple
+     * composition : Resource::canView(Model $record) attend un
+     * paramètre, alors que Widget::canView(): bool n'en attend aucun —
+     * les deux signatures sont incompatibles (erreur de déclaration si
+     * on essayait). On réutilise donc directement ScopesToOwnDriver
+     * (isAdminOrManager()/currentDriver(), tous deux sans paramètre),
+     * exactement comme le fait déjà VtcRideOverview::canView() pour un
+     * widget — même mécanisme existant, aucune nouvelle architecture.
+     *
+     * Règle : masqué uniquement pour un chauffeur (Driver.user_id, pas
+     * admin/manager) ; tout autre profil (y compris un utilisateur
+     * sans rôle ni Driver) garde le comportement actuel, inchangé.
+     * StockOverview n'est pas concerné par ce changement.
+     */
+    public static function canView(): bool
+    {
+        return static::isAdminOrManager() || static::currentDriver() === null;
+    }
 
     public function table(Table $table): Table
     {

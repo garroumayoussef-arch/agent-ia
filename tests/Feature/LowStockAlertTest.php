@@ -5,9 +5,11 @@ namespace Tests\Feature;
 use App\Filament\Resources\ProductVariants\ProductVariantResource;
 use App\Filament\Resources\Products\ProductResource;
 use App\Filament\Widgets\LowStockAlert;
+use App\Models\Driver;
 use App\Models\Product;
 use App\Models\ProductVariant;
 use App\Models\User;
+use Database\Seeders\RoleSeeder;
 use Filament\Tables\Table;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
@@ -15,6 +17,16 @@ use Tests\TestCase;
 class LowStockAlertTest extends TestCase
 {
     use RefreshDatabase;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        // Requis pour assignRole('admin')/('manager') dans les tests
+        // de canView() ajoutés lors du durcissement final (post T3-T9) —
+        // les tests préexistants de ce fichier n'utilisaient aucun rôle.
+        $this->seed(RoleSeeder::class);
+    }
 
     private function makeProduct(array $attributes = []): Product
     {
@@ -116,5 +128,35 @@ class LowStockAlertTest extends TestCase
         $this->actingAs(User::factory()->create());
 
         $this->get('/admin')->assertSuccessful();
+    }
+
+    /*
+     * =================================================================
+     * Durcissement final (post T3-T9) : canView() masque le widget
+     * pour un chauffeur — StockOverview n'est volontairement pas
+     * concerné par ce changement (décision séparée).
+     * =================================================================
+     */
+
+    public function test_le_widget_est_masque_pour_un_chauffeur(): void
+    {
+        $user = User::factory()->create(); // aucun rôle Spatie
+        Driver::create(['name' => 'Chauffeur LSA', 'user_id' => $user->id]);
+
+        $this->actingAs($user);
+
+        $this->assertFalse(LowStockAlert::canView());
+    }
+
+    public function test_le_widget_reste_visible_pour_admin_manager_et_utilisateur_sans_role_ni_driver(): void
+    {
+        $this->actingAs(User::factory()->create()->assignRole('admin'));
+        $this->assertTrue(LowStockAlert::canView());
+
+        $this->actingAs(User::factory()->create()->assignRole('manager'));
+        $this->assertTrue(LowStockAlert::canView());
+
+        $this->actingAs(User::factory()->create()); // ni rôle, ni Driver lié
+        $this->assertTrue(LowStockAlert::canView());
     }
 }
