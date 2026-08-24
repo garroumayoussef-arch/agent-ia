@@ -14,6 +14,7 @@ use App\Filament\Resources\Products\Pages\EditProduct;
 use App\Filament\Resources\Products\ProductResource;
 use App\Filament\Resources\PurchaseOrders\PurchaseOrderResource;
 use App\Filament\Resources\SalesOrders\SalesOrderResource;
+use App\Filament\Resources\StockMovements\StockMovementResource;
 use App\Filament\Resources\Suppliers\SupplierResource;
 use App\Filament\Resources\Users\UserResource;
 use App\Filament\Resources\Vehicles\VehicleResource;
@@ -25,6 +26,7 @@ use App\Models\Product;
 use App\Models\ProductVariant;
 use App\Models\PurchaseOrder;
 use App\Models\SalesOrder;
+use App\Models\StockMovement;
 use App\Models\Supplier;
 use App\Models\TaxRate;
 use App\Models\User;
@@ -971,5 +973,78 @@ class RoleBasedAuthorizationTest extends TestCase
 
         $this->get(PurchaseOrderResource::getUrl('create'))->assertForbidden();
         $this->get(SalesOrderResource::getUrl('create'))->assertForbidden();
+    }
+
+    /*
+     * =================================================================
+     * StockMovement — chantier transversal T8
+     * (BlocksChauffeurReadAccess), réutilisé tel quel depuis T3-T7.
+     * Dernière Resource du sous-graphe Product/PurchaseOrder/
+     * SalesOrder/StockMovement (les 3 autres déjà restreintes en T6/
+     * T7). TaxRate (T9) reste explicitement hors périmètre : aucune
+     * relation entre StockMovement et TaxRate n'existe (vérifié dans
+     * l'analyse T8 — StockMovement ne porte aucune donnée fiscale).
+     * StockOverview/LowStockAlert restent hors périmètre (décision
+     * T6). Aucune dépendance avec le module VTC (VtcRide ne référence
+     * jamais StockMovement, cf. étape 5.1) — non re-testé ici, vérifié
+     * par la suite complète VTC après ce commit.
+     *
+     * StockMovementResource a une page "view" dédiée
+     * (ViewStockMovement) — canView() est donc atteignable par une
+     * vraie route HTTP, comme en T7.
+     * =================================================================
+     */
+
+    public function test_ladmin_et_le_manager_conservent_lacces_en_lecture_a_stockmovement(): void
+    {
+        $product = $this->makeProduct();
+        $stockMovement = StockMovement::create([
+            'product_id' => $product->id,
+            'type' => 'purchase',
+            'quantity' => 5,
+        ]);
+
+        $this->actingAs(User::factory()->create()->assignRole('admin'));
+        $this->get(StockMovementResource::getUrl('index'))->assertSuccessful();
+        $this->get(StockMovementResource::getUrl('view', ['record' => $stockMovement]))->assertSuccessful();
+
+        $this->actingAs(User::factory()->create()->assignRole('manager'));
+        $this->get(StockMovementResource::getUrl('index'))->assertSuccessful();
+        $this->get(StockMovementResource::getUrl('view', ['record' => $stockMovement]))->assertSuccessful();
+    }
+
+    public function test_un_chauffeur_ne_peut_plus_consulter_les_mouvements_de_stock(): void
+    {
+        $this->actingAs($this->makeChauffeurAccount());
+
+        $this->get(StockMovementResource::getUrl('index'))->assertForbidden();
+    }
+
+    public function test_un_chauffeur_ne_peut_pas_consulter_la_fiche_dun_mouvement_de_stock_par_url_directe(): void
+    {
+        $product = $this->makeProduct();
+        $stockMovement = StockMovement::create([
+            'product_id' => $product->id,
+            'type' => 'purchase',
+            'quantity' => 5,
+        ]);
+
+        $this->actingAs($this->makeChauffeurAccount());
+
+        $this->get(StockMovementResource::getUrl('view', ['record' => $stockMovement]))->assertForbidden();
+    }
+
+    public function test_un_utilisateur_sans_role_ni_driver_associe_conserve_son_acces_a_stockmovement(): void
+    {
+        $this->actingAs(User::factory()->create()); // ni rôle, ni Driver lié
+
+        $this->get(StockMovementResource::getUrl('index'))->assertSuccessful();
+    }
+
+    public function test_un_chauffeur_ne_peut_pas_creer_de_mouvement_de_stock(): void
+    {
+        $this->actingAs($this->makeChauffeurAccount());
+
+        $this->get(StockMovementResource::getUrl('create'))->assertForbidden();
     }
 }
