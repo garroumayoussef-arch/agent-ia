@@ -98,6 +98,29 @@ class Product extends Model
                 );
             }
         });
+
+        /*
+         * Miroir "fournisseur" stale après suppression d'un Supplier :
+         * supplier_id est en nullOnDelete (cf. migration
+         * update_products_table), donc lors de la suppression d'un
+         * Supplier, la contrainte FK met directement supplier_id à NULL
+         * en base pour tous ses produits — sans jamais passer par
+         * Eloquent. Le hook Product::saving() ci-dessus (seul point qui
+         * recalcule le champ texte `fournisseur`) ne se déclenche donc
+         * jamais pour ces lignes, qui gardent l'ancien nom du fournisseur
+         * indéfiniment.
+         *
+         * On se branche ici sur l'événement `deleting` du Supplier —
+         * AVANT que la contrainte FK ne mette supplier_id à NULL — afin
+         * de pouvoir encore retrouver les produits concernés par
+         * supplier_id, et remettre leur miroir à 'N/A' en une seule
+         * requête. Rien n'est modifié dans Supplier lui-même : ce
+         * listener vit entièrement du côté du modèle qui possède le
+         * miroir à maintenir.
+         */
+        Supplier::deleting(function (Supplier $supplier): void {
+            static::where('supplier_id', $supplier->id)->update(['fournisseur' => 'N/A']);
+        });
     }
 
     /**

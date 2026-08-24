@@ -147,6 +147,42 @@ class StockMovementTest extends TestCase
         $this->assertSame('N/A', $product->marque);
     }
 
+    public function test_fournisseur_repasse_a_na_quand_le_fournisseur_est_supprime(): void
+    {
+        $supplier = Supplier::create(['name' => 'AliExpress']);
+
+        $product = $this->makeProduct(['supplier_id' => $supplier->id]);
+        $this->assertSame('AliExpress', $product->fournisseur);
+
+        // Suppression du Supplier lui-même (pas une mise à jour du
+        // produit) : supplier_id passe à NULL via la contrainte FK
+        // nullOnDelete, sans jamais passer par Product::saving().
+        $supplier->delete();
+
+        $product->refresh();
+
+        $this->assertNull($product->supplier_id);
+        $this->assertSame('N/A', $product->fournisseur);
+    }
+
+    public function test_supprimer_un_fournisseur_ne_touche_pas_le_miroir_des_produits_dun_autre_fournisseur(): void
+    {
+        $supplierA = Supplier::create(['name' => 'AliExpress']);
+        $supplierB = Supplier::create(['name' => 'CJ Dropshipping']);
+
+        $productA = $this->makeProduct(['supplier_id' => $supplierA->id]);
+        $productB = $this->makeProduct(['supplier_id' => $supplierB->id]);
+
+        $supplierA->delete();
+
+        $productA->refresh();
+        $productB->refresh();
+
+        $this->assertSame('N/A', $productA->fournisseur);
+        $this->assertSame('CJ Dropshipping', $productB->fournisseur);
+        $this->assertSame($supplierB->id, $productB->supplier_id);
+    }
+
     public function test_un_achat_sur_variante_met_a_jour_le_stock_de_la_variante_et_du_produit(): void
     {
         $product = $this->makeProduct();
