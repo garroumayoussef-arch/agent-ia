@@ -10,10 +10,12 @@ use App\Filament\Resources\Drivers\DriverResource;
 use App\Filament\Resources\Products\Pages\CreateProduct;
 use App\Filament\Resources\Products\Pages\EditProduct;
 use App\Filament\Resources\Products\ProductResource;
+use App\Filament\Resources\Suppliers\SupplierResource;
 use App\Filament\Resources\Users\UserResource;
 use App\Filament\Resources\Vehicles\VehicleResource;
 use App\Models\Driver;
 use App\Models\Product;
+use App\Models\Supplier;
 use App\Models\User;
 use App\Models\Vehicle;
 use Database\Seeders\RoleSeeder;
@@ -474,5 +476,87 @@ class RoleBasedAuthorizationTest extends TestCase
         $this->get(CategoryResource::getUrl('create'))->assertForbidden();
         $this->get(ClubResource::getUrl('create'))->assertForbidden();
         $this->get(CompetitionResource::getUrl('create'))->assertForbidden();
+    }
+
+    /*
+     * =================================================================
+     * Supplier — chantier transversal T4 (BlocksChauffeurReadAccess),
+     * réutilisé tel quel depuis T3, aucune nouvelle logique
+     * d'autorisation. Même structure que Brand/Category/Club
+     * (SupplierResource n'a lui non plus aucune page "view").
+     * =================================================================
+     */
+
+    public function test_ladmin_et_le_manager_conservent_lacces_en_lecture_a_supplierresource(): void
+    {
+        $this->actingAs(User::factory()->create()->assignRole('admin'));
+        $this->get(SupplierResource::getUrl('index'))->assertSuccessful();
+
+        $this->actingAs(User::factory()->create()->assignRole('manager'));
+        $this->get(SupplierResource::getUrl('index'))->assertSuccessful();
+    }
+
+    public function test_un_chauffeur_ne_peut_plus_consulter_les_fournisseurs(): void
+    {
+        $this->actingAs($this->makeChauffeurAccount());
+
+        $this->get(SupplierResource::getUrl('index'))->assertForbidden();
+    }
+
+    /**
+     * SupplierResource n'a aucune page "view" (cf. getPages()) :
+     * canView() n'est atteignable par aucune route HTTP — seul un
+     * appel statique direct le vérifie, même principe que pour
+     * Brand/Category/Club en T3.
+     */
+    public function test_canview_refuse_un_chauffeur_pour_supplierresource(): void
+    {
+        $supplier = Supplier::create(['name' => 'Fournisseur T4']);
+
+        $this->actingAs($this->makeChauffeurAccount());
+
+        $this->assertFalse(SupplierResource::canView($supplier));
+    }
+
+    public function test_un_utilisateur_sans_role_ni_driver_associe_conserve_son_acces_a_supplierresource(): void
+    {
+        $this->actingAs(User::factory()->create()); // ni rôle, ni Driver lié
+
+        $this->get(SupplierResource::getUrl('index'))->assertSuccessful();
+    }
+
+    /**
+     * Écriture déjà restreinte à admin/manager (HasRoleBasedAuthorization,
+     * inchangé par ce chantier) : photographié ici pour Supplier
+     * spécifiquement, avec le même code HTTP (403) que la lecture,
+     * cohérent avec le reste de HasRoleBasedAuthorization.
+     */
+    public function test_un_chauffeur_ne_peut_pas_creer_de_fournisseur(): void
+    {
+        $this->actingAs($this->makeChauffeurAccount());
+
+        $this->get(SupplierResource::getUrl('create'))->assertForbidden();
+    }
+
+    /**
+     * PurchaseOrder dépend de Supplier (supplier_id) : ce test vérifie
+     * explicitement que restreindre SupplierResource pour un chauffeur
+     * n'affecte pas l'accès (déjà admin/manager uniquement, inchangé)
+     * ni le fonctionnement de PurchaseOrderResource pour un manager —
+     * la sélection du fournisseur dans le formulaire PurchaseOrder
+     * interroge le modèle Supplier directement (Select::relationship()),
+     * jamais via SupplierResource::getEloquentQuery()/autorisation.
+     */
+    public function test_purchaseorderresource_reste_pleinement_fonctionnel_pour_un_manager_apres_t4(): void
+    {
+        $supplier = Supplier::create(['name' => 'Fournisseur T4 bis']);
+        $order = \App\Models\PurchaseOrder::create(['reference' => 'BC-T4-1', 'supplier_id' => $supplier->id]);
+
+        $this->actingAs(User::factory()->create()->assignRole('manager'));
+
+        $this->get(\App\Filament\Resources\PurchaseOrders\PurchaseOrderResource::getUrl('index'))->assertSuccessful();
+        $this->get(\App\Filament\Resources\PurchaseOrders\PurchaseOrderResource::getUrl('create'))->assertSuccessful();
+        $this->get(\App\Filament\Resources\PurchaseOrders\PurchaseOrderResource::getUrl('view', ['record' => $order]))->assertSuccessful();
+        $this->get(\App\Filament\Resources\PurchaseOrders\PurchaseOrderResource::getUrl('edit', ['record' => $order]))->assertSuccessful();
     }
 }
