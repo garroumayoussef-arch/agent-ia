@@ -108,6 +108,23 @@ class SalesOrderItem extends Model
                 );
             }
         });
+
+        /*
+         * total (au niveau de la commande) = somme des subtotal de ses
+         * lignes : recalculé après chaque création/modification
+         * (`saved`, qui couvre les deux) ou suppression (`deleted`)
+         * d'une ligne. SalesOrder::recalculateTotal() applique
+         * elle-même la garde "brouillon uniquement", donc cet appel
+         * reste un no-op inoffensif pendant ship() (qui ne modifie que
+         * quantity_shipped).
+         */
+        static::saved(function (SalesOrderItem $item): void {
+            $item->salesOrder()->first()?->recalculateTotal();
+        });
+
+        static::deleted(function (SalesOrderItem $item): void {
+            $item->salesOrder()->first()?->recalculateTotal();
+        });
     }
 
     /*

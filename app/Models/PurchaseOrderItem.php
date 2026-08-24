@@ -108,6 +108,23 @@ class PurchaseOrderItem extends Model
                 );
             }
         });
+
+        /*
+         * total (au niveau du bon de commande) = somme des subtotal de
+         * ses lignes : recalculé après chaque création/modification
+         * (`saved`, qui couvre les deux) ou suppression (`deleted`)
+         * d'une ligne. PurchaseOrder::recalculateTotal() applique
+         * elle-même la garde "brouillon uniquement", donc cet appel
+         * reste un no-op inoffensif pendant receive() (qui ne modifie
+         * que quantity_received).
+         */
+        static::saved(function (PurchaseOrderItem $item): void {
+            $item->purchaseOrder()->first()?->recalculateTotal();
+        });
+
+        static::deleted(function (PurchaseOrderItem $item): void {
+            $item->purchaseOrder()->first()?->recalculateTotal();
+        });
     }
 
     /*

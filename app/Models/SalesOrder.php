@@ -17,6 +17,7 @@ class SalesOrder extends Model
 
     protected $casts = [
         'order_date' => 'date',
+        'total' => 'decimal:2',
     ];
 
     /*
@@ -196,6 +197,38 @@ class SalesOrder extends Model
                 default => $this->status,
             },
         ]);
+    }
+
+    /**
+     * Recalcule total à partir de la somme des subtotal de ses lignes.
+     *
+     * Appelée par SalesOrderItem à chaque ajout/modification/
+     * suppression de ligne. Ne fait rien tant que la commande n'est
+     * plus en brouillon : les montants sont figés à la confirmation
+     * exactement comme le sont déjà les lignes elles-mêmes (cf.
+     * SalesOrderItem::updating) — ship() ne modifie que
+     * quantity_shipped, jamais les lignes financières, mais cette
+     * garde reste la barrière de dernier recours si cette méthode
+     * venait à être appelée depuis un autre point d'entrée.
+     *
+     * Si au moins une ligne n'a pas de subtotal connu (unit_price non
+     * renseigné), total reste NULL plutôt que de sommer partiellement
+     * et donner une fausse impression de complétude — même règle que
+     * celle déjà appliquée à subtotal au niveau de la ligne.
+     */
+    public function recalculateTotal(): void
+    {
+        if ($this->status !== self::STATUS_DRAFT) {
+            return;
+        }
+
+        $subtotals = $this->items()->get(['subtotal'])->pluck('subtotal');
+
+        $total = $subtotals->contains(null)
+            ? null
+            : round((float) $subtotals->sum(), 2);
+
+        $this->update(['total' => $total]);
     }
 
     /*

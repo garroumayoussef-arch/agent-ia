@@ -589,4 +589,138 @@ class PurchaseOrderTest extends TestCase
         $this->assertSame(1, PurchaseOrderItem::count());
         $this->assertSame('60.00', $itemB->fresh()->subtotal);
     }
+
+    /*
+     * =================================================================
+     * Total de la commande (total)
+     * =================================================================
+     */
+
+    public function test_le_total_de_la_commande_est_calcule_a_lajout_dune_ligne(): void
+    {
+        $product = $this->makeProduct();
+        $order = PurchaseOrder::create(['reference' => 'BC-TEST-28']);
+
+        PurchaseOrderItem::create([
+            'purchase_order_id' => $order->id,
+            'product_id' => $product->id,
+            'quantity_ordered' => 5,
+            'unit_price' => 10,
+        ]);
+
+        $this->assertSame('50.00', $order->fresh()->total);
+    }
+
+    public function test_le_total_de_la_commande_est_recalcule_a_lajout_dune_deuxieme_ligne(): void
+    {
+        $product = $this->makeProduct();
+        $order = PurchaseOrder::create(['reference' => 'BC-TEST-29']);
+
+        PurchaseOrderItem::create([
+            'purchase_order_id' => $order->id,
+            'product_id' => $product->id,
+            'quantity_ordered' => 5,
+            'unit_price' => 10,
+        ]);
+        $this->assertSame('50.00', $order->fresh()->total);
+
+        PurchaseOrderItem::create([
+            'purchase_order_id' => $order->id,
+            'product_id' => $product->id,
+            'quantity_ordered' => 2,
+            'unit_price' => 25,
+        ]);
+
+        $this->assertSame('100.00', $order->fresh()->total);
+    }
+
+    public function test_le_total_de_la_commande_est_recalcule_quand_une_ligne_est_modifiee_en_brouillon(): void
+    {
+        $product = $this->makeProduct();
+        $order = PurchaseOrder::create(['reference' => 'BC-TEST-30']);
+
+        $item = PurchaseOrderItem::create([
+            'purchase_order_id' => $order->id,
+            'product_id' => $product->id,
+            'quantity_ordered' => 5,
+            'unit_price' => 10,
+        ]);
+        $this->assertSame('50.00', $order->fresh()->total);
+
+        $item->update(['quantity_ordered' => 8]);
+
+        $this->assertSame('80.00', $order->fresh()->total);
+    }
+
+    public function test_le_total_de_la_commande_est_recalcule_a_la_suppression_dune_ligne(): void
+    {
+        $product = $this->makeProduct();
+        $order = PurchaseOrder::create(['reference' => 'BC-TEST-31']);
+
+        $itemA = PurchaseOrderItem::create([
+            'purchase_order_id' => $order->id,
+            'product_id' => $product->id,
+            'quantity_ordered' => 5,
+            'unit_price' => 10,
+        ]);
+        PurchaseOrderItem::create([
+            'purchase_order_id' => $order->id,
+            'product_id' => $product->id,
+            'quantity_ordered' => 2,
+            'unit_price' => 25,
+        ]);
+        $this->assertSame('100.00', $order->fresh()->total);
+
+        $itemA->delete();
+
+        $this->assertSame('50.00', $order->fresh()->total);
+    }
+
+    public function test_le_total_est_nul_si_une_ligne_na_pas_de_prix_unitaire(): void
+    {
+        $product = $this->makeProduct();
+        $order = PurchaseOrder::create(['reference' => 'BC-TEST-32']);
+
+        PurchaseOrderItem::create([
+            'purchase_order_id' => $order->id,
+            'product_id' => $product->id,
+            'quantity_ordered' => 5,
+            'unit_price' => 10,
+        ]);
+        $this->assertSame('50.00', $order->fresh()->total);
+
+        // Deuxième ligne sans prix unitaire : le total ne peut plus
+        // être considéré comme complet, il repasse à NULL plutôt que
+        // d'afficher seulement la somme partielle des lignes connues.
+        PurchaseOrderItem::create([
+            'purchase_order_id' => $order->id,
+            'product_id' => $product->id,
+            'quantity_ordered' => 3,
+        ]);
+
+        $this->assertNull($order->fresh()->total);
+    }
+
+    public function test_le_total_est_fige_apres_confirmation_et_receive_ny_touche_pas(): void
+    {
+        $product = $this->makeProduct();
+        $variant = $this->makeVariant($product, ['stock' => 0]);
+        $order = PurchaseOrder::create(['reference' => 'BC-TEST-33']);
+
+        $item = PurchaseOrderItem::create([
+            'purchase_order_id' => $order->id,
+            'product_id' => $product->id,
+            'product_variant_id' => $variant->id,
+            'quantity_ordered' => 5,
+            'unit_price' => 10,
+        ]);
+        $this->assertSame('50.00', $order->fresh()->total);
+
+        $order->markAsOrdered();
+        $order->receive([$item->id => 3]);
+
+        // receive() ne modifie que quantity_received sur la ligne : le
+        // total figé à la confirmation ne doit pas bouger.
+        $this->assertSame('50.00', $order->fresh()->total);
+    }
 }

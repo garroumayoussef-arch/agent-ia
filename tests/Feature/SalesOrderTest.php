@@ -490,4 +490,138 @@ class SalesOrderTest extends TestCase
         $this->assertSame(1, SalesOrderItem::count());
         $this->assertSame('60.00', $itemB->fresh()->subtotal);
     }
+
+    /*
+     * =================================================================
+     * Total de la commande (total)
+     * =================================================================
+     */
+
+    public function test_le_total_de_la_commande_est_calcule_a_lajout_dune_ligne(): void
+    {
+        $product = $this->makeProduct();
+        $order = SalesOrder::create(['reference' => 'CMD-TEST-20']);
+
+        SalesOrderItem::create([
+            'sales_order_id' => $order->id,
+            'product_id' => $product->id,
+            'quantity_ordered' => 5,
+            'unit_price' => 10,
+        ]);
+
+        $this->assertSame('50.00', $order->fresh()->total);
+    }
+
+    public function test_le_total_de_la_commande_est_recalcule_a_lajout_dune_deuxieme_ligne(): void
+    {
+        $product = $this->makeProduct();
+        $order = SalesOrder::create(['reference' => 'CMD-TEST-21']);
+
+        SalesOrderItem::create([
+            'sales_order_id' => $order->id,
+            'product_id' => $product->id,
+            'quantity_ordered' => 5,
+            'unit_price' => 10,
+        ]);
+        $this->assertSame('50.00', $order->fresh()->total);
+
+        SalesOrderItem::create([
+            'sales_order_id' => $order->id,
+            'product_id' => $product->id,
+            'quantity_ordered' => 2,
+            'unit_price' => 25,
+        ]);
+
+        $this->assertSame('100.00', $order->fresh()->total);
+    }
+
+    public function test_le_total_de_la_commande_est_recalcule_quand_une_ligne_est_modifiee_en_brouillon(): void
+    {
+        $product = $this->makeProduct();
+        $order = SalesOrder::create(['reference' => 'CMD-TEST-22']);
+
+        $item = SalesOrderItem::create([
+            'sales_order_id' => $order->id,
+            'product_id' => $product->id,
+            'quantity_ordered' => 5,
+            'unit_price' => 10,
+        ]);
+        $this->assertSame('50.00', $order->fresh()->total);
+
+        $item->update(['quantity_ordered' => 8]);
+
+        $this->assertSame('80.00', $order->fresh()->total);
+    }
+
+    public function test_le_total_de_la_commande_est_recalcule_a_la_suppression_dune_ligne(): void
+    {
+        $product = $this->makeProduct();
+        $order = SalesOrder::create(['reference' => 'CMD-TEST-23']);
+
+        $itemA = SalesOrderItem::create([
+            'sales_order_id' => $order->id,
+            'product_id' => $product->id,
+            'quantity_ordered' => 5,
+            'unit_price' => 10,
+        ]);
+        SalesOrderItem::create([
+            'sales_order_id' => $order->id,
+            'product_id' => $product->id,
+            'quantity_ordered' => 2,
+            'unit_price' => 25,
+        ]);
+        $this->assertSame('100.00', $order->fresh()->total);
+
+        $itemA->delete();
+
+        $this->assertSame('50.00', $order->fresh()->total);
+    }
+
+    public function test_le_total_est_nul_si_une_ligne_na_pas_de_prix_unitaire(): void
+    {
+        $product = $this->makeProduct();
+        $order = SalesOrder::create(['reference' => 'CMD-TEST-24']);
+
+        SalesOrderItem::create([
+            'sales_order_id' => $order->id,
+            'product_id' => $product->id,
+            'quantity_ordered' => 5,
+            'unit_price' => 10,
+        ]);
+        $this->assertSame('50.00', $order->fresh()->total);
+
+        // Deuxième ligne sans prix unitaire : le total ne peut plus
+        // être considéré comme complet, il repasse à NULL plutôt que
+        // d'afficher seulement la somme partielle des lignes connues.
+        SalesOrderItem::create([
+            'sales_order_id' => $order->id,
+            'product_id' => $product->id,
+            'quantity_ordered' => 3,
+        ]);
+
+        $this->assertNull($order->fresh()->total);
+    }
+
+    public function test_le_total_est_fige_apres_confirmation_et_ship_ny_touche_pas(): void
+    {
+        $product = $this->makeProduct();
+        $variant = $this->makeVariant($product, ['stock' => 10]);
+        $order = SalesOrder::create(['reference' => 'CMD-TEST-25']);
+
+        $item = SalesOrderItem::create([
+            'sales_order_id' => $order->id,
+            'product_id' => $product->id,
+            'product_variant_id' => $variant->id,
+            'quantity_ordered' => 5,
+            'unit_price' => 10,
+        ]);
+        $this->assertSame('50.00', $order->fresh()->total);
+
+        $order->markAsConfirmed();
+        $order->ship([$item->id => 3]);
+
+        // ship() ne modifie que quantity_shipped sur la ligne : le
+        // total figé à la confirmation ne doit pas bouger.
+        $this->assertSame('50.00', $order->fresh()->total);
+    }
 }
