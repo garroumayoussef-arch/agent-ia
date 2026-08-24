@@ -76,16 +76,21 @@ class VtcRideOverviewTest extends TestCase
     }
 
     /**
-     * Recule confirmed_at au mois dernier sans passer par Eloquent (la
-     * garde updating() rejette toute modification de confirmed_at une
-     * fois fixée, cf. étape 5.6a) — update() SQL brut, exactement pour
-     * simuler une course confirmée un mois antérieur.
+     * Force confirmed_at à une date arbitraire sans passer par Eloquent
+     * (la garde updating() rejette toute modification de confirmed_at
+     * une fois fixée, cf. étape 5.6a) — update() SQL brut, exactement
+     * pour simuler une course confirmée à une période antérieure.
      */
-    private function backdateConfirmedAtToLastMonth(VtcRide $ride): void
+    private function backdateConfirmedAtTo(VtcRide $ride, \Carbon\Carbon $date): void
     {
         DB::table('vtc_rides')
             ->where('id', $ride->id)
-            ->update(['confirmed_at' => now()->subMonthNoOverflow()->startOfMonth()->addDay()]);
+            ->update(['confirmed_at' => $date]);
+    }
+
+    private function backdateConfirmedAtToLastMonth(VtcRide $ride): void
+    {
+        $this->backdateConfirmedAtTo($ride, now()->subMonthNoOverflow()->startOfMonth()->addDay());
     }
 
     /*
@@ -245,5 +250,95 @@ class VtcRideOverviewTest extends TestCase
             ->assertSee('165,00 €')
             // Ce mois : seulement la course du mois en cours -> 55,00 €.
             ->assertSee('55,00 €');
+    }
+
+    /*
+     * =================================================================
+     * Étape 5.12b : tuiles fixes "mois dernier" / "cette année"
+     * =================================================================
+     */
+
+    public function test_la_tuile_mois_dernier_ninclut_que_le_mois_calendaire_precedent(): void
+    {
+        $rate10 = TaxRate::create(['label' => 'VTC', 'type' => TaxRate::TYPE_PERCENTAGE, 'rate' => 10]);
+        $this->setVtcFiscalSetting($rate10);
+
+        $driver = $this->makeDriver();
+
+        // Mois dernier (M-1) : 50 HT -> 55,00 € TTC. Seule course
+        // attendue dans la tuile "mois dernier".
+        $rideLastMonth = $this->makeConfirmedRide($driver, 50, 'VTC-OV-9');
+        $this->backdateConfirmedAtTo($rideLastMonth, now()->subMonthNoOverflow()->startOfMonth()->addDay());
+
+        // Il y a deux mois (M-2) : 30 HT -> 33,00 € TTC. Ne doit PAS
+        // apparaître dans "mois dernier".
+        $rideTwoMonthsAgo = $this->makeConfirmedRide($driver, 30, 'VTC-OV-10');
+        $this->backdateConfirmedAtTo($rideTwoMonthsAgo, now()->subMonthsNoOverflow(2)->startOfMonth()->addDay());
+
+        $this->actingAs(User::factory()->create()->assignRole('manager'));
+
+        Livewire::test(VtcRideOverview::class)
+            ->assertSee('55,00 €')
+            ->assertDontSee('33,00 €');
+    }
+
+    public function test_la_tuile_cette_annee_exclut_lannee_precedente_mais_inclut_les_mois_recents(): void
+    {
+        $rate10 = TaxRate::create(['label' => 'VTC', 'type' => TaxRate::TYPE_PERCENTAGE, 'rate' => 10]);
+        $this->setVtcFiscalSetting($rate10);
+
+        $driver = $this->makeDriver();
+
+        // Ce mois : 100 HT -> 110,00 € TTC.
+        $this->makeConfirmedRide($driver, 100, 'VTC-OV-11');
+
+        // Il y a deux mois (M-2), toujours cette année : 30 HT ->
+        // 33,00 € TTC.
+        $rideTwoMonthsAgo = $this->makeConfirmedRide($driver, 30, 'VTC-OV-12');
+        $this->backdateConfirmedAtTo($rideTwoMonthsAgo, now()->subMonthsNoOverflow(2)->startOfMonth()->addDay());
+
+        // Année précédente : 20 HT -> 22,00 € TTC. Ne doit PAS
+        // apparaître dans "cette année" (mais doit rester dans le
+        // total).
+        $rideLastYear = $this->makeConfirmedRide($driver, 20, 'VTC-OV-13');
+        $this->backdateConfirmedAtTo($rideLastYear, now()->subYearNoOverflow()->startOfYear()->addDay());
+
+        $this->actingAs(User::factory()->create()->assignRole('manager'));
+
+        Livewire::test(VtcRideOverview::class)
+            // Cette année : 110,00 + 33,00 = 143,00 €.
+            ->assertSee('143,00 €')
+            // Total : 110,00 + 33,00 + 22,00 = 165,00 €.
+            ->assertSee('165,00 €')
+            // Le montant isolé de l'année précédente n'apparaît nulle
+            // part dans la tuile "cette année".
+            ->assertDontSee('22,00 €');
+    }
+
+    /**
+     * Invariant explicitement demandé (étape 5.12b) : une course
+     * confirmée reste dans l'historique statistique même si
+     * performed_at est NULL ou si son chauffeur/véhicule devient
+     * inactif après coup — déjà garanti par construction
+     * (scopedConfirmedRidesQuery() ne filtre jamais sur ces deux
+     * champs), vérifié ici explicitement plutôt que supposé.
+     */
+    public function test_une_course_confirmee_reste_comptee_meme_sans_performed_at_et_avec_chauffeur_devenu_inactif(): void
+    {
+        $rate10 = TaxRate::create(['label' => 'VTC', 'type' => TaxRate::TYPE_PERCENTAGE, 'rate' => 10]);
+        $this->setVtcFiscalSetting($rate10);
+
+        $driver = $this->makeDriver(['is_active' => true]);
+        $ride = $this->makeConfirmedRide($driver, 100, 'VTC-OV-14'); // 110,00 € TTC
+
+        $this->assertNull($ride->performed_at);
+
+        $driver->update(['is_active' => false]);
+
+        $this->actingAs(User::factory()->create()->assignRole('manager'));
+
+        Livewire::test(VtcRideOverview::class)
+            ->assertSee('1') // Courses confirmées (total)
+            ->assertSee('110,00 €'); // CA TTC (total)
     }
 }

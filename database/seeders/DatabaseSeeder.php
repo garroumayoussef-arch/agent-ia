@@ -15,6 +15,14 @@ class DatabaseSeeder extends Seeder
             RoleSeeder::class,
             TaxRateSeeder::class,
             FiscalSettingSeeder::class,
+            // Données de démo VTC (étape 5.12a) : DriverSeeder/
+            // VehicleSeeder avant VtcRideSeeder (chauffeurs/véhicules à
+            // assigner), tous deux après TaxRateSeeder/
+            // FiscalSettingSeeder (régime fiscal requis pour confirmer
+            // une course de démo).
+            DriverSeeder::class,
+            VehicleSeeder::class,
+            VtcRideSeeder::class,
             BrandSeeder::class,
             CategorySeeder::class,
             CompetitionSeeder::class,
