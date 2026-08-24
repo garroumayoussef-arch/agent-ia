@@ -16,6 +16,7 @@ use App\Filament\Resources\PurchaseOrders\PurchaseOrderResource;
 use App\Filament\Resources\SalesOrders\SalesOrderResource;
 use App\Filament\Resources\StockMovements\StockMovementResource;
 use App\Filament\Resources\Suppliers\SupplierResource;
+use App\Filament\Resources\TaxRates\TaxRateResource;
 use App\Filament\Resources\Users\UserResource;
 use App\Filament\Resources\Vehicles\VehicleResource;
 use App\Filament\Resources\VtcRides\VtcRideResource;
@@ -1046,5 +1047,86 @@ class RoleBasedAuthorizationTest extends TestCase
         $this->actingAs($this->makeChauffeurAccount());
 
         $this->get(StockMovementResource::getUrl('create'))->assertForbidden();
+    }
+
+    /*
+     * =================================================================
+     * TaxRate — chantier transversal T9 (BlocksChauffeurReadAccess),
+     * réutilisé tel quel depuis T3-T8. Dernière Resource du régime A
+     * (HasRoleBasedAuthorization) : après ce commit, plus aucune
+     * Resource de ce régime n'est ouverte en lecture à un chauffeur.
+     *
+     * Dépendance spécifique à T9, absente de T3-T8 : VtcRide a un lien
+     * DIRECT vers TaxRate (tax_rate_id/taxRate()), pas seulement via
+     * FiscalSetting — vérifié explicitement ci-dessous plutôt que
+     * supposé, cf. test dédié à la non-régression de cette relation.
+     * StockOverview/LowStockAlert restent hors périmètre (décision
+     * T6).
+     * =================================================================
+     */
+
+    public function test_ladmin_et_le_manager_conservent_lacces_en_lecture_a_taxrate(): void
+    {
+        $this->actingAs(User::factory()->create()->assignRole('admin'));
+        $this->get(TaxRateResource::getUrl('index'))->assertSuccessful();
+
+        $this->actingAs(User::factory()->create()->assignRole('manager'));
+        $this->get(TaxRateResource::getUrl('index'))->assertSuccessful();
+    }
+
+    public function test_un_chauffeur_ne_peut_plus_consulter_les_taux_de_tva(): void
+    {
+        $this->actingAs($this->makeChauffeurAccount());
+
+        $this->get(TaxRateResource::getUrl('index'))->assertForbidden();
+    }
+
+    /**
+     * TaxRateResource n'a aucune page "view" (cf. getPages()) :
+     * canView() n'est atteignable par aucune route HTTP — seul un
+     * appel statique direct le vérifie, même principe qu'en T3/T4/T5/
+     * T6.
+     */
+    public function test_canview_refuse_un_chauffeur_pour_taxrateresource(): void
+    {
+        $taxRate = TaxRate::create(['label' => 'Taux T9', 'type' => TaxRate::TYPE_PERCENTAGE, 'rate' => 15]);
+
+        $this->actingAs($this->makeChauffeurAccount());
+
+        $this->assertFalse(TaxRateResource::canView($taxRate));
+    }
+
+    public function test_un_utilisateur_sans_role_ni_driver_associe_conserve_son_acces_a_taxrate(): void
+    {
+        $this->actingAs(User::factory()->create()); // ni rôle, ni Driver lié
+
+        $this->get(TaxRateResource::getUrl('index'))->assertSuccessful();
+    }
+
+    public function test_un_chauffeur_ne_peut_pas_creer_de_taux_de_tva(): void
+    {
+        $this->actingAs($this->makeChauffeurAccount());
+
+        $this->get(TaxRateResource::getUrl('create'))->assertForbidden();
+    }
+
+    /**
+     * Non-régression explicite demandée : la relation DIRECTE
+     * VtcRide -> TaxRate (taxRate(), pas seulement via FiscalSetting)
+     * reste intacte. Un chauffeur consultant sa propre course VTC
+     * confirmée voit toujours le libellé du taux de TVA référencé
+     * (VtcRideInfolist affiche taxRate.label en accès direct de
+     * relation, jamais via TaxRateResource — non modifié ici).
+     */
+    public function test_un_chauffeur_voit_toujours_le_taxratelabel_sur_sa_propre_course_vtc_confirmee(): void
+    {
+        $customer = Customer::create(['name' => 'Client T9']);
+        [$user, , $ride] = $this->makeChauffeurWithConfirmedRideForCustomer($customer);
+
+        $this->actingAs($user);
+
+        $this->get(VtcRideResource::getUrl('view', ['record' => $ride]))
+            ->assertSuccessful()
+            ->assertSeeText('VTC T5'); // libellé du TaxRate créé par le helper partagé
     }
 }

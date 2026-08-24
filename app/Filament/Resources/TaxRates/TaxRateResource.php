@@ -2,6 +2,7 @@
 
 namespace App\Filament\Resources\TaxRates;
 
+use App\Filament\Concerns\BlocksChauffeurReadAccess;
 use App\Filament\Concerns\HasRoleBasedAuthorization;
 use App\Filament\Resources\TaxRates\Pages\CreateTaxRate;
 use App\Filament\Resources\TaxRates\Pages\EditTaxRate;
@@ -19,6 +20,7 @@ use UnitEnum;
 class TaxRateResource extends Resource
 {
     use HasRoleBasedAuthorization;
+    use BlocksChauffeurReadAccess;
 
     protected static ?string $model = TaxRate::class;
 
