@@ -2,6 +2,7 @@
 
 namespace App\Filament\Resources\VtcRides;
 
+use App\Filament\Concerns\ScopesToOwnDriver;
 use App\Filament\Resources\VtcRides\Pages\CreateVtcRide;
 use App\Filament\Resources\VtcRides\Pages\EditVtcRide;
 use App\Filament\Resources\VtcRides\Pages\ListVtcRides;
@@ -9,7 +10,6 @@ use App\Filament\Resources\VtcRides\Pages\ViewVtcRide;
 use App\Filament\Resources\VtcRides\Schemas\VtcRideForm;
 use App\Filament\Resources\VtcRides\Schemas\VtcRideInfolist;
 use App\Filament\Resources\VtcRides\Tables\VtcRidesTable;
-use App\Models\Driver;
 use App\Models\VtcRide;
 use BackedEnum;
 use Filament\Resources\Resource;
@@ -18,10 +18,11 @@ use Filament\Support\Icons\Heroicon;
 use Filament\Tables\Table;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
-use Illuminate\Support\Facades\Auth;
 
 class VtcRideResource extends Resource
 {
+    use ScopesToOwnDriver;
+
     protected static ?string $model = VtcRide::class;
 
     protected static string|BackedEnum|null $navigationIcon = Heroicon::OutlinedMapPin;
@@ -40,9 +41,12 @@ class VtcRideResource extends Resource
      * =============================================================
      *
      * N'utilise volontairement PAS HasRoleBasedAuthorization : cette
-     * Resource est la première du projet à restreindre l'accès par
-     * ENREGISTREMENT (le chauffeur propriétaire de la course), pas
-     * seulement par rôle.
+     * Resource restreint l'accès par ENREGISTREMENT (le chauffeur
+     * propriétaire de la course), pas seulement par rôle.
+     * isAdminOrManager()/currentDriver() viennent de ScopesToOwnDriver
+     * (étape 5.6), extrait d'ici pour être réutilisé à l'identique par
+     * le dashboard/widget VTC — la même règle ne doit jamais vivre en
+     * deux copies susceptibles de diverger.
      *
      * - admin/manager : accès complet, inchangé (comme avant l'étape 5.5).
      * - un utilisateur lié à un Driver (Driver.user_id) : accès à SES
@@ -136,22 +140,6 @@ class VtcRideResource extends Resource
         }
 
         return $query->where('driver_id', $driver->id);
-    }
-
-    private static function isAdminOrManager(): bool
-    {
-        return Auth::user()?->hasAnyRole(['admin', 'manager']) ?? false;
-    }
-
-    private static function currentDriver(): ?Driver
-    {
-        $user = Auth::user();
-
-        if (! $user) {
-            return null;
-        }
-
-        return Driver::where('user_id', $user->id)->first();
     }
 
     public static function form(Schema $schema): Schema

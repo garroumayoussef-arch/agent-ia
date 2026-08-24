@@ -28,6 +28,7 @@ class VtcRide extends Model
 
     protected $casts = [
         'performed_at' => 'datetime',
+        'confirmed_at' => 'datetime',
         'price_ht' => 'decimal:2',
         'discount_amount' => 'decimal:2',
         'total_ht' => 'decimal:2',
@@ -151,6 +152,22 @@ class VtcRide extends Model
          * que ce soit dès que le statut n'est plus 'draft'.
          */
         static::updating(function (VtcRide $ride) {
+            /*
+             * confirmed_at est un cas à part, vérifié INCONDITIONNELLEMENT
+             * (pas seulement hors brouillon) : c'est justement l'appel
+             * qui fait passer status à 'confirmed' qui la renseigne pour
+             * la première fois (cf. markAsConfirmed()), donc la garder
+             * dans la boucle ci-dessous — qui ne s'active qu'une fois
+             * status déjà 'confirmed' — bloquerait la confirmation
+             * elle-même. La règle réelle est : modifiable une seule fois
+             * (de NULL vers une date), plus jamais ensuite.
+             */
+            if ($ride->isDirty('confirmed_at') && $ride->getOriginal('confirmed_at') !== null) {
+                throw new \Exception(
+                    "Impossible de modifier la date de confirmation d'une course."
+                );
+            }
+
             if ($ride->status === self::STATUS_DRAFT) {
                 return;
             }
@@ -215,7 +232,10 @@ class VtcRide extends Model
             );
         }
 
-        $this->update(['status' => self::STATUS_CONFIRMED]);
+        $this->update([
+            'status' => self::STATUS_CONFIRMED,
+            'confirmed_at' => now(),
+        ]);
     }
 
     /**

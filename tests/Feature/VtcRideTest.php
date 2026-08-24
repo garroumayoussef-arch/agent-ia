@@ -385,4 +385,80 @@ class VtcRideTest extends TestCase
 
         $this->assertSame(0, StockMovement::count());
     }
+
+    /*
+     * =================================================================
+     * confirmed_at (étape 5.6) — date de référence pour le reporting
+     * =================================================================
+     */
+
+    public function test_confirmed_at_est_null_tant_que_la_course_est_en_brouillon(): void
+    {
+        $ride = VtcRide::create(['reference' => 'VTC-20', 'price_ht' => 100]);
+
+        $this->assertNull($ride->confirmed_at);
+    }
+
+    public function test_markasconfirmed_fixe_confirmed_at(): void
+    {
+        $rate10 = TaxRate::create(['label' => 'VTC', 'type' => TaxRate::TYPE_PERCENTAGE, 'rate' => 10]);
+        $this->setVtcFiscalSetting($rate10);
+
+        $ride = VtcRide::create([
+            'reference' => 'VTC-21',
+            'price_ht' => 100,
+            'driver_id' => $this->makeDriver()->id,
+            'vehicle_id' => $this->makeVehicle()->id,
+        ]);
+
+        $this->assertNull($ride->confirmed_at);
+
+        $ride->markAsConfirmed();
+
+        $this->assertNotNull($ride->fresh()->confirmed_at);
+        $this->assertTrue($ride->fresh()->confirmed_at->isToday());
+    }
+
+    public function test_confirmed_at_ne_peut_plus_etre_modifie_une_fois_fixee(): void
+    {
+        $rate10 = TaxRate::create(['label' => 'VTC', 'type' => TaxRate::TYPE_PERCENTAGE, 'rate' => 10]);
+        $this->setVtcFiscalSetting($rate10);
+
+        $ride = VtcRide::create([
+            'reference' => 'VTC-22',
+            'price_ht' => 100,
+            'driver_id' => $this->makeDriver()->id,
+            'vehicle_id' => $this->makeVehicle()->id,
+        ]);
+        $ride->markAsConfirmed();
+
+        $this->expectException(\Exception::class);
+        $ride->update(['confirmed_at' => now()->subDays(10)]);
+    }
+
+    /**
+     * confirmed_at n'est pas dans la liste "montants figés" (elle y
+     * causerait une auto-blocage lors de la confirmation elle-même,
+     * cf. commentaire du modèle) : ce test vérifie explicitement que
+     * les DEUX protections (liste générique + garde dédiée) coexistent
+     * sans interférer l'une avec l'autre.
+     */
+    public function test_confirmer_ne_declenche_pas_le_verrou_generique_des_montants(): void
+    {
+        $rate10 = TaxRate::create(['label' => 'VTC', 'type' => TaxRate::TYPE_PERCENTAGE, 'rate' => 10]);
+        $this->setVtcFiscalSetting($rate10);
+
+        $ride = VtcRide::create([
+            'reference' => 'VTC-23',
+            'price_ht' => 100,
+            'driver_id' => $this->makeDriver()->id,
+            'vehicle_id' => $this->makeVehicle()->id,
+        ]);
+
+        // Ne doit lever aucune exception.
+        $ride->markAsConfirmed();
+
+        $this->assertSame(VtcRide::STATUS_CONFIRMED, $ride->status);
+        $this->assertSame('10.00', $ride->tax_amount);
+    }
 }
