@@ -121,6 +121,21 @@ class Product extends Model
         Supplier::deleting(function (Supplier $supplier): void {
             static::where('supplier_id', $supplier->id)->update(['fournisseur' => 'N/A']);
         });
+
+        /*
+         * Même mécanisme, même cause, pour les miroirs "marque" et
+         * "categorie" : brand_id / category_id sont également en
+         * nullOnDelete sur products (cf. update_products_table), donc
+         * supprimer une Brand ou une Category les contourne exactement
+         * comme pour Supplier ci-dessus.
+         */
+        Brand::deleting(function (Brand $brand): void {
+            static::where('brand_id', $brand->id)->update(['marque' => 'N/A']);
+        });
+
+        Category::deleting(function (Category $category): void {
+            static::where('category_id', $category->id)->update(['categorie' => 'N/A']);
+        });
     }
 
     /**

@@ -183,6 +183,78 @@ class StockMovementTest extends TestCase
         $this->assertSame($supplierB->id, $productB->supplier_id);
     }
 
+    public function test_marque_repasse_a_na_quand_la_marque_est_supprimee(): void
+    {
+        $brand = Brand::create(['name' => 'Nike', 'slug' => 'nike']);
+
+        $product = $this->makeProduct(['brand_id' => $brand->id]);
+        $this->assertSame('Nike', $product->marque);
+
+        // Suppression de la Brand elle-même (pas une mise à jour du
+        // produit) : brand_id passe à NULL via la contrainte FK
+        // nullOnDelete, sans jamais passer par Product::saving().
+        $brand->delete();
+
+        $product->refresh();
+
+        $this->assertNull($product->brand_id);
+        $this->assertSame('N/A', $product->marque);
+    }
+
+    public function test_supprimer_une_marque_ne_touche_pas_le_miroir_des_produits_dune_autre_marque(): void
+    {
+        $brandA = Brand::create(['name' => 'Nike', 'slug' => 'nike']);
+        $brandB = Brand::create(['name' => 'Adidas', 'slug' => 'adidas']);
+
+        $productA = $this->makeProduct(['brand_id' => $brandA->id]);
+        $productB = $this->makeProduct(['brand_id' => $brandB->id]);
+
+        $brandA->delete();
+
+        $productA->refresh();
+        $productB->refresh();
+
+        $this->assertSame('N/A', $productA->marque);
+        $this->assertSame('Adidas', $productB->marque);
+        $this->assertSame($brandB->id, $productB->brand_id);
+    }
+
+    public function test_categorie_repasse_a_na_quand_la_categorie_est_supprimee(): void
+    {
+        $category = Category::create(['name' => 'Football', 'slug' => 'football']);
+
+        $product = $this->makeProduct(['category_id' => $category->id]);
+        $this->assertSame('Football', $product->categorie);
+
+        // Suppression de la Category elle-même (pas une mise à jour du
+        // produit) : category_id passe à NULL via la contrainte FK
+        // nullOnDelete, sans jamais passer par Product::saving().
+        $category->delete();
+
+        $product->refresh();
+
+        $this->assertNull($product->category_id);
+        $this->assertSame('N/A', $product->categorie);
+    }
+
+    public function test_supprimer_une_categorie_ne_touche_pas_le_miroir_des_produits_dune_autre_categorie(): void
+    {
+        $categoryA = Category::create(['name' => 'Football', 'slug' => 'football']);
+        $categoryB = Category::create(['name' => 'Basketball', 'slug' => 'basketball']);
+
+        $productA = $this->makeProduct(['category_id' => $categoryA->id]);
+        $productB = $this->makeProduct(['category_id' => $categoryB->id]);
+
+        $categoryA->delete();
+
+        $productA->refresh();
+        $productB->refresh();
+
+        $this->assertSame('N/A', $productA->categorie);
+        $this->assertSame('Basketball', $productB->categorie);
+        $this->assertSame($categoryB->id, $productB->category_id);
+    }
+
     public function test_un_achat_sur_variante_met_a_jour_le_stock_de_la_variante_et_du_produit(): void
     {
         $product = $this->makeProduct();
