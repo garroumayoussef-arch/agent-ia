@@ -239,6 +239,25 @@ class VtcRide extends Model
     }
 
     /**
+     * Annule une course en brouillon. Contrairement à
+     * PurchaseOrder::cancel()/SalesOrder::cancel() (autorisés aussi
+     * depuis un statut intermédiaire type "ordered"/"confirmed"),
+     * VtcRide n'a pas d'étape de réception/expédition à défaire : seule
+     * une course encore en brouillon peut être annulée, jamais une
+     * course déjà confirmée (cf. le schéma de statuts en tête de
+     * classe). Une fois annulée, static::updating() ci-dessus fige les
+     * montants exactement comme pour une course confirmée — étape 5.7.
+     */
+    public function cancel(): void
+    {
+        if ($this->status !== self::STATUS_DRAFT) {
+            throw new \Exception('Seule une course en brouillon peut être annulée.');
+        }
+
+        $this->update(['status' => self::STATUS_CANCELLED]);
+    }
+
+    /**
      * Résout le taux de TVA applicable à cette course : explicite sur
      * la course > configuration fiscale VTC (FiscalSetting) > non
      * résolu. Ne retombe JAMAIS sur un taux par défaut "marchandises"

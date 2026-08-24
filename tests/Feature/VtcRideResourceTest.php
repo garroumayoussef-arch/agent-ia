@@ -277,6 +277,48 @@ class VtcRideResourceTest extends TestCase
 
     /*
      * =================================================================
+     * Annulation (étape 5.7) : délègue à VtcRide::cancel(), uniquement
+     * depuis brouillon, aucune logique dupliquée dans Filament
+     * =================================================================
+     */
+
+    public function test_annuler_une_course_en_brouillon_valide_via_laction(): void
+    {
+        $ride = VtcRide::create(['reference' => 'VTC-UI-12']);
+
+        Livewire::test(EditVtcRide::class, ['record' => $ride->getKey()])
+            ->callAction('cancelRide');
+
+        $this->assertSame(VtcRide::STATUS_CANCELLED, $ride->fresh()->status);
+    }
+
+    public function test_laction_annuler_est_visible_pour_une_course_en_brouillon(): void
+    {
+        $ride = VtcRide::create(['reference' => 'VTC-UI-13']);
+
+        Livewire::test(EditVtcRide::class, ['record' => $ride->getKey()])
+            ->assertActionVisible('cancelRide');
+    }
+
+    public function test_laction_annuler_nest_plus_visible_apres_confirmation(): void
+    {
+        $rate10 = TaxRate::create(['label' => 'VTC', 'type' => TaxRate::TYPE_PERCENTAGE, 'rate' => 10]);
+        $this->setVtcFiscalSetting($rate10);
+
+        $ride = VtcRide::create([
+            'reference' => 'VTC-UI-14',
+            'price_ht' => 100,
+            'driver_id' => $this->makeDriver()->id,
+            'vehicle_id' => $this->makeVehicle()->id,
+        ]);
+        $ride->markAsConfirmed();
+
+        Livewire::test(EditVtcRide::class, ['record' => $ride->getKey()])
+            ->assertActionHidden('cancelRide');
+    }
+
+    /*
+     * =================================================================
      * Protection des champs financiers / historique après confirmation
      * =================================================================
      */

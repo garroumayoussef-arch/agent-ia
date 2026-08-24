@@ -461,4 +461,75 @@ class VtcRideTest extends TestCase
         $this->assertSame(VtcRide::STATUS_CONFIRMED, $ride->status);
         $this->assertSame('10.00', $ride->tax_amount);
     }
+
+    /*
+     * =================================================================
+     * Annulation (étape 5.7) — uniquement depuis brouillon, jamais
+     * après confirmation
+     * =================================================================
+     */
+
+    public function test_annuler_une_course_en_brouillon_passe_son_statut_a_cancelled(): void
+    {
+        $ride = VtcRide::create(['reference' => 'VTC-24', 'price_ht' => 100]);
+
+        $ride->cancel();
+
+        $this->assertSame(VtcRide::STATUS_CANCELLED, $ride->fresh()->status);
+    }
+
+    public function test_annuler_une_course_deja_confirmee_est_refuse(): void
+    {
+        $rate10 = TaxRate::create(['label' => 'VTC', 'type' => TaxRate::TYPE_PERCENTAGE, 'rate' => 10]);
+        $this->setVtcFiscalSetting($rate10);
+
+        $ride = VtcRide::create([
+            'reference' => 'VTC-25',
+            'price_ht' => 100,
+            'driver_id' => $this->makeDriver()->id,
+            'vehicle_id' => $this->makeVehicle()->id,
+        ]);
+        $ride->markAsConfirmed();
+
+        $this->expectException(\Exception::class);
+        $ride->cancel();
+    }
+
+    public function test_le_statut_reste_confirmed_apres_une_tentative_dannulation_refusee(): void
+    {
+        $rate10 = TaxRate::create(['label' => 'VTC', 'type' => TaxRate::TYPE_PERCENTAGE, 'rate' => 10]);
+        $this->setVtcFiscalSetting($rate10);
+
+        $ride = VtcRide::create([
+            'reference' => 'VTC-26',
+            'price_ht' => 100,
+            'driver_id' => $this->makeDriver()->id,
+            'vehicle_id' => $this->makeVehicle()->id,
+        ]);
+        $ride->markAsConfirmed();
+
+        try {
+            $ride->cancel();
+        } catch (\Throwable $e) {
+            // Attendu : cf. test précédent, on vérifie ici seulement
+            // l'absence d'effet de bord sur le statut persisté.
+        }
+
+        $this->assertSame(VtcRide::STATUS_CONFIRMED, $ride->fresh()->status);
+    }
+
+    /**
+     * Une fois annulée, une course est un historique figé au même
+     * titre qu'une course confirmée (static::updating() ne distingue
+     * pas les deux statuts non-brouillon) : ses montants restent
+     * protégés par le même verrou générique.
+     */
+    public function test_les_montants_restent_proteges_apres_annulation(): void
+    {
+        $ride = VtcRide::create(['reference' => 'VTC-27', 'price_ht' => 100]);
+        $ride->cancel();
+
+        $this->expectException(\Exception::class);
+        $ride->update(['price_ht' => 200]);
+    }
 }

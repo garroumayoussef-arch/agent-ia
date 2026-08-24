@@ -17,6 +17,7 @@ class ViewVtcRide extends ViewRecord
     {
         return [
             $this->confirmRideAction(),
+            $this->cancelRideAction(),
             EditAction::make(),
         ];
     }
