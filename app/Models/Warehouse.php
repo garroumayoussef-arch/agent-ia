@@ -3,13 +3,15 @@
 namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 
 /**
- * Étape T10 (fondation multi-entrepôts) — modèle volontairement
- * autonome : aucune relation vers Product/ProductVariant/StockMovement
- * pour l'instant (elles viendront en T11 : warehouse_stocks, et T12 :
- * stock_transfers). Ce modèle ne fait encore rien tourner dans
- * l'application — il n'est référencé par rien d'existant.
+ * Étape T10 (fondation multi-entrepôts) — relation vers
+ * warehouse_stocks ajoutée en T11a. Toujours aucune relation vers
+ * stock_transfers (T12) ni aucun branchement dans StockMovement (T11b,
+ * pas encore fait) : warehouseStocks() reste pour l'instant une pure
+ * décomposition figée au moment du rétro-remplissage, pas une donnée
+ * "live".
  */
 class Warehouse extends Model
 {
@@ -49,5 +51,27 @@ class Warehouse extends Model
 
             $query->update(['is_default' => false]);
         });
+
+        /*
+         * Différé explicitement en T10 ("le garde-fou sera ajouté en
+         * T11, quand warehouse_stocks... existeront réellement") —
+         * fermé ici, T11a : même principe de protection que Product/
+         * ProductVariant/Driver/Vehicle déjà dans ce projet. warehouse_id
+         * est en restrictOnDelete() en base (défense en profondeur),
+         * cette garde reste le message d'erreur explicite côté
+         * application.
+         */
+        static::deleting(function (self $warehouse): void {
+            if ($warehouse->warehouseStocks()->exists()) {
+                throw new \Exception(
+                    'Impossible de supprimer cet entrepôt : il possède un historique de stock. Désactivez-le plutôt que de le supprimer.'
+                );
+            }
+        });
+    }
+
+    public function warehouseStocks(): HasMany
+    {
+        return $this->hasMany(WarehouseStock::class);
     }
 }

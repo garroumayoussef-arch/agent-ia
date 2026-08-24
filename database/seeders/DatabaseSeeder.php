@@ -38,6 +38,10 @@ class DatabaseSeeder extends Seeder
             // après ProductSeeder pour réconcilier les valeurs réellement
             // présentes.
             WarehouseSeeder::class,
+            // Étape T11a : WarehouseStockSeeder dépend de l'entrepôt
+            // is_default créé par WarehouseSeeder juste au-dessus — doit
+            // s'exécuter après lui.
+            WarehouseStockSeeder::class,
         ]);
     }
 }
