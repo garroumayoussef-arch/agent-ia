@@ -2,6 +2,7 @@
 
 namespace App\Filament\Resources\StockMovements\Schemas;
 
+use App\Filament\Concerns\ScopesToOwnWarehouses;
 use App\Models\Product;
 use App\Models\ProductVariant;
 use Filament\Forms\Components\Select;
@@ -11,8 +12,22 @@ use Filament\Schemas\Components\Utilities\Get;
 use Filament\Schemas\Components\Utilities\Set;
 use Filament\Schemas\Schema;
 
+/**
+ * Étape T19 (D5) — comble un manque préexistant depuis T11b/T16 : ce
+ * formulaire n'exposait AUCUN champ warehouse_id, toute création
+ * directe d'un mouvement retombant silencieusement sur l'entrepôt par
+ * défaut (StockMovement::resolveDefaultWarehouseIdOrFail()). Sans ce
+ * champ, le scoping par entrepôt (T19) serait sans effet sur ce point
+ * d'entrée : un manager restreint pourrait toujours créer un mouvement
+ * sur l'entrepôt par défaut via cette Resource. Les options sont
+ * restreintes au périmètre de l'utilisateur courant
+ * (ScopesToOwnWarehouses) — simple confort d'UI, la barrière autoritaire
+ * reste CreateStockMovement::mutateFormDataBeforeCreate().
+ */
 class StockMovementForm
 {
+    use ScopesToOwnWarehouses;
+
     public static function configure(Schema $schema): Schema
     {
         return $schema
@@ -105,6 +120,25 @@ class StockMovementForm
 
                         return "Ce produit n'a pas de variantes : le mouvement s'appliquera directement sur son stock global.";
                     }),
+
+                Select::make('warehouse_id')
+                    ->label('Entrepôt')
+                    ->options(fn () => static::activeWarehousesOptionsForCurrentUser())
+                    ->default(function (): ?int {
+                        $options = static::activeWarehousesOptionsForCurrentUser();
+
+                        return count($options) === 1 ? array_key_first($options) : null;
+                    })
+                    ->searchable()
+                    ->preload()
+                    // Changer l'entrepôt d'un mouvement existant romprait
+                    // son historique par-entrepôt, au même titre que
+                    // product_id ci-dessus : autorisé uniquement à la
+                    // création.
+                    ->disabled(fn (string $operation): bool => $operation === 'edit')
+                    ->dehydrated()
+                    ->required()
+                    ->helperText('Entrepôt concerné par ce mouvement. Résolu automatiquement en repli sur l\'entrepôt par défaut lorsqu\'un seul choix est possible.'),
 
                 Select::make('type')
                     ->label('Type de mouvement')

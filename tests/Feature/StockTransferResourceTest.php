@@ -55,10 +55,14 @@ class StockTransferResourceTest extends TestCase
 
     public function test_un_manager_peut_executer_un_transfert_via_laction(): void
     {
-        $this->actingAs(User::factory()->create()->assignRole('manager'));
+        $user = User::factory()->create()->assignRole('manager');
+        $this->actingAs($user);
 
         $warehouseA = $this->makeWarehouse();
         $warehouseB = $this->makeWarehouse();
+        // Étape T19 (D4) — un manager restreint doit avoir LES DEUX
+        // entrepôts (source et destination) dans son périmètre.
+        $user->warehouses()->attach([$warehouseA->id, $warehouseB->id]);
         $product = $this->makeProduct(['stock' => 10]);
         WarehouseStock::create(['warehouse_id' => $warehouseA->id, 'product_id' => $product->id, 'stock' => 10]);
 
@@ -124,10 +128,15 @@ class StockTransferResourceTest extends TestCase
 
     public function test_message_derreur_propre_sans_exception_brute_si_stock_insuffisant(): void
     {
-        $this->actingAs(User::factory()->create()->assignRole('manager'));
+        $user = User::factory()->create()->assignRole('manager');
+        $this->actingAs($user);
 
         $warehouseA = $this->makeWarehouse();
         $warehouseB = $this->makeWarehouse();
+        // Étape T19 (D4) — les deux entrepôts sont dans le périmètre du
+        // manager : ce test doit continuer à exercer le refus pour
+        // stock insuffisant (T12), pas un refus d'autorisation (T19).
+        $user->warehouses()->attach([$warehouseA->id, $warehouseB->id]);
         $product = $this->makeProduct(['stock' => 2]);
         WarehouseStock::create(['warehouse_id' => $warehouseA->id, 'product_id' => $product->id, 'stock' => 2]);
 
@@ -151,7 +160,8 @@ class StockTransferResourceTest extends TestCase
 
     public function test_laction_refuse_source_egale_destination_meme_si_envoye_directement(): void
     {
-        $this->actingAs(User::factory()->create()->assignRole('manager'));
+        $user = User::factory()->create()->assignRole('manager');
+        $this->actingAs($user);
 
         // Simule un navigateur qui contournerait le filtrage du
         // formulaire (options d'exclusion côté UI) et enverrait
@@ -159,6 +169,10 @@ class StockTransferResourceTest extends TestCase
         // (StockTransfer::execute(), jamais confiance au client) doit
         // refuser, pas seulement le formulaire.
         $warehouse = $this->makeWarehouse();
+        // Étape T19 — dans le périmètre du manager : ce test doit
+        // continuer à exercer le refus pour source = destination (T12),
+        // pas un refus d'autorisation (T19).
+        $user->warehouses()->attach($warehouse);
         $product = $this->makeProduct(['stock' => 5]);
         WarehouseStock::create(['warehouse_id' => $warehouse->id, 'product_id' => $product->id, 'stock' => 5]);
 

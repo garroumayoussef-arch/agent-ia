@@ -39,6 +39,18 @@ class UserForm
                     ->multiple()
                     ->preload()
                     ->helperText('Sans rôle, l’utilisateur a un accès en lecture seule (lecteur) à tout le panel, mais ne peut rien créer/modifier/supprimer.'),
+
+                // Étape T19 — permissions par entrepôt : n'a d'effet
+                // réel que pour un utilisateur ayant le rôle manager
+                // (cf. ScopesToOwnWarehouses, décision D3). Un admin
+                // garde un accès global quel que soit le contenu de ce
+                // champ ; pour viewer/sans rôle, il reste inutilisé.
+                Select::make('warehouses')
+                    ->label('Entrepôt(s) attribué(s)')
+                    ->relationship('warehouses', 'name')
+                    ->multiple()
+                    ->preload()
+                    ->helperText('Pour un manager : restreint la création de mouvements, réceptions, expéditions et transferts à ces entrepôts. Sans entrepôt attribué, un manager ne peut effectuer aucune de ces opérations. Sans effet pour un admin (accès global) ou un viewer.'),
             ]);
     }
 }

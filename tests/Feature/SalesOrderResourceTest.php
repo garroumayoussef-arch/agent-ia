@@ -127,7 +127,13 @@ class SalesOrderResourceTest extends TestCase
 
     public function test_confirmer_puis_expedier_une_commande_via_les_actions_decremente_le_stock(): void
     {
-        $this->actingAs(User::factory()->create()->assignRole('manager'));
+        $user = User::factory()->create()->assignRole('manager');
+        $this->actingAs($user);
+
+        // Étape T19 — un manager restreint doit avoir l'entrepôt effectif
+        // (ici l'entrepôt par défaut créé en setUp(), implicitement
+        // utilisé faute de sélection explicite) dans son périmètre.
+        $user->warehouses()->attach(Warehouse::where('is_default', true)->value('id'));
 
         $product = $this->makeProduct();
         $variant = ProductVariant::create([
@@ -209,9 +215,12 @@ class SalesOrderResourceTest extends TestCase
 
     public function test_expedier_via_laction_avec_entrepot_explicite_enregistre_le_bon_entrepot(): void
     {
-        $this->actingAs(User::factory()->create()->assignRole('manager'));
+        $user = User::factory()->create()->assignRole('manager');
+        $this->actingAs($user);
 
         $warehouse = Warehouse::create(['name' => 'Entrepôt A', 'code' => 'a-t13-ui']);
+        // Étape T19 — le manager doit avoir cet entrepôt dans son périmètre.
+        $user->warehouses()->attach($warehouse);
         $product = $this->makeProduct();
         $variant = ProductVariant::create([
             'product_id' => $product->id,

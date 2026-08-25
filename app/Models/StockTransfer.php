@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Filament\Concerns\ScopesToOwnWarehouses;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
@@ -21,6 +22,8 @@ use Illuminate\Support\Facades\DB;
  */
 class StockTransfer extends Model
 {
+    use ScopesToOwnWarehouses;
+
     protected $guarded = [];
 
     protected $casts = [
@@ -47,6 +50,19 @@ class StockTransfer extends Model
                     'La quantité transférée doit être supérieure à zéro.'
                 );
             }
+
+            /*
+             * T19 (D4/D6) — contrôle d'appartenance, en plus des
+             * contrôles métier T12 ci-dessus, inchangés : un manager
+             * restreint doit avoir les DEUX entrepôts (source ET
+             * destination) dans son périmètre, jamais un seul des deux.
+             * Barrière autoritaire — vérifiée ici, jamais confiance
+             * dans le filtrage des options du formulaire
+             * (HasStockTransferAction), qu'un appel direct pourrait
+             * contourner.
+             */
+            static::assertWarehouseIsInScope($transfer->from_warehouse_id);
+            static::assertWarehouseIsInScope($transfer->to_warehouse_id);
 
             $transfer->user_id ??= auth()->id();
         });

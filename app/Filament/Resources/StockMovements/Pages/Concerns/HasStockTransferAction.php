@@ -2,6 +2,7 @@
 
 namespace App\Filament\Resources\StockMovements\Pages\Concerns;
 
+use App\Filament\Concerns\ScopesToOwnWarehouses;
 use App\Filament\Resources\StockMovements\StockMovementResource;
 use App\Models\Product;
 use App\Models\ProductVariant;
@@ -26,9 +27,17 @@ use Filament\Schemas\Components\Utilities\Set;
  * Reste volontairement minimale, conformément à la décision validée :
  * pas de nouvelle Resource, pas de gestion complète des entrepôts, pas
  * d'action de transfert sur WarehouseResource.
+ *
+ * Étape T19 — les options des deux Select d'entrepôt sont restreintes
+ * au périmètre de l'utilisateur courant (ScopesToOwnWarehouses) :
+ * simple confort d'UI, la barrière autoritaire reste
+ * StockTransfer::execute() (contrôle d'appartenance sur les deux
+ * entrepôts, D4/D6).
  */
 trait HasStockTransferAction
 {
+    use ScopesToOwnWarehouses;
+
     protected function transferAction(): Action
     {
         return Action::make('transfer')
@@ -92,7 +101,7 @@ trait HasStockTransferAction
 
                 Select::make('from_warehouse_id')
                     ->label('Entrepôt source')
-                    ->options(fn () => Warehouse::where('is_active', true)->orderBy('name')->pluck('name', 'id')->toArray())
+                    ->options(fn () => static::activeWarehousesOptionsForCurrentUser())
                     ->searchable()
                     ->preload()
                     ->live()
@@ -103,10 +112,8 @@ trait HasStockTransferAction
                     // Exclut l'entrepôt déjà choisi comme source de la
                     // liste : première barrière (UX), la barrière
                     // autoritaire reste StockTransfer::execute().
-                    ->options(fn (Get $get) => Warehouse::where('is_active', true)
-                        ->when($get('from_warehouse_id'), fn ($query, $fromId) => $query->whereKeyNot($fromId))
-                        ->orderBy('name')
-                        ->pluck('name', 'id')
+                    ->options(fn (Get $get) => collect(static::activeWarehousesOptionsForCurrentUser())
+                        ->when($get('from_warehouse_id'), fn ($options, $fromId) => $options->except($fromId))
                         ->toArray())
                     ->searchable()
                     ->preload()

@@ -2,9 +2,9 @@
 
 namespace App\Filament\Resources\SalesOrders\Pages\Concerns;
 
+use App\Filament\Concerns\ScopesToOwnWarehouses;
 use App\Models\SalesOrder;
 use App\Models\SalesOrderItem;
-use App\Models\Warehouse;
 use Filament\Actions\Action;
 use Filament\Forms\Components\Select;
 use Filament\Forms\Components\TextInput;
@@ -18,9 +18,17 @@ use Filament\Notifications\Notification;
  * (SalesOrder::markAsConfirmed/cancel/ship), l'action se contente
  * d'afficher le résultat en notification plutôt que de laisser remonter
  * une exception brute.
+ *
+ * Étape T19 — les options du Select d'entrepôt de shipOrderAction sont
+ * restreintes au périmètre de l'utilisateur courant
+ * (ScopesToOwnWarehouses) : simple confort d'UI, la barrière autoritaire
+ * reste ValidatesOperationWarehouse::assertValidOperationWarehouse(),
+ * appelée depuis SalesOrder::ship().
  */
 trait HasSalesOrderWorkflowActions
 {
+    use ScopesToOwnWarehouses;
+
     protected function confirmOrderAction(): Action
     {
         return Action::make('confirmOrder')
@@ -97,9 +105,7 @@ trait HasSalesOrderWorkflowActions
                 // ValidatesOperationWarehouse::assertValidOperationWarehouse(),
                 // barrière autoritaire côté modèle — ce pré-remplissage
                 // n'est qu'un confort d'UI, jamais la seule protection).
-                $activeWarehouses = Warehouse::where('is_active', true)
-                    ->orderBy('name')
-                    ->pluck('name', 'id');
+                $activeWarehouses = collect(static::activeWarehousesOptionsForCurrentUser());
 
                 $warehouseField = Select::make('warehouse_id')
                     ->label('Entrepôt d\'expédition')

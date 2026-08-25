@@ -145,10 +145,13 @@ class StockMovementResourceTest extends TestCase
 
     public function test_les_mouvements_transfer_out_et_transfer_in_affichent_leur_entrepot_respectif(): void
     {
-        $this->actingAs(User::factory()->create()->assignRole('manager'));
+        $user = User::factory()->create()->assignRole('manager');
+        $this->actingAs($user);
 
         $warehouseA = Warehouse::create(['name' => 'Entrepôt Source', 'code' => 'source-t16']);
         $warehouseB = Warehouse::create(['name' => 'Entrepôt Destination', 'code' => 'dest-t16']);
+        // Étape T19 (D4) — les deux entrepôts sont dans le périmètre du manager.
+        $user->warehouses()->attach([$warehouseA->id, $warehouseB->id]);
         $product = $this->makeProduct(['stock' => 10]);
 
         \App\Models\WarehouseStock::create(['warehouse_id' => $warehouseA->id, 'product_id' => $product->id, 'stock' => 10]);
@@ -175,10 +178,13 @@ class StockMovementResourceTest extends TestCase
 
     public function test_la_table_affiche_les_libelles_dedies_transfer_out_et_transfer_in(): void
     {
-        $this->actingAs(User::factory()->create()->assignRole('manager'));
+        $user = User::factory()->create()->assignRole('manager');
+        $this->actingAs($user);
 
         $warehouseA = Warehouse::create(['name' => 'Entrepôt Source', 'code' => 'source-t17']);
         $warehouseB = Warehouse::create(['name' => 'Entrepôt Destination', 'code' => 'dest-t17']);
+        // Étape T19 (D4) — les deux entrepôts sont dans le périmètre du manager.
+        $user->warehouses()->attach([$warehouseA->id, $warehouseB->id]);
         $product = $this->makeProduct(['stock' => 10]);
 
         \App\Models\WarehouseStock::create(['warehouse_id' => $warehouseA->id, 'product_id' => $product->id, 'stock' => 10]);
@@ -200,10 +206,13 @@ class StockMovementResourceTest extends TestCase
 
     public function test_la_fiche_de_detail_affiche_le_libelle_dedie_transfer_out(): void
     {
-        $this->actingAs(User::factory()->create()->assignRole('manager'));
+        $user = User::factory()->create()->assignRole('manager');
+        $this->actingAs($user);
 
         $warehouseA = Warehouse::create(['name' => 'Entrepôt Source', 'code' => 'source-t17-view']);
         $warehouseB = Warehouse::create(['name' => 'Entrepôt Destination', 'code' => 'dest-t17-view']);
+        // Étape T19 (D4) — les deux entrepôts sont dans le périmètre du manager.
+        $user->warehouses()->attach([$warehouseA->id, $warehouseB->id]);
         $product = $this->makeProduct(['stock' => 10]);
 
         \App\Models\WarehouseStock::create(['warehouse_id' => $warehouseA->id, 'product_id' => $product->id, 'stock' => 10]);

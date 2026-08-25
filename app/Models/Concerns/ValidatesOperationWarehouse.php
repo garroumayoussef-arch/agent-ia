@@ -2,6 +2,7 @@
 
 namespace App\Models\Concerns;
 
+use App\Filament\Concerns\ScopesToOwnWarehouses;
 use App\Models\Warehouse;
 
 /**
@@ -17,9 +18,18 @@ use App\Models\Warehouse;
  * Ne crée aucune nouvelle source de vérité sur l'entrepôt : ne stocke
  * rien sur le modèle qui compose ce trait, se contente de valider la
  * valeur avant qu'elle soit transmise à StockMovement::create().
+ *
+ * Étape T19 — s'appuie en plus sur ScopesToOwnWarehouses pour vérifier
+ * que l'entrepôt EFFECTIF de l'opération (fourni explicitement, ou
+ * résolu implicitement ci-dessous quand aucune ambiguïté n'existe)
+ * appartient au périmètre de l'utilisateur courant. Contrôle
+ * d'autorisation uniquement : la logique métier T13 (existence, statut
+ * actif, ambiguïté) reste strictement inchangée au-dessus.
  */
 trait ValidatesOperationWarehouse
 {
+    use ScopesToOwnWarehouses;
+
     /**
      * Valide l'entrepôt d'une opération de réception/expédition.
      *
@@ -41,14 +51,23 @@ trait ValidatesOperationWarehouse
                     "L'entrepôt sélectionné n'existe pas ou n'est plus actif."
                 );
             }
-
-            return;
-        }
-
-        if (Warehouse::where('is_active', true)->count() > 1) {
+        } elseif (Warehouse::where('is_active', true)->count() > 1) {
             throw new \Exception(
                 'Plusieurs entrepôts sont disponibles : veuillez sélectionner explicitement l\'entrepôt concerné.'
             );
         }
+
+        /*
+         * T19 — contrôle d'appartenance, en plus du contrôle
+         * d'existence ci-dessus. Résout l'entrepôt EFFECTIF de la même
+         * façon que StockMovement::creating() le fera ensuite (celui
+         * fourni, ou l'entrepôt marqué par défaut si aucun n'est
+         * fourni) : un manager restreint ne peut pas contourner son
+         * périmètre simplement en laissant $warehouseId vide quand un
+         * seul entrepôt actif existe.
+         */
+        static::assertWarehouseIsInScope(
+            $warehouseId ?? Warehouse::where('is_default', true)->value('id')
+        );
     }
 }

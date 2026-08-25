@@ -3,13 +3,16 @@
 namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 
 /**
  * Étape T10 (fondation multi-entrepôts) — relation vers
  * warehouse_stocks ajoutée en T11a, tenue à jour de façon "live" par
  * StockMovement depuis T11b. Relations vers stock_transfers ajoutées
- * en T12 (transferts de stock entre deux entrepôts).
+ * en T12 (transferts de stock entre deux entrepôts). Relation vers les
+ * utilisateurs (managers) auxquels cet entrepôt est attribué ajoutée en
+ * T19 (permissions par entrepôt).
  */
 class Warehouse extends Model
 {
@@ -100,5 +103,19 @@ class Warehouse extends Model
     public function incomingTransfers(): HasMany
     {
         return $this->hasMany(StockTransfer::class, 'to_warehouse_id');
+    }
+
+    /*
+     * =============================================================
+     * RELATION : UTILISATEURS ATTRIBUÉS (T19)
+     * =============================================================
+     */
+
+    public function users(): BelongsToMany
+    {
+        // Nom de pivot explicite : la convention alphabétique par défaut
+        // d'Eloquent donnerait "user_warehouse", alors que la table (D7)
+        // s'appelle "warehouse_user".
+        return $this->belongsToMany(User::class, 'warehouse_user');
     }
 }

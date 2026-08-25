@@ -2,9 +2,9 @@
 
 namespace App\Filament\Resources\PurchaseOrders\Pages\Concerns;
 
+use App\Filament\Concerns\ScopesToOwnWarehouses;
 use App\Models\PurchaseOrder;
 use App\Models\PurchaseOrderItem;
-use App\Models\Warehouse;
 use Filament\Actions\Action;
 use Filament\Forms\Components\Select;
 use Filament\Forms\Components\TextInput;
@@ -19,9 +19,17 @@ use Filament\Notifications\Notification;
  * (PurchaseOrder::markAsOrdered/cancel/receive) et se contente
  * d'afficher le résultat sous forme de notification Filament plutôt que
  * de laisser remonter une exception brute.
+ *
+ * Étape T19 — les options du Select d'entrepôt de réceptionAction sont
+ * restreintes au périmètre de l'utilisateur courant
+ * (ScopesToOwnWarehouses) : simple confort d'UI, la barrière autoritaire
+ * reste ValidatesOperationWarehouse::assertValidOperationWarehouse(),
+ * appelée depuis PurchaseOrder::receive().
  */
 trait HasPurchaseOrderWorkflowActions
 {
+    use ScopesToOwnWarehouses;
+
     protected function confirmOrderAction(): Action
     {
         return Action::make('confirmOrder')
@@ -98,9 +106,7 @@ trait HasPurchaseOrderWorkflowActions
                 // ValidatesOperationWarehouse::assertValidOperationWarehouse(),
                 // barrière autoritaire côté modèle — ce pré-remplissage
                 // n'est qu'un confort d'UI, jamais la seule protection).
-                $activeWarehouses = Warehouse::where('is_active', true)
-                    ->orderBy('name')
-                    ->pluck('name', 'id');
+                $activeWarehouses = collect(static::activeWarehousesOptionsForCurrentUser());
 
                 $warehouseField = Select::make('warehouse_id')
                     ->label('Entrepôt de réception')

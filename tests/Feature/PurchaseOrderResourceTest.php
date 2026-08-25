@@ -120,7 +120,13 @@ class PurchaseOrderResourceTest extends TestCase
 
     public function test_confirmer_puis_receptionner_un_bon_via_les_actions_synchronise_le_stock(): void
     {
-        $this->actingAs(User::factory()->create()->assignRole('manager'));
+        $user = User::factory()->create()->assignRole('manager');
+        $this->actingAs($user);
+
+        // Étape T19 — un manager restreint doit avoir l'entrepôt effectif
+        // (ici l'entrepôt par défaut créé en setUp(), implicitement
+        // utilisé faute de sélection explicite) dans son périmètre.
+        $user->warehouses()->attach(Warehouse::where('is_default', true)->value('id'));
 
         $product = $this->makeProduct();
         $variant = ProductVariant::create([
@@ -202,9 +208,12 @@ class PurchaseOrderResourceTest extends TestCase
 
     public function test_receptionner_via_laction_avec_entrepot_explicite_enregistre_le_bon_entrepot(): void
     {
-        $this->actingAs(User::factory()->create()->assignRole('manager'));
+        $user = User::factory()->create()->assignRole('manager');
+        $this->actingAs($user);
 
         $warehouse = Warehouse::create(['name' => 'Entrepôt A', 'code' => 'a-t13-ui']);
+        // Étape T19 — le manager doit avoir cet entrepôt dans son périmètre.
+        $user->warehouses()->attach($warehouse);
         $product = $this->makeProduct();
         $order = PurchaseOrder::create(['reference' => 'BC-UI-T13-1']);
         $item = PurchaseOrderItem::create([
