@@ -3,6 +3,7 @@
 namespace App\Filament\Resources\StockMovements\Tables;
 
 use App\Models\Product;
+use App\Models\Warehouse;
 use Filament\Actions\BulkActionGroup;
 use Filament\Actions\DeleteBulkAction;
 use Filament\Actions\EditAction;
@@ -24,6 +25,11 @@ class StockMovementsTable
                 Tables\Columns\TextColumn::make('product.nom')
                     ->label('Produit')
                     ->searchable(),
+
+                Tables\Columns\TextColumn::make('warehouse.name')
+                    ->label('Entrepôt')
+                    ->searchable()
+                    ->sortable(),
 
                 Tables\Columns\TextColumn::make('type')
                     ->label('Type')
@@ -74,6 +80,11 @@ class StockMovementsTable
                 SelectFilter::make('product_id')
                     ->label('Produit')
                     ->options(fn () => Product::query()->orderBy('nom')->pluck('nom', 'id')->toArray())
+                    ->searchable(),
+
+                SelectFilter::make('warehouse_id')
+                    ->label('Entrepôt')
+                    ->options(fn () => Warehouse::query()->orderBy('name')->pluck('name', 'id')->toArray())
                     ->searchable(),
 
                 Filter::make('created_at')

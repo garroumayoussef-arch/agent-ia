@@ -21,6 +21,10 @@ class StockMovementInfolist
                             ->label('Produit')
                             ->placeholder('-'),
 
+                        TextEntry::make('warehouse.name')
+                            ->label('Entrepôt')
+                            ->placeholder('-'),
+
                         TextEntry::make('productVariant')
                             ->label('Variante')
                             ->state(function (StockMovement $record): string {
