@@ -42,6 +42,12 @@ class DatabaseSeeder extends Seeder
             // is_default créé par WarehouseSeeder juste au-dessus — doit
             // s'exécuter après lui.
             WarehouseStockSeeder::class,
+            // Étape T11b : rattache les stock_movements historiques
+            // (warehouse_id encore NULL) à l'entrepôt par défaut.
+            // Dépend uniquement de WarehouseSeeder (comme
+            // WarehouseStockSeeder juste au-dessus), indépendant de
+            // WarehouseStockSeeder lui-même.
+            StockMovementWarehouseSeeder::class,
         ]);
     }
 }

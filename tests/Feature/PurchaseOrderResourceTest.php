@@ -11,6 +11,7 @@ use App\Models\PurchaseOrder;
 use App\Models\PurchaseOrderItem;
 use App\Models\Supplier;
 use App\Models\User;
+use App\Models\Warehouse;
 use Database\Seeders\RoleSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Livewire\Livewire;
@@ -25,6 +26,16 @@ class PurchaseOrderResourceTest extends TestCase
         parent::setUp();
 
         $this->seed(RoleSeeder::class);
+
+        // Étape T11b : StockMovement::creating() (déclenché par
+        // PurchaseOrder::receive()) résout désormais systématiquement
+        // un entrepôt (par défaut en repli) — un entrepôt par défaut
+        // doit donc exister.
+        Warehouse::create([
+            'name' => 'Entrepôt par défaut',
+            'code' => 'defaut',
+            'is_default' => true,
+        ]);
     }
 
     private function makeProduct(array $attributes = []): Product

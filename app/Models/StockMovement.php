@@ -78,6 +78,23 @@ class StockMovement extends Model
 
             /*
              * =========================================================
+             * ENTREPÔT (dimension T11b)
+             * =========================================================
+             *
+             * Un mouvement sans entrepôt explicite est rattaché à
+             * l'unique entrepôt marqué par défaut. Aucun mouvement
+             * n'est jamais créé avec warehouse_id = NULL : sans
+             * entrepôt par défaut configuré, la création est refusée
+             * explicitement plutôt que de laisser un mouvement
+             * "orphelin" de toute dimension entrepôt.
+             */
+
+            if (!$movement->warehouse_id) {
+                $movement->warehouse_id = static::resolveDefaultWarehouseIdOrFail();
+            }
+
+            /*
+             * =========================================================
              * VALIDATION DU TYPE ET DE LA QUANTITÉ
              * =========================================================
              */
@@ -125,6 +142,8 @@ class StockMovement extends Model
                      */
                     $variant->save();
 
+                    static::applyWarehouseStockEffect($movement);
+
                     return;
                 }
 
@@ -148,6 +167,8 @@ class StockMovement extends Model
                 $product->stock = $movement->stock_after;
 
                 $product->save();
+
+                static::applyWarehouseStockEffect($movement);
             });
         });
 
@@ -169,6 +190,17 @@ class StockMovement extends Model
             if ($movement->isDirty('product_id') || $movement->isDirty('product_variant_id')) {
                 throw new \Exception(
                     "Impossible de changer le produit ou la variante d'un mouvement existant. Supprimez ce mouvement puis créez-en un nouveau."
+                );
+            }
+
+            /*
+             * Même principe pour l'entrepôt (T11b) : le déplacer
+             * romprait la même façon la cohérence de warehouse_stocks
+             * pour deux entrepôts différents.
+             */
+            if ($movement->isDirty('warehouse_id')) {
+                throw new \Exception(
+                    "Impossible de changer l'entrepôt d'un mouvement existant. Supprimez ce mouvement puis créez-en un nouveau."
                 );
             }
 
@@ -245,6 +277,27 @@ class StockMovement extends Model
                 'La quantité doit être supérieure à zéro.'
             );
         }
+    }
+
+    /**
+     * Résout l'entrepôt par défaut (T11b). Utilisé aussi bien à la
+     * création d'un mouvement sans warehouse_id explicite qu'au rejeu
+     * (resyncLedger) d'un mouvement HISTORIQUE dont warehouse_id est
+     * encore NULL (pas encore rattaché par StockMovementWarehouseSeeder).
+     * Lève systématiquement une exception plutôt que de laisser
+     * warehouse_id NULL ou 0 se propager vers warehouse_stocks.
+     */
+    private static function resolveDefaultWarehouseIdOrFail(): int
+    {
+        $defaultWarehouse = Warehouse::where('is_default', true)->first();
+
+        if (!$defaultWarehouse) {
+            throw new \Exception(
+                "Aucun entrepôt par défaut n'est configuré : impossible de déterminer l'entrepôt de ce mouvement."
+            );
+        }
+
+        return $defaultWarehouse->id;
     }
 
     private static function assertValidType(string $type): void
@@ -376,6 +429,117 @@ class StockMovement extends Model
         // ProductVariant::syncProductStock() afin de tenir Product.stock
         // à jour.
         $target->update(['stock' => $runningStock]);
+
+        /*
+         * =========================================================
+         * RECALCUL PAR ENTREPÔT (T11b)
+         * =========================================================
+         *
+         * Rejeu ADDITIONNEL du même $ledger, cette fois partitionné
+         * par warehouse_id, sans toucher au rejeu global ci-dessus
+         * (ni à $runningStock, ni à la mise à jour de $target). Le
+         * point d'ancrage est identique (le stock_before ORIGINAL du
+         * tout premier mouvement), attribué à l'entrepôt de ce
+         * premier mouvement — les autres entrepôts démarrent à 0,
+         * n'ayant par construction aucun stock antérieur à leur
+         * propre premier mouvement.
+         *
+         * Un mouvement HISTORIQUE pas encore rattaché par
+         * StockMovementWarehouseSeeder (warehouse_id encore NULL) est
+         * résolu ici via le même repli sur l'entrepôt par défaut que
+         * `creating()` — jamais 0/NULL propagé vers warehouse_stocks.
+         */
+        $anchorWarehouseId = $anchor->warehouse_id
+            ? (int) $anchor->warehouse_id
+            : static::resolveDefaultWarehouseIdOrFail();
+
+        $warehouseTotals = [$anchorWarehouseId => $baselineStock];
+
+        foreach ($ledger as $entry) {
+            $rawWarehouseId = ($pendingMovement && $entry->id === $pendingMovement->id)
+                ? $pendingMovement->warehouse_id
+                : $entry->warehouse_id;
+
+            $entryWarehouseId = $rawWarehouseId
+                ? (int) $rawWarehouseId
+                : static::resolveDefaultWarehouseIdOrFail();
+
+            $warehouseTotals[$entryWarehouseId] ??= 0;
+
+            $warehouseTotals[$entryWarehouseId] = static::applyMovementEffect(
+                $entry->type,
+                (int) $entry->quantity,
+                $warehouseTotals[$entryWarehouseId]
+            );
+        }
+
+        foreach ($warehouseTotals as $warehouseId => $total) {
+            $warehouseStock = WarehouseStock::firstOrCreate(
+                [
+                    'warehouse_id' => $warehouseId,
+                    'product_id' => $productId,
+                    'product_variant_id' => $productVariantId,
+                ],
+                ['stock' => 0]
+            );
+
+            WarehouseStock::whereKey($warehouseStock->id)->update(['stock' => $total]);
+        }
+    }
+
+    /**
+     * Applique l'effet d'un mouvement (déjà validé) à la ligne
+     * warehouse_stocks correspondante (T11b). Complète la mise à jour
+     * du stock global (Product/ProductVariant) déjà effectuée par
+     * l'appelant, sans la modifier.
+     *
+     * Si aucune ligne warehouse_stocks n'existe encore pour ce couple
+     * (entrepôt, produit/variante) — cas d'un stock affecté
+     * directement sans être jamais passé par WarehouseStockSeeder ni
+     * par un mouvement — elle est créée avec pour stock initial
+     * `$movement->stock_before` (le stock global juste AVANT ce
+     * mouvement), pas 0 : même convention que WarehouseStockSeeder
+     * (T11a), qui réputait tout stock non encore décomposé comme
+     * entièrement présent dans l'entrepôt qui le reçoit. Partir de 0
+     * romprait cet invariant et ferait apparaître un stock
+     * insuffisant alors que le stock global, lui, est suffisant.
+     *
+     * Limite connue : une création concurrente de cette ligne sur le
+     * tout premier mouvement d'un couple (entrepôt, produit/variante)
+     * peut en théorie entrer en conflit avec la contrainte d'unicité —
+     * même limite déjà documentée pour WarehouseStockSeeder (T11a),
+     * non traitée ici pour rester strictement dans le périmètre T11b.
+     */
+    private static function applyWarehouseStockEffect(StockMovement $movement): void
+    {
+        $warehouseStock = WarehouseStock::where('warehouse_id', $movement->warehouse_id)
+            ->where('product_id', $movement->product_id)
+            ->where('product_variant_id', $movement->product_variant_id)
+            ->first();
+
+        if (!$warehouseStock) {
+            $warehouseStock = WarehouseStock::create([
+                'warehouse_id' => $movement->warehouse_id,
+                'product_id' => $movement->product_id,
+                'product_variant_id' => $movement->product_variant_id,
+                'stock' => (int) $movement->stock_before,
+            ]);
+        }
+
+        // Verrouillage de la ligne pour éviter toute condition de
+        // course entre deux mouvements concurrents sur le même couple
+        // (entrepôt, produit/variante).
+        $warehouseStock = WarehouseStock::whereKey($warehouseStock->id)
+            ->lockForUpdate()
+            ->first();
+
+        $warehouseStock->stock = static::applyMovementEffect(
+            $movement->type,
+            (int) $movement->quantity,
+            (int) $warehouseStock->stock
+        );
+
+        $warehouseStock->save();
     }
 
     /*
@@ -401,6 +565,17 @@ class StockMovement extends Model
             ProductVariant::class,
             'product_variant_id'
         );
+    }
+
+    /*
+     * =============================================================
+     * RELATION : ENTREPÔT (T11b)
+     * =============================================================
+     */
+
+    public function warehouse(): BelongsTo
+    {
+        return $this->belongsTo(Warehouse::class);
     }
 
     /*

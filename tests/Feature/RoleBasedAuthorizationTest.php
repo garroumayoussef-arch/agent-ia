@@ -49,6 +49,16 @@ class RoleBasedAuthorizationTest extends TestCase
         parent::setUp();
 
         $this->seed(RoleSeeder::class);
+
+        // Étape T11b : StockMovement::creating() résout désormais
+        // systématiquement un entrepôt (par défaut en repli) — requis
+        // pour les tests PurchaseOrder/SalesOrder/StockMovement de ce
+        // fichier, qui créent des mouvements de stock indirectement.
+        Warehouse::create([
+            'name' => 'Entrepôt par défaut',
+            'code' => 'defaut',
+            'is_default' => true,
+        ]);
     }
 
     private function makeProduct(array $attributes = []): Product

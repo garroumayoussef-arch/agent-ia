@@ -10,12 +10,30 @@ use App\Models\StockMovement;
 use App\Models\Supplier;
 use App\Models\TaxRate;
 use App\Models\User;
+use App\Models\Warehouse;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
 
 class PurchaseOrderTest extends TestCase
 {
     use RefreshDatabase;
+
+    /**
+     * Étape T11b : StockMovement::creating() (déclenché par
+     * PurchaseOrder::receive()) résout désormais systématiquement un
+     * entrepôt (par défaut en repli) — un entrepôt par défaut doit
+     * donc exister.
+     */
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        Warehouse::create([
+            'name' => 'Entrepôt par défaut',
+            'code' => 'defaut',
+            'is_default' => true,
+        ]);
+    }
 
     private function makeProduct(array $attributes = []): Product
     {
