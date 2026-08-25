@@ -183,4 +183,40 @@ class InvoiceCreditNoteActionTest extends TestCase
         $this->assertCount(1, $creditNote->lines);
         $this->assertCount(1, CreditNote::creditableLinesFor($invoice->fresh()));
     }
+
+    /**
+     * Étape T25-B — appel direct de mountAction() (pas le helper de
+     * test callAction(), qui pré-vérifie lui-même assertActionVisible()
+     * et ne testerait donc jamais le contournement réel) : reproduit un
+     * appel Livewire forgé, indépendant de ce que l'interface affiche.
+     * ->authorize() doit bloquer réellement l'exécution, pas seulement
+     * masquer le bouton.
+     */
+    public function test_un_viewer_ne_peut_pas_creer_un_avoir_total_par_appel_direct_de_laction(): void
+    {
+        $manager = User::factory()->create()->assignRole('manager');
+        $this->actingAs($manager);
+        $invoice = $this->makeShippedInvoiceAsManager($manager);
+
+        $this->actingAs(User::factory()->create()->assignRole('viewer'));
+
+        Livewire::test(ViewInvoice::class, ['record' => $invoice->getKey()])
+            ->call('mountAction', 'generateTotalCreditNote');
+
+        $this->assertSame(0, CreditNote::where('invoice_id', $invoice->id)->count());
+    }
+
+    public function test_un_viewer_ne_peut_pas_creer_un_avoir_partiel_par_appel_direct_de_laction(): void
+    {
+        $manager = User::factory()->create()->assignRole('manager');
+        $this->actingAs($manager);
+        $invoice = $this->makeShippedInvoiceAsManager($manager);
+
+        $this->actingAs(User::factory()->create()->assignRole('viewer'));
+
+        Livewire::test(ViewInvoice::class, ['record' => $invoice->getKey()])
+            ->call('mountAction', 'generatePartialCreditNote');
+
+        $this->assertSame(0, CreditNote::where('invoice_id', $invoice->id)->count());
+    }
 }

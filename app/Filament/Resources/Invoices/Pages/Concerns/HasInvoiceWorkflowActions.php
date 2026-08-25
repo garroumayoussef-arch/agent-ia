@@ -29,6 +29,16 @@ use Filament\Notifications\Notification;
  * confiance dans la sélection venue du navigateur, revérifiée
  * intégralement côté modèle (cf. sa documentation : barrière à trois
  * niveaux contre le sur-crédit).
+ *
+ * Étape T25-B — ->visible() ne bloque que l'affichage du bouton :
+ * Filament résout une action en appelant directement sa méthode PHP
+ * (resolveAction()), sans jamais consulter isVisible() — un appel
+ * Livewire direct/forgé pouvait donc jusqu'ici contourner totalement
+ * cette garde (démontré empiriquement en T24). ->authorize() est en
+ * revanche réellement évalué côté serveur à chaque montage/exécution de
+ * l'action (mountAction()/callMountedAction()), y compris un tel appel
+ * direct : c'est la barrière ajoutée ici, en plus de ->visible() qui
+ * reste inchangée (comportement d'affichage identique à avant).
  */
 trait HasInvoiceWorkflowActions
 {
@@ -46,6 +56,9 @@ trait HasInvoiceWorkflowActions
             ->color('danger')
             ->visible(fn (Invoice $record): bool => InvoiceResource::canEdit($record)
                 && CreditNote::creditableLinesFor($record)->isNotEmpty())
+            ->authorize(fn (Invoice $record): bool => InvoiceResource::canEdit($record))
+            ->authorizationNotification()
+            ->authorizationMessage("Cette action est réservée aux administrateurs et gestionnaires.")
             ->requiresConfirmation()
             ->schema([
                 Select::make('settlement_type')
@@ -98,6 +111,9 @@ trait HasInvoiceWorkflowActions
             ->color('warning')
             ->visible(fn (Invoice $record): bool => InvoiceResource::canEdit($record)
                 && CreditNote::creditableLinesFor($record)->isNotEmpty())
+            ->authorize(fn (Invoice $record): bool => InvoiceResource::canEdit($record))
+            ->authorizationNotification()
+            ->authorizationMessage("Cette action est réservée aux administrateurs et gestionnaires.")
             ->schema(function (Invoice $record): array {
                 $creditableLines = CreditNote::creditableLinesFor($record);
 

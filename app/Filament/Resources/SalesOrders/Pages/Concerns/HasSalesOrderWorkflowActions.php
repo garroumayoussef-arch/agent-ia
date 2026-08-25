@@ -40,6 +40,21 @@ use Filament\Notifications\Notification;
  * protection indirecte : la génération de facture porte donc sa propre
  * garde explicite, qu'elle apparaisse sur EditSalesOrder ou
  * ViewSalesOrder.
+ *
+ * Étape T25-C — ->visible() ne bloque que l'affichage du bouton :
+ * Filament résout une action en appelant directement sa méthode PHP
+ * (resolveAction()), sans jamais consulter isVisible() — un appel
+ * Livewire direct/forgé pouvait donc jusqu'ici contourner toutes ces
+ * actions, y compris confirmOrder/cancelOrder/shipOrder qui n'avaient
+ * même pas de garde de rôle en ->visible(). ->authorize() est en
+ * revanche réellement évalué côté serveur à chaque montage/exécution de
+ * l'action (mountAction()/callMountedAction()), y compris un tel appel
+ * direct : c'est la barrière ajoutée ici sur les 4 actions, en plus des
+ * ->visible() existants qui restent inchangés (comportement d'affichage
+ * identique à avant — seule l'exécution effective par un rôle non
+ * autorisé est désormais bloquée). Cumulative avec
+ * ValidatesOperationWarehouse (T19) sur shipOrderAction, jamais en
+ * remplacement.
  */
 trait HasSalesOrderWorkflowActions
 {
@@ -52,6 +67,9 @@ trait HasSalesOrderWorkflowActions
             ->icon('heroicon-o-check-circle')
             ->color('info')
             ->visible(fn (SalesOrder $record): bool => $record->status === SalesOrder::STATUS_DRAFT)
+            ->authorize(fn (SalesOrder $record): bool => SalesOrderResource::canEdit($record))
+            ->authorizationNotification()
+            ->authorizationMessage("Cette action est réservée aux administrateurs et gestionnaires.")
             ->requiresConfirmation()
             ->action(function (SalesOrder $record) {
                 try {
@@ -82,6 +100,9 @@ trait HasSalesOrderWorkflowActions
                 [SalesOrder::STATUS_DRAFT, SalesOrder::STATUS_CONFIRMED],
                 true
             ))
+            ->authorize(fn (SalesOrder $record): bool => SalesOrderResource::canEdit($record))
+            ->authorizationNotification()
+            ->authorizationMessage("Cette action est réservée aux administrateurs et gestionnaires.")
             ->requiresConfirmation()
             ->action(function (SalesOrder $record) {
                 try {
@@ -112,6 +133,9 @@ trait HasSalesOrderWorkflowActions
                 [SalesOrder::STATUS_CONFIRMED, SalesOrder::STATUS_PARTIALLY_SHIPPED],
                 true
             ))
+            ->authorize(fn (SalesOrder $record): bool => SalesOrderResource::canEdit($record))
+            ->authorizationNotification()
+            ->authorizationMessage("Cette action est réservée aux administrateurs et gestionnaires.")
             ->schema(function (SalesOrder $record): array {
                 // Étape T13 — un seul entrepôt pour toute l'expédition
                 // (jamais par ligne). Pré-rempli uniquement s'il n'y a
@@ -201,6 +225,9 @@ trait HasSalesOrderWorkflowActions
             ->visible(fn (SalesOrder $record): bool => SalesOrderResource::canEdit($record)
                 && $record->status === SalesOrder::STATUS_SHIPPED
                 && ! Invoice::where('sales_order_id', $record->id)->exists())
+            ->authorize(fn (SalesOrder $record): bool => SalesOrderResource::canEdit($record))
+            ->authorizationNotification()
+            ->authorizationMessage("Cette action est réservée aux administrateurs et gestionnaires.")
             ->requiresConfirmation()
             ->action(function (SalesOrder $record) {
                 try {

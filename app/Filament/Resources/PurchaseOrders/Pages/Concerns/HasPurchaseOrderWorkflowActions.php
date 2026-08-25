@@ -3,6 +3,7 @@
 namespace App\Filament\Resources\PurchaseOrders\Pages\Concerns;
 
 use App\Filament\Concerns\ScopesToOwnWarehouses;
+use App\Filament\Resources\PurchaseOrders\PurchaseOrderResource;
 use App\Models\PurchaseOrder;
 use App\Models\PurchaseOrderItem;
 use Filament\Actions\Action;
@@ -25,6 +26,21 @@ use Filament\Notifications\Notification;
  * (ScopesToOwnWarehouses) : simple confort d'UI, la barrière autoritaire
  * reste ValidatesOperationWarehouse::assertValidOperationWarehouse(),
  * appelée depuis PurchaseOrder::receive().
+ *
+ * Étape T25-C — aucune des 3 actions ci-dessous n'avait de garde de
+ * rôle en ->visible() (statut seul) : leur seule protection venait de
+ * ce que EditPurchaseOrder n'est atteignable que par un admin/manager,
+ * alors que ViewPurchaseOrder (qui compose pourtant le même trait)
+ * reste accessible à un viewer. Or ->visible() ne bloque de toute façon
+ * que l'affichage du bouton — Filament résout une action en appelant
+ * directement sa méthode PHP (resolveAction()), sans jamais consulter
+ * isVisible() — un appel Livewire direct/forgé pouvait donc contourner
+ * toutes ces actions. ->authorize() est réellement évalué côté serveur
+ * à chaque montage/exécution de l'action (mountAction()/
+ * callMountedAction()), y compris un tel appel direct : c'est la
+ * barrière ajoutée ici, en plus des ->visible() existants qui restent
+ * inchangés. Cumulative avec ValidatesOperationWarehouse (T19) sur
+ * receiveOrderAction, jamais en remplacement.
  */
 trait HasPurchaseOrderWorkflowActions
 {
@@ -37,6 +53,9 @@ trait HasPurchaseOrderWorkflowActions
             ->icon('heroicon-o-check-circle')
             ->color('info')
             ->visible(fn (PurchaseOrder $record): bool => $record->status === PurchaseOrder::STATUS_DRAFT)
+            ->authorize(fn (PurchaseOrder $record): bool => PurchaseOrderResource::canEdit($record))
+            ->authorizationNotification()
+            ->authorizationMessage("Cette action est réservée aux administrateurs et gestionnaires.")
             ->requiresConfirmation()
             ->action(function (PurchaseOrder $record) {
                 try {
@@ -67,6 +86,9 @@ trait HasPurchaseOrderWorkflowActions
                 [PurchaseOrder::STATUS_DRAFT, PurchaseOrder::STATUS_ORDERED],
                 true
             ))
+            ->authorize(fn (PurchaseOrder $record): bool => PurchaseOrderResource::canEdit($record))
+            ->authorizationNotification()
+            ->authorizationMessage("Cette action est réservée aux administrateurs et gestionnaires.")
             ->requiresConfirmation()
             ->action(function (PurchaseOrder $record) {
                 try {
@@ -97,6 +119,9 @@ trait HasPurchaseOrderWorkflowActions
                 [PurchaseOrder::STATUS_ORDERED, PurchaseOrder::STATUS_PARTIALLY_RECEIVED],
                 true
             ))
+            ->authorize(fn (PurchaseOrder $record): bool => PurchaseOrderResource::canEdit($record))
+            ->authorizationNotification()
+            ->authorizationMessage("Cette action est réservée aux administrateurs et gestionnaires.")
             ->schema(function (PurchaseOrder $record): array {
                 // Étape T13 — un seul entrepôt pour toute la réception
                 // (jamais par ligne). Pré-rempli uniquement s'il n'y a

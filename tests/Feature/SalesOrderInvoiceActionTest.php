@@ -175,4 +175,29 @@ class SalesOrderInvoiceActionTest extends TestCase
             ->assertActionHidden('generateInvoice')
             ->assertActionVisible('downloadInvoice');
     }
+
+    /**
+     * Étape T25-B — appel direct de mountAction() (pas le helper de
+     * test callAction(), qui pré-vérifie lui-même assertActionVisible()
+     * et ne testerait donc jamais le contournement réel) : reproduit un
+     * appel Livewire forgé, indépendant de ce que l'interface affiche.
+     * ->authorize() doit bloquer réellement l'exécution, pas seulement
+     * masquer le bouton.
+     */
+    public function test_un_viewer_ne_peut_pas_generer_une_facture_par_appel_direct_de_laction(): void
+    {
+        $manager = User::factory()->create()->assignRole('manager');
+        $this->actingAs($manager);
+        $manager->warehouses()->attach(Warehouse::where('is_default', true)->value('id'));
+        [$order, $item] = $this->makeDraftOrderWithItem();
+        $order->markAsConfirmed();
+        $order->fresh()->ship([$item->id => 2]);
+
+        $this->actingAs(User::factory()->create()->assignRole('viewer'));
+
+        Livewire::test(ViewSalesOrder::class, ['record' => $order->getKey()])
+            ->call('mountAction', 'generateInvoice');
+
+        $this->assertSame(0, Invoice::where('sales_order_id', $order->id)->count());
+    }
 }
