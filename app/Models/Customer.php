@@ -17,6 +17,13 @@ class Customer extends Model
         'is_active' => 'boolean',
     ];
 
+    // Étape T23 — distingue un client particulier (B2C) d'un client
+    // professionnel (B2B), nécessaire pour déterminer les mentions
+    // légales applicables à une facture (cf. Invoice::generateFromSalesOrder()).
+    public const TYPE_INDIVIDUAL = 'individual';
+
+    public const TYPE_BUSINESS = 'business';
+
     public function salesOrders(): HasMany
     {
         return $this->hasMany(SalesOrder::class);

@@ -1,5 +1,6 @@
 <?php
 
+use App\Http\Controllers\InvoicePdfController;
 use App\Http\Controllers\ProfileController;
 use App\Http\Controllers\VtcRideReceiptController;
 use Illuminate\Foundation\Application;
@@ -30,6 +31,14 @@ Route::middleware('auth')->group(function () {
     // contrôleur, pas ici (cf. VtcRideReceiptController).
     Route::get('/vtc-rides/{vtcRide}/receipt', [VtcRideReceiptController::class, 'show'])
         ->name('vtc-rides.receipt');
+
+    // Étape T23 — PDF d'une facture émise, régénéré à chaque appel
+    // depuis les données figées d'Invoice/InvoiceLine (jamais depuis
+    // SalesOrder/Customer/CompanySettings, contrainte 9). Hors du panel
+    // Filament, même principe que le reçu VTC ci-dessus : l'autorisation
+    // est vérifiée dans le contrôleur (cf. InvoicePdfController).
+    Route::get('/invoices/{invoice}/pdf', [InvoicePdfController::class, 'show'])
+        ->name('invoices.pdf');
 });
 
 require __DIR__.'/auth.php';

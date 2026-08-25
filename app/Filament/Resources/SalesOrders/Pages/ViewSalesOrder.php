@@ -19,6 +19,8 @@ class ViewSalesOrder extends ViewRecord
             $this->confirmOrderAction(),
             $this->shipOrderAction(),
             $this->cancelOrderAction(),
+            $this->generateInvoiceAction(),
+            $this->downloadInvoiceAction(),
             EditAction::make(),
         ];
     }

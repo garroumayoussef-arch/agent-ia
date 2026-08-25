@@ -21,6 +21,8 @@ class EditSalesOrder extends EditRecord
             $this->confirmOrderAction(),
             $this->shipOrderAction(),
             $this->cancelOrderAction(),
+            $this->generateInvoiceAction(),
+            $this->downloadInvoiceAction(),
             DeleteAction::make()
                 // Le modèle refuse la suppression d'une commande dont au
                 // moins une ligne a été expédiée (cf. SalesOrder::deleting).

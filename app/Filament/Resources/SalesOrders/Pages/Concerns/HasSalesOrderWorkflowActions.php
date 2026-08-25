@@ -3,6 +3,8 @@
 namespace App\Filament\Resources\SalesOrders\Pages\Concerns;
 
 use App\Filament\Concerns\ScopesToOwnWarehouses;
+use App\Filament\Resources\SalesOrders\SalesOrderResource;
+use App\Models\Invoice;
 use App\Models\SalesOrder;
 use App\Models\SalesOrderItem;
 use Filament\Actions\Action;
@@ -24,6 +26,20 @@ use Filament\Notifications\Notification;
  * (ScopesToOwnWarehouses) : simple confort d'UI, la barrière autoritaire
  * reste ValidatesOperationWarehouse::assertValidOperationWarehouse(),
  * appelée depuis SalesOrder::ship().
+ *
+ * Étape T23 — generateInvoiceAction()/downloadInvoiceAction() : la
+ * génération de facture est explicitement gardée par
+ * SalesOrderResource::canEdit() (admin/manager). C'est un choix
+ * délibéré, à la différence des 3 actions ci-dessus (confirmOrder/
+ * cancelOrder/shipOrder) qui n'ont, elles, aucune garde de rôle
+ * explicite au niveau de l'action — leur seule protection vient de ce
+ * que EditSalesOrder n'est atteignable que par un admin/manager
+ * (canEdit()), alors que ViewSalesOrder (qui compose pourtant le même
+ * trait) reste accessible à un viewer. Émettre un document légal
+ * immuable est jugé trop sensible pour reposer sur cette seule
+ * protection indirecte : la génération de facture porte donc sa propre
+ * garde explicite, qu'elle apparaisse sur EditSalesOrder ou
+ * ViewSalesOrder.
  */
 trait HasSalesOrderWorkflowActions
 {
@@ -162,5 +178,67 @@ trait HasSalesOrderWorkflowActions
                         ->send();
                 }
             });
+    }
+
+    /**
+     * Étape T23 (D2/contrainte 7) — visible UNIQUEMENT si la commande
+     * est intégralement expédiée (STATUS_SHIPPED) : jamais pour
+     * partially_shipped, aucune facturation partielle en V1. Invisible
+     * dès qu'une facture existe déjà (Invoice::generateFromSalesOrder()
+     * refuse de toute façon les doublons — cette condition n'est qu'un
+     * confort d'UI, jamais la seule protection).
+     *
+     * Gardée explicitement par SalesOrderResource::canEdit() (voir le
+     * commentaire de tête du trait) : jamais accessible à un viewer,
+     * même depuis ViewSalesOrder.
+     */
+    protected function generateInvoiceAction(): Action
+    {
+        return Action::make('generateInvoice')
+            ->label('Générer la facture')
+            ->icon('heroicon-o-document-text')
+            ->color('success')
+            ->visible(fn (SalesOrder $record): bool => SalesOrderResource::canEdit($record)
+                && $record->status === SalesOrder::STATUS_SHIPPED
+                && ! Invoice::where('sales_order_id', $record->id)->exists())
+            ->requiresConfirmation()
+            ->action(function (SalesOrder $record) {
+                try {
+                    $invoice = Invoice::generateFromSalesOrder($record);
+
+                    Notification::make()
+                        ->title("Facture {$invoice->number} générée")
+                        ->success()
+                        ->send();
+                } catch (\Throwable $e) {
+                    Notification::make()
+                        ->title('Génération de facture impossible')
+                        ->body($e->getMessage())
+                        ->danger()
+                        ->send();
+                }
+            });
+    }
+
+    /**
+     * Étape T23 — visible dès qu'une facture existe pour cette
+     * commande. Ouvre le PDF (régénéré à chaque appel depuis les
+     * données figées de Invoice/InvoiceLine, jamais depuis SalesOrder)
+     * dans un nouvel onglet, imprimable/téléchargeable nativement par
+     * le navigateur.
+     */
+    protected function downloadInvoiceAction(): Action
+    {
+        return Action::make('downloadInvoice')
+            ->label('Télécharger la facture')
+            ->icon('heroicon-o-arrow-down-tray')
+            ->color('gray')
+            ->visible(fn (SalesOrder $record): bool => Invoice::where('sales_order_id', $record->id)->exists())
+            ->url(function (SalesOrder $record): ?string {
+                $invoice = Invoice::where('sales_order_id', $record->id)->first();
+
+                return $invoice ? route('invoices.pdf', $invoice) : null;
+            })
+            ->openUrlInNewTab();
     }
 }
