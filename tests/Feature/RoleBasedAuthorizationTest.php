@@ -889,7 +889,16 @@ class RoleBasedAuthorizationTest extends TestCase
             'quantity' => 5,
         ]);
 
-        $this->actingAs(User::factory()->create()->assignRole('manager'));
+        $manager = User::factory()->create()->assignRole('manager');
+        $this->actingAs($manager);
+
+        // Étape T20 — $stockMovement est rattaché à l'entrepôt par
+        // défaut (aucun warehouse_id explicite ci-dessus) : le manager
+        // doit l'avoir dans son périmètre pour que la page "view"
+        // (résolue via StockMovementResource::getEloquentQuery()) reste
+        // accessible, sans quoi ce test de non-régression T6 échouerait
+        // pour une raison T20, pas T6.
+        $manager->warehouses()->attach(Warehouse::where('is_default', true)->value('id'));
 
         $this->get(\App\Filament\Resources\PurchaseOrders\PurchaseOrderResource::getUrl('index'))->assertSuccessful();
         $this->get(\App\Filament\Resources\PurchaseOrders\PurchaseOrderResource::getUrl('view', ['record' => $purchaseOrder]))->assertSuccessful();
@@ -1022,7 +1031,13 @@ class RoleBasedAuthorizationTest extends TestCase
         $this->get(StockMovementResource::getUrl('index'))->assertSuccessful();
         $this->get(StockMovementResource::getUrl('view', ['record' => $stockMovement]))->assertSuccessful();
 
-        $this->actingAs(User::factory()->create()->assignRole('manager'));
+        $manager = User::factory()->create()->assignRole('manager');
+        $this->actingAs($manager);
+        // Étape T20 — $stockMovement est rattaché à l'entrepôt par
+        // défaut (aucun warehouse_id explicite ci-dessus) : le manager
+        // doit l'avoir dans son périmètre pour que la page "view" reste
+        // accessible.
+        $manager->warehouses()->attach(Warehouse::where('is_default', true)->value('id'));
         $this->get(StockMovementResource::getUrl('index'))->assertSuccessful();
         $this->get(StockMovementResource::getUrl('view', ['record' => $stockMovement]))->assertSuccessful();
     }

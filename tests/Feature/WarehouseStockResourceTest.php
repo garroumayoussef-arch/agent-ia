@@ -48,9 +48,12 @@ class WarehouseStockResourceTest extends TestCase
 
     public function test_la_liste_affiche_les_lignes_warehouse_stock_existantes(): void
     {
-        $this->actingAs(User::factory()->create()->assignRole('manager'));
+        $user = User::factory()->create()->assignRole('manager');
+        $this->actingAs($user);
 
         $warehouse = Warehouse::create(['name' => 'Entrepôt A', 'code' => 'a-t14']);
+        // Étape T20 — le manager doit avoir cet entrepôt dans son périmètre pour le voir en lecture.
+        $user->warehouses()->attach($warehouse);
         $product = $this->makeProduct(['nom' => 'Maillot T14 Domicile']);
         $line = WarehouseStock::create([
             'warehouse_id' => $warehouse->id,
@@ -67,9 +70,12 @@ class WarehouseStockResourceTest extends TestCase
 
     public function test_la_liste_affiche_le_libelle_de_la_variante(): void
     {
-        $this->actingAs(User::factory()->create()->assignRole('manager'));
+        $user = User::factory()->create()->assignRole('manager');
+        $this->actingAs($user);
 
         $warehouse = Warehouse::create(['name' => 'Entrepôt A', 'code' => 'a-t14-variant']);
+        // Étape T20 — le manager doit avoir cet entrepôt dans son périmètre pour le voir en lecture.
+        $user->warehouses()->attach($warehouse);
         $product = $this->makeProduct();
         $variant = ProductVariant::create([
             'product_id' => $product->id,
@@ -91,10 +97,15 @@ class WarehouseStockResourceTest extends TestCase
 
     public function test_le_filtre_par_entrepot_fonctionne(): void
     {
-        $this->actingAs(User::factory()->create()->assignRole('manager'));
+        $user = User::factory()->create()->assignRole('manager');
+        $this->actingAs($user);
 
         $warehouseA = Warehouse::create(['name' => 'Entrepôt A', 'code' => 'a-t14-filter']);
         $warehouseB = Warehouse::create(['name' => 'Entrepôt B', 'code' => 'b-t14-filter']);
+        // Étape T20 — les deux entrepôts sont dans le périmètre du manager :
+        // ce test doit continuer à exercer le FILTRE lui-même, pas le
+        // scoping T20 (qui exclurait B de toute façon si non attribué).
+        $user->warehouses()->attach([$warehouseA->id, $warehouseB->id]);
         $product = $this->makeProduct();
 
         $lineA = WarehouseStock::create(['warehouse_id' => $warehouseA->id, 'product_id' => $product->id, 'stock' => 5]);

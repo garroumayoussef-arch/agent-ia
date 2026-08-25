@@ -61,9 +61,12 @@ class StockMovementResourceTest extends TestCase
 
     public function test_la_colonne_entrepot_affiche_le_bon_entrepot(): void
     {
-        $this->actingAs(User::factory()->create()->assignRole('manager'));
+        $user = User::factory()->create()->assignRole('manager');
+        $this->actingAs($user);
 
         $warehouse = Warehouse::create(['name' => 'Entrepôt A', 'code' => 'a-t16']);
+        // Étape T20 — le manager doit avoir cet entrepôt dans son périmètre pour le voir en lecture.
+        $user->warehouses()->attach($warehouse);
         $product = $this->makeProduct(['stock' => 0]);
 
         $movement = StockMovement::create([
@@ -86,10 +89,15 @@ class StockMovementResourceTest extends TestCase
 
     public function test_le_filtre_par_entrepot_reduit_correctement_la_liste(): void
     {
-        $this->actingAs(User::factory()->create()->assignRole('manager'));
+        $user = User::factory()->create()->assignRole('manager');
+        $this->actingAs($user);
 
         $warehouseA = Warehouse::create(['name' => 'Entrepôt A', 'code' => 'a-t16-filter']);
         $warehouseB = Warehouse::create(['name' => 'Entrepôt B', 'code' => 'b-t16-filter']);
+        // Étape T20 — les deux entrepôts sont dans le périmètre du manager :
+        // ce test doit continuer à exercer le FILTRE lui-même, pas le
+        // scoping T20 (qui exclurait B de toute façon si non attribué).
+        $user->warehouses()->attach([$warehouseA->id, $warehouseB->id]);
         $product = $this->makeProduct(['stock' => 0]);
 
         $movementA = StockMovement::create([
@@ -120,9 +128,13 @@ class StockMovementResourceTest extends TestCase
 
     public function test_la_fiche_de_detail_affiche_lentrepot(): void
     {
-        $this->actingAs(User::factory()->create()->assignRole('manager'));
+        $user = User::factory()->create()->assignRole('manager');
+        $this->actingAs($user);
 
         $warehouse = Warehouse::create(['name' => 'Entrepôt A', 'code' => 'a-t16-view']);
+        // Étape T20 — le manager doit avoir cet entrepôt dans son périmètre :
+        // sinon la page "view" (résolue via getEloquentQuery()) renverrait 404.
+        $user->warehouses()->attach($warehouse);
         $product = $this->makeProduct(['stock' => 0]);
 
         $movement = StockMovement::create([
@@ -237,9 +249,12 @@ class StockMovementResourceTest extends TestCase
      */
     public function test_les_libelles_des_types_existants_restent_inchanges(): void
     {
-        $this->actingAs(User::factory()->create()->assignRole('manager'));
+        $user = User::factory()->create()->assignRole('manager');
+        $this->actingAs($user);
 
         $warehouse = Warehouse::create(['name' => 'Entrepôt A', 'code' => 'a-t17-existants']);
+        // Étape T20 — le manager doit avoir cet entrepôt dans son périmètre pour le voir en lecture.
+        $user->warehouses()->attach($warehouse);
         $product = $this->makeProduct(['stock' => 0]);
 
         StockMovement::create(['product_id' => $product->id, 'warehouse_id' => $warehouse->id, 'type' => 'purchase', 'quantity' => 5]);

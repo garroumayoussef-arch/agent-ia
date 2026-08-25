@@ -4,6 +4,7 @@ namespace App\Filament\Resources\StockMovements;
 
 use App\Filament\Concerns\BlocksChauffeurReadAccess;
 use App\Filament\Concerns\HasRoleBasedAuthorization;
+use App\Filament\Concerns\ScopesToOwnWarehouses;
 use App\Filament\Resources\StockMovements\Pages\CreateStockMovement;
 use App\Filament\Resources\StockMovements\Pages\EditStockMovement;
 use App\Filament\Resources\StockMovements\Pages\ListStockMovements;
@@ -17,11 +18,25 @@ use Filament\Resources\Resource;
 use Filament\Schemas\Schema;
 use Filament\Support\Icons\Heroicon;
 use Filament\Tables\Table;
+use Illuminate\Database\Eloquent\Builder;
 
+/**
+ * Étape T20 — scoping en LECTURE par entrepôt (managers uniquement,
+ * D1), via getEloquentQuery() (cf. getEloquentQuery() ci-dessous). Ce
+ * point unique protège à la fois la liste ET les pages "view"/"edit" :
+ * Filament résout l'enregistrement de ces pages via cette même
+ * requête, un accès direct par URL à une fiche hors périmètre devient
+ * donc un 404 natif, sans logique supplémentaire à écrire (D3 : chaque
+ * StockMovement porte son propre warehouse_id — la jambe transfer_out
+ * et la jambe transfer_in d'un même transfert sont donc déjà scopées
+ * indépendamment l'une de l'autre, sans code spécifique aux
+ * transferts).
+ */
 class StockMovementResource extends Resource
 {
     use HasRoleBasedAuthorization;
     use BlocksChauffeurReadAccess;
+    use ScopesToOwnWarehouses;
 
     protected static ?string $model = StockMovement::class;
 
@@ -40,6 +55,25 @@ class StockMovementResource extends Resource
     public static function table(Table $table): Table
     {
         return StockMovementsTable::configure($table);
+    }
+
+    /**
+     * Étape T20 — barrière autoritaire côté serveur (jamais seulement
+     * l'UI, cf. le filtre déjà restreint dans StockMovementsTable) :
+     * un manager sans entrepôt attribué obtient une liste vide (aucune
+     * exception) et un 404 sur toute fiche hors périmètre ; admin/
+     * viewer/sans rôle : inchangé.
+     */
+    public static function getEloquentQuery(): Builder
+    {
+        $query = parent::getEloquentQuery();
+        $allowedWarehouseIds = static::currentUserWarehouseIds();
+
+        if ($allowedWarehouseIds !== null) {
+            $query->whereIn('warehouse_id', $allowedWarehouseIds);
+        }
+
+        return $query;
     }
 
     public static function getRelations(): array

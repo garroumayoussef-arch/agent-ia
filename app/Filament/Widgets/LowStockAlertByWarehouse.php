@@ -3,6 +3,7 @@
 namespace App\Filament\Widgets;
 
 use App\Filament\Concerns\ScopesToOwnDriver;
+use App\Filament\Concerns\ScopesToOwnWarehouses;
 use App\Filament\Resources\Products\ProductResource;
 use App\Models\Product;
 use App\Models\WarehouseStock;
@@ -26,10 +27,16 @@ use Filament\Widgets\TableWidget;
  * Même seuil que le reste du projet (Product::LOW_STOCK_THRESHOLD),
  * réutilisé tel quel — pas de seuil configurable par entrepôt (hors
  * périmètre T15).
+ *
+ * Étape T20 — n'étant pas une Resource, ce widget ne bénéficie pas de
+ * getEloquentQuery() : sa requête est scopée directement ici, même
+ * principe (managers uniquement, D1) que WarehouseStockResource/
+ * StockMovementResource.
  */
 class LowStockAlertByWarehouse extends TableWidget
 {
     use ScopesToOwnDriver;
+    use ScopesToOwnWarehouses;
 
     // Juste après LowStockAlert (-10) : les deux alertes de stock bas
     // doivent rester regroupées en tête du dashboard.
@@ -57,12 +64,18 @@ class LowStockAlertByWarehouse extends TableWidget
                 'Lignes warehouse_stocks en stock bas ou en rupture (≤ '.Product::LOW_STOCK_THRESHOLD.' unités) '
                 .'dans un entrepôt actif, même si le stock global du produit reste suffisant ailleurs.'
             )
-            ->query(
-                WarehouseStock::query()
+            ->query(function () {
+                $allowedWarehouseIds = static::currentUserWarehouseIds();
+
+                return WarehouseStock::query()
                     ->where('stock', '<=', Product::LOW_STOCK_THRESHOLD)
                     ->whereHas('warehouse', fn ($query) => $query->where('is_active', true))
-                    ->orderBy('stock')
-            )
+                    ->when(
+                        $allowedWarehouseIds !== null,
+                        fn ($query) => $query->whereIn('warehouse_id', $allowedWarehouseIds),
+                    )
+                    ->orderBy('stock');
+            })
             ->columns([
                 Tables\Columns\TextColumn::make('warehouse.name')
                     ->label('Entrepôt')

@@ -3,6 +3,7 @@
 namespace App\Filament\Widgets;
 
 use App\Filament\Concerns\ScopesToOwnDriver;
+use App\Filament\Concerns\ScopesToOwnWarehouses;
 use App\Models\Warehouse;
 use App\Models\WarehouseStock;
 use Filament\Tables;
@@ -24,10 +25,18 @@ use Filament\Widgets\TableWidget;
  * aucune Resource T10-T17 et aucun système d'autorisation ne sont
  * modifiés — même règle de visibilité que LowStockAlertByWarehouse
  * (masqué uniquement pour un compte chauffeur).
+ *
+ * Étape T20 — n'étant pas une Resource, ce widget ne bénéficie pas de
+ * getEloquentQuery() : sa requête est scopée directement ici, même
+ * principe (managers uniquement, D1) que WarehouseStockResource/
+ * StockMovementResource. Un entrepôt hors périmètre n'apparaît même
+ * plus comme ligne du rapport (ni quantité ni valorisation à 0), il
+ * est simplement absent.
  */
 class WarehouseStockOverview extends TableWidget
 {
     use ScopesToOwnDriver;
+    use ScopesToOwnWarehouses;
 
     // Juste après les deux widgets d'alerte de stock bas (-10 et -9) :
     // le reporting consolidé complète l'information, il ne doit pas
@@ -53,11 +62,17 @@ class WarehouseStockOverview extends TableWidget
                 'Quantité totale et valorisation (stock × prix d\'achat) par entrepôt actif, '
                 .'tous produits et variantes confondus.'
             )
-            ->query(
-                Warehouse::query()
+            ->query(function () {
+                $allowedWarehouseIds = static::currentUserWarehouseIds();
+
+                return Warehouse::query()
                     ->where('is_active', true)
-                    ->orderBy('name')
-            )
+                    ->when(
+                        $allowedWarehouseIds !== null,
+                        fn ($query) => $query->whereIn('id', $allowedWarehouseIds),
+                    )
+                    ->orderBy('name');
+            })
             ->columns([
                 Tables\Columns\TextColumn::make('name')
                     ->label('Entrepôt')

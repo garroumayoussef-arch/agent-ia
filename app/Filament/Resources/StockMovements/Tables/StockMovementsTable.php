@@ -2,6 +2,7 @@
 
 namespace App\Filament\Resources\StockMovements\Tables;
 
+use App\Filament\Concerns\ScopesToOwnWarehouses;
 use App\Models\Product;
 use App\Models\Warehouse;
 use Filament\Actions\BulkActionGroup;
@@ -16,8 +17,16 @@ use Filament\Tables\Table;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Carbon;
 
+/**
+ * Étape T20 — les options du filtre warehouse_id sont intersectées
+ * avec le périmètre de l'utilisateur courant : simple confort d'UI,
+ * jamais la barrière elle-même — celle-ci reste
+ * StockMovementResource::getEloquentQuery(). Comportement préservé à
+ * l'identique pour tout utilisateur non restreint.
+ */
 class StockMovementsTable
 {
+    use ScopesToOwnWarehouses;
     public static function configure(Table $table): Table
     {
         return $table
@@ -87,7 +96,18 @@ class StockMovementsTable
 
                 SelectFilter::make('warehouse_id')
                     ->label('Entrepôt')
-                    ->options(fn () => Warehouse::query()->orderBy('name')->pluck('name', 'id')->toArray())
+                    ->options(function () {
+                        $allowedWarehouseIds = static::currentUserWarehouseIds();
+
+                        return Warehouse::query()
+                            ->when(
+                                $allowedWarehouseIds !== null,
+                                fn ($query) => $query->whereIn('id', $allowedWarehouseIds),
+                            )
+                            ->orderBy('name')
+                            ->pluck('name', 'id')
+                            ->toArray();
+                    })
                     ->searchable(),
 
                 Filter::make('created_at')
