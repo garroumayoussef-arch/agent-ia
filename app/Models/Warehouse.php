@@ -7,11 +7,9 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
 
 /**
  * Étape T10 (fondation multi-entrepôts) — relation vers
- * warehouse_stocks ajoutée en T11a. Toujours aucune relation vers
- * stock_transfers (T12) ni aucun branchement dans StockMovement (T11b,
- * pas encore fait) : warehouseStocks() reste pour l'instant une pure
- * décomposition figée au moment du rétro-remplissage, pas une donnée
- * "live".
+ * warehouse_stocks ajoutée en T11a, tenue à jour de façon "live" par
+ * StockMovement depuis T11b. Relations vers stock_transfers ajoutées
+ * en T12 (transferts de stock entre deux entrepôts).
  */
 class Warehouse extends Model
 {
@@ -67,11 +65,40 @@ class Warehouse extends Model
                     'Impossible de supprimer cet entrepôt : il possède un historique de stock. Désactivez-le plutôt que de le supprimer.'
                 );
             }
+
+            /*
+             * Étape T12 — même principe, pour l'historique de
+             * transferts (en plus de warehouse_stocks ci-dessus).
+             * Protection applicative explicite, en plus des
+             * contraintes restrictOnDelete() déjà posées sur
+             * stock_transfers.from_warehouse_id/to_warehouse_id.
+             */
+            if ($warehouse->outgoingTransfers()->exists() || $warehouse->incomingTransfers()->exists()) {
+                throw new \Exception(
+                    'Impossible de supprimer cet entrepôt : il possède un historique de transferts de stock. Désactivez-le plutôt que de le supprimer.'
+                );
+            }
         });
     }
 
     public function warehouseStocks(): HasMany
     {
         return $this->hasMany(WarehouseStock::class);
+    }
+
+    /*
+     * =============================================================
+     * RELATIONS : TRANSFERTS DE STOCK (T12)
+     * =============================================================
+     */
+
+    public function outgoingTransfers(): HasMany
+    {
+        return $this->hasMany(StockTransfer::class, 'from_warehouse_id');
+    }
+
+    public function incomingTransfers(): HasMany
+    {
+        return $this->hasMany(StockTransfer::class, 'to_warehouse_id');
     }
 }

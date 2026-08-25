@@ -205,6 +205,25 @@ class StockMovement extends Model
             }
 
             /*
+             * =========================================================
+             * INDIVISIBILITÉ D'UN TRANSFERT (T12)
+             * =========================================================
+             *
+             * Un mouvement lié à un StockTransfer (transfer_out ou
+             * transfer_in) fait partie d'une paire indivisible : le
+             * modifier seul romprait l'effet net nul garanti sur le
+             * stock global (Product/ProductVariant). Blocage total,
+             * quel que soit le champ modifié — même un champ sans
+             * impact sur le stock (notes, référence) — pour que le
+             * transfert reste traité comme une seule unité.
+             */
+            if ($movement->stock_transfer_id !== null) {
+                throw new \Exception(
+                    "Impossible de modifier un mouvement appartenant à un transfert de stock. Le transfert est traité comme une unité indivisible."
+                );
+            }
+
+            /*
              * Si ni le type ni la quantité ne changent, ce mouvement
              * n'a aucun impact sur le stock (ex : correction d'un
              * commentaire ou d'une référence) : rien à recalculer.
@@ -233,6 +252,17 @@ class StockMovement extends Model
          */
 
         static::deleting(function (StockMovement $movement) {
+            /*
+             * Même garde d'indivisibilité qu'en édition (T12) : un
+             * mouvement lié à un transfert ne peut jamais être
+             * supprimé seul.
+             */
+            if ($movement->stock_transfer_id !== null) {
+                throw new \Exception(
+                    "Impossible de supprimer un mouvement appartenant à un transfert de stock. Le transfert est traité comme une unité indivisible."
+                );
+            }
+
             DB::transaction(function () use ($movement) {
                 static::resyncLedger(
                     productVariantId: $movement->product_variant_id,
@@ -302,6 +332,12 @@ class StockMovement extends Model
 
     private static function assertValidType(string $type): void
     {
+        /*
+         * 'transfer' reste réservé/bloqué : T12 introduit deux types
+         * distincts et directionnels ('transfer_out'/'transfer_in',
+         * créés exclusivement par StockTransfer::execute()), jamais
+         * ce type générique sans direction.
+         */
         if ($type === 'transfer') {
             throw new \Exception(
                 'Les transferts entre entrepôts ne sont pas encore pris en charge.'
@@ -328,6 +364,36 @@ class StockMovement extends Model
             }
 
             return $stockBefore - $quantity;
+        }
+
+        /*
+         * T12 — jambe sortante d'un transfert : même sémantique que
+         * 'sale' (décrément, refus si insuffisant), appliquée soit au
+         * stock global (temporairement, avant compensation par la
+         * jambe transfer_in de la même transaction), soit au stock
+         * d'un entrepôt précis via applyWarehouseStockEffect(). C'est
+         * cette dernière application qui garantit la vérification
+         * "stock insuffisant à la source" même si le stock global du
+         * produit est suffisant ailleurs.
+         */
+        if ($type === 'transfer_out') {
+            if ($stockBefore < $quantity) {
+                throw new \Exception(
+                    'Stock insuffisant dans l\'entrepôt source pour effectuer ce transfert.'
+                );
+            }
+
+            return $stockBefore - $quantity;
+        }
+
+        /*
+         * T12 — jambe entrante d'un transfert : même sémantique que
+         * 'purchase' (incrément, jamais de refus). Combinée à
+         * transfer_out dans la même transaction (StockTransfer::execute()),
+         * l'effet net sur le stock global est toujours nul.
+         */
+        if ($type === 'transfer_in') {
+            return $stockBefore + $quantity;
         }
 
         if (in_array($type, ['adjustment', 'inventory'], true)) {
@@ -504,11 +570,23 @@ class StockMovement extends Model
      * romprait cet invariant et ferait apparaître un stock
      * insuffisant alors que le stock global, lui, est suffisant.
      *
+     * Exception à cette règle (T12) : pour transfer_out/transfer_in,
+     * ce raisonnement s'inverse. Ces types désignent explicitement
+     * DEUX entrepôts déjà distingués l'un de l'autre — toucher pour la
+     * première fois l'un des deux ne signifie pas qu'il détenait tout
+     * le stock, bien au contraire (l'entrepôt destination d'un
+     * transfert n'a, par définition, rien avant de recevoir). Une
+     * ligne nouvellement créée pour ces deux types démarre donc
+     * TOUJOURS à 0, jamais à `stock_before` — sans quoi une jambe
+     * entrante vers un entrepôt jamais décomposé se retrouverait
+     * indûment créditée du stock global entier en plus de la quantité
+     * transférée (cf. StockTransferTest pour la preuve du cas).
+     *
      * Limite connue : une création concurrente de cette ligne sur le
      * tout premier mouvement d'un couple (entrepôt, produit/variante)
      * peut en théorie entrer en conflit avec la contrainte d'unicité —
      * même limite déjà documentée pour WarehouseStockSeeder (T11a),
-     * non traitée ici pour rester strictement dans le périmètre T11b.
+     * non traitée ici pour rester strictement dans le périmètre T11b/T12.
      */
     private static function applyWarehouseStockEffect(StockMovement $movement): void
     {
@@ -518,11 +596,13 @@ class StockMovement extends Model
             ->first();
 
         if (!$warehouseStock) {
+            $isTransferLeg = in_array($movement->type, ['transfer_out', 'transfer_in'], true);
+
             $warehouseStock = WarehouseStock::create([
                 'warehouse_id' => $movement->warehouse_id,
                 'product_id' => $movement->product_id,
                 'product_variant_id' => $movement->product_variant_id,
-                'stock' => (int) $movement->stock_before,
+                'stock' => $isTransferLeg ? 0 : (int) $movement->stock_before,
             ]);
         }
 
@@ -576,6 +656,17 @@ class StockMovement extends Model
     public function warehouse(): BelongsTo
     {
         return $this->belongsTo(Warehouse::class);
+    }
+
+    /*
+     * =============================================================
+     * RELATION : TRANSFERT DE STOCK D'ORIGINE (T12)
+     * =============================================================
+     */
+
+    public function stockTransfer(): BelongsTo
+    {
+        return $this->belongsTo(StockTransfer::class);
     }
 
     /*
