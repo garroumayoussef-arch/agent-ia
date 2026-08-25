@@ -21,6 +21,7 @@ use App\Filament\Resources\Users\UserResource;
 use App\Filament\Resources\Vehicles\VehicleResource;
 use App\Filament\Resources\VtcRides\VtcRideResource;
 use App\Filament\Resources\Warehouses\WarehouseResource;
+use App\Filament\Resources\WarehouseStocks\WarehouseStockResource;
 use App\Models\Customer;
 use App\Models\Driver;
 use App\Models\FiscalSetting;
@@ -1268,5 +1269,53 @@ class RoleBasedAuthorizationTest extends TestCase
         $this->actingAs($this->makeChauffeurAccount());
 
         $this->get(WarehouseResource::getUrl('create'))->assertForbidden();
+    }
+
+    /*
+     * =================================================================
+     * WarehouseStock — étape T14. Réutilise BlocksChauffeurReadAccess
+     * tel quel, aucune nouvelle logique d'autorisation. Resource
+     * strictement en lecture (pas de page "create"/"edit"/"view") :
+     * pas de test "chauffeur ne peut pas créer", cette page n'existe
+     * pas.
+     * =================================================================
+     */
+
+    public function test_ladmin_et_le_manager_conservent_lacces_en_lecture_a_warehousestockresource(): void
+    {
+        $this->actingAs(User::factory()->create()->assignRole('admin'));
+        $this->get(WarehouseStockResource::getUrl('index'))->assertSuccessful();
+
+        $this->actingAs(User::factory()->create()->assignRole('manager'));
+        $this->get(WarehouseStockResource::getUrl('index'))->assertSuccessful();
+    }
+
+    public function test_un_chauffeur_ne_peut_plus_consulter_les_stocks_par_entrepot(): void
+    {
+        $this->actingAs($this->makeChauffeurAccount());
+
+        $this->get(WarehouseStockResource::getUrl('index'))->assertForbidden();
+    }
+
+    public function test_canview_refuse_un_chauffeur_pour_warehousestockresource(): void
+    {
+        $warehouse = Warehouse::create(['name' => 'Entrepôt T14', 'code' => 'entrepot-t14']);
+        $product = $this->makeProduct();
+        $line = \App\Models\WarehouseStock::create([
+            'warehouse_id' => $warehouse->id,
+            'product_id' => $product->id,
+            'stock' => 0,
+        ]);
+
+        $this->actingAs($this->makeChauffeurAccount());
+
+        $this->assertFalse(WarehouseStockResource::canView($line));
+    }
+
+    public function test_un_utilisateur_sans_role_ni_driver_associe_conserve_son_acces_a_warehousestockresource(): void
+    {
+        $this->actingAs(User::factory()->create()); // ni rôle, ni Driver lié
+
+        $this->get(WarehouseStockResource::getUrl('index'))->assertSuccessful();
     }
 }
