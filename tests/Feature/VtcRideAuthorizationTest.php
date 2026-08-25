@@ -216,4 +216,73 @@ class VtcRideAuthorizationTest extends TestCase
 
         $this->assertSame(0, \App\Models\StockMovement::count());
     }
+
+    /*
+     * =================================================================
+     * Étape T26 — confirmRideAction()/cancelRideAction() portent
+     * désormais ->authorize(VtcRideResource::canEdit($record)), en plus
+     * de ->visible(). Contrôles de non-régression (règle 7) : la page
+     * elle-même filtre déjà par propriétaire (canView/canEdit ci-dessus)
+     * — aucun scénario "refusé via appel direct" supplémentaire n'est
+     * démontrable ici (une course d'un autre chauffeur est déjà
+     * inaccessible en 404 avant même de pouvoir monter l'action), donc
+     * ces tests vérifient uniquement que le droit légitime existant
+     * n'est pas cassé par la nouvelle garde.
+     * =================================================================
+     */
+
+    public function test_un_chauffeur_peut_toujours_confirmer_sa_propre_course_via_laction_apres_lajout_de_authorize(): void
+    {
+        $rate10 = TaxRate::create(['label' => 'VTC', 'type' => TaxRate::TYPE_PERCENTAGE, 'rate' => 10]);
+        \App\Models\FiscalSetting::create([
+            'activity' => \App\Models\FiscalSetting::ACTIVITY_VTC,
+            'tax_rate_id' => $rate10->id,
+        ]);
+
+        $userA = User::factory()->create();
+        $driverA = Driver::create(['name' => 'Chauffeur A', 'user_id' => $userA->id, 'is_active' => true]);
+        $vehicle = $this->makeVehicle();
+        $vehicle->update(['is_active' => true]);
+        $ride = VtcRide::create([
+            'reference' => 'VTC-AUTH-13',
+            'price_ht' => 100,
+            'driver_id' => $driverA->id,
+            'vehicle_id' => $vehicle->id,
+        ]);
+
+        $this->actingAs($userA);
+
+        Livewire::test(\App\Filament\Resources\VtcRides\Pages\ViewVtcRide::class, ['record' => $ride->getKey()])
+            ->call('mountAction', 'confirmRide')
+            ->call('callMountedAction');
+
+        $this->assertSame(VtcRide::STATUS_CONFIRMED, $ride->fresh()->status);
+    }
+
+    public function test_un_manager_peut_toujours_confirmer_nimporte_quelle_course_via_laction_apres_lajout_de_authorize(): void
+    {
+        $rate10 = TaxRate::create(['label' => 'VTC', 'type' => TaxRate::TYPE_PERCENTAGE, 'rate' => 10]);
+        \App\Models\FiscalSetting::create([
+            'activity' => \App\Models\FiscalSetting::ACTIVITY_VTC,
+            'tax_rate_id' => $rate10->id,
+        ]);
+
+        $driver = Driver::create(['name' => 'Chauffeur A', 'is_active' => true]);
+        $vehicle = $this->makeVehicle();
+        $vehicle->update(['is_active' => true]);
+        $ride = VtcRide::create([
+            'reference' => 'VTC-AUTH-14',
+            'price_ht' => 100,
+            'driver_id' => $driver->id,
+            'vehicle_id' => $vehicle->id,
+        ]);
+
+        $this->actingAs(User::factory()->create()->assignRole('manager'));
+
+        Livewire::test(\App\Filament\Resources\VtcRides\Pages\ViewVtcRide::class, ['record' => $ride->getKey()])
+            ->call('mountAction', 'cancelRide')
+            ->call('callMountedAction');
+
+        $this->assertSame(VtcRide::STATUS_CANCELLED, $ride->fresh()->status);
+    }
 }

@@ -33,6 +33,22 @@ use Filament\Schemas\Components\Utilities\Set;
  * simple confort d'UI, la barrière autoritaire reste
  * StockTransfer::execute() (contrôle d'appartenance sur les deux
  * entrepôts, D4/D6).
+ *
+ * Étape T26 — ->visible() ne bloque que l'affichage du bouton :
+ * Filament résout une action en appelant directement sa méthode PHP
+ * (resolveAction()), sans jamais consulter isVisible() — un appel
+ * Livewire direct/forgé pouvait donc contourner cette garde. ->authorize()
+ * est en revanche réellement évalué côté serveur à chaque montage/
+ * exécution de l'action (mountAction()/callMountedAction()), y compris
+ * un tel appel direct : c'est la barrière ajoutée ici, en plus de
+ * ->visible() qui reste inchangée. Placée au niveau de l'Action
+ * Filament, jamais dans StockTransfer::execute() lui-même : ce dernier
+ * est appelé, sans utilisateur authentifié, par une quinzaine de tests
+ * (StockTransferTest) qui reposent explicitement sur la convention déjà
+ * documentée dans ScopesToOwnWarehouses ("aucun utilisateur authentifié
+ * = aucune restriction, contexte système") — une garde modèle les
+ * aurait cassés et aurait contredit cette convention T19 (même
+ * raisonnement que celui ayant motivé le choix Voie 2 en T25).
  */
 trait HasStockTransferAction
 {
@@ -49,6 +65,9 @@ trait HasStockTransferAction
             // un transfert crée des StockMovement, donc il suit la
             // même règle que leur création directe (admin/manager).
             ->visible(fn (): bool => StockMovementResource::canCreate())
+            ->authorize(fn (): bool => StockMovementResource::canCreate())
+            ->authorizationNotification()
+            ->authorizationMessage("Cette action est réservée aux administrateurs et gestionnaires.")
             ->schema([
                 Select::make('product_id')
                     ->label('Produit')
