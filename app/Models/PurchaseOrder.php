@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Models\Concerns\ValidatesOperationWarehouse;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
@@ -12,6 +13,7 @@ class PurchaseOrder extends Model
 {
     /** @use HasFactory<\Database\Factories\PurchaseOrderFactory> */
     use HasFactory;
+    use ValidatesOperationWarehouse;
 
     protected $guarded = [];
 
@@ -173,12 +175,16 @@ class PurchaseOrder extends Model
      *
      * Chaque quantité reçue génère un StockMovement (type purchase) —
      * toute la logique de stock (synchronisation variante/produit,
-     * verrouillage, validation) est ainsi intégralement réutilisée
-     * depuis StockMovement, sans duplication.
+     * verrouillage, validation, tenue à jour de warehouse_stocks) est
+     * ainsi intégralement réutilisée depuis StockMovement, sans
+     * duplication.
      *
      * @param  array<int|string, int|string>  $receivedQuantities  [purchase_order_item_id => quantité reçue maintenant]
+     * @param  int|null  $warehouseId  Entrepôt de destination pour TOUTE la réception (T13, une seule sélection par appel,
+     *                                 jamais par ligne). Voir ValidatesOperationWarehouse::assertValidOperationWarehouse()
+     *                                 pour la règle : jamais de choix silencieux dès lors qu'une ambiguïté réelle existe.
      */
-    public function receive(array $receivedQuantities): void
+    public function receive(array $receivedQuantities, ?int $warehouseId = null): void
     {
         if (! in_array($this->status, [self::STATUS_ORDERED, self::STATUS_PARTIALLY_RECEIVED], true)) {
             throw new \Exception(
@@ -195,7 +201,9 @@ class PurchaseOrder extends Model
             throw new \Exception("Aucune quantité à réceptionner n'a été renseignée.");
         }
 
-        DB::transaction(function () use ($receivedQuantities) {
+        static::assertValidOperationWarehouse($warehouseId);
+
+        DB::transaction(function () use ($receivedQuantities, $warehouseId) {
             $items = $this->items()
                 ->whereIn('id', array_keys($receivedQuantities))
                 ->get()
@@ -221,6 +229,7 @@ class PurchaseOrder extends Model
                     'product_id' => $item->product_id,
                     'product_variant_id' => $item->product_variant_id,
                     'purchase_order_id' => $this->id,
+                    'warehouse_id' => $warehouseId,
                     'type' => 'purchase',
                     'quantity' => $quantityNow,
                     'reference' => $this->reference,

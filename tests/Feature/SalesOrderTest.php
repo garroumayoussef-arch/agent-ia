@@ -1120,4 +1120,194 @@ class SalesOrderTest extends TestCase
         $this->assertSame('18.00', $item->tax_amount);
         $this->assertNotSame($item->gross_tax_amount, $item->tax_amount);
     }
+
+    /*
+     * =================================================================
+     * Étape T13 — sélection de l'entrepôt d'expédition
+     * =================================================================
+     */
+
+    public function test_expedier_avec_un_entrepot_explicite_enregistre_le_bon_entrepot(): void
+    {
+        $warehouse = Warehouse::create(['name' => 'Entrepôt A', 'code' => 'a-t13']);
+        $product = $this->makeProduct();
+        $variant = $this->makeVariant($product, ['stock' => 5]);
+        \App\Models\WarehouseStock::create(['warehouse_id' => $warehouse->id, 'product_id' => $product->id, 'product_variant_id' => $variant->id, 'stock' => 5]);
+
+        $order = SalesOrder::create(['reference' => 'CMD-T13-1']);
+        $item = SalesOrderItem::create([
+            'sales_order_id' => $order->id,
+            'product_id' => $product->id,
+            'product_variant_id' => $variant->id,
+            'quantity_ordered' => 3,
+        ]);
+        $order->markAsConfirmed();
+
+        $order->ship([$item->id => 3], $warehouse->id);
+
+        $movement = StockMovement::first();
+        $this->assertSame($warehouse->id, $movement->warehouse_id);
+    }
+
+    public function test_expedier_sans_entrepot_avec_un_seul_entrepot_actif_retombe_dessus(): void
+    {
+        $default = Warehouse::where('is_default', true)->first();
+        $product = $this->makeProduct();
+        $variant = $this->makeVariant($product, ['stock' => 5]);
+
+        $order = SalesOrder::create(['reference' => 'CMD-T13-2']);
+        $item = SalesOrderItem::create([
+            'sales_order_id' => $order->id,
+            'product_id' => $product->id,
+            'product_variant_id' => $variant->id,
+            'quantity_ordered' => 3,
+        ]);
+        $order->markAsConfirmed();
+
+        $order->ship([$item->id => 3]);
+
+        $movement = StockMovement::first();
+        $this->assertSame($default->id, $movement->warehouse_id);
+    }
+
+    public function test_expedier_est_refuse_si_plusieurs_entrepots_actifs_sans_selection_explicite(): void
+    {
+        Warehouse::create(['name' => 'Entrepôt B', 'code' => 'b-t13']); // 2e entrepôt actif, en plus du défaut de setUp()
+        $product = $this->makeProduct();
+        $variant = $this->makeVariant($product, ['stock' => 5]);
+
+        $order = SalesOrder::create(['reference' => 'CMD-T13-3']);
+        $item = SalesOrderItem::create([
+            'sales_order_id' => $order->id,
+            'product_id' => $product->id,
+            'product_variant_id' => $variant->id,
+            'quantity_ordered' => 3,
+        ]);
+        $order->markAsConfirmed();
+
+        $this->expectException(\Exception::class);
+
+        try {
+            $order->ship([$item->id => 3]);
+        } finally {
+            $this->assertSame(0, StockMovement::count());
+            $item->refresh();
+            $this->assertSame(0, $item->quantity_shipped);
+        }
+    }
+
+    public function test_expedier_avec_un_entrepot_inexistant_est_refuse(): void
+    {
+        $product = $this->makeProduct();
+        $variant = $this->makeVariant($product, ['stock' => 5]);
+
+        $order = SalesOrder::create(['reference' => 'CMD-T13-4']);
+        $item = SalesOrderItem::create([
+            'sales_order_id' => $order->id,
+            'product_id' => $product->id,
+            'product_variant_id' => $variant->id,
+            'quantity_ordered' => 3,
+        ]);
+        $order->markAsConfirmed();
+
+        $this->expectException(\Exception::class);
+
+        try {
+            $order->ship([$item->id => 3], 999999);
+        } finally {
+            $this->assertSame(0, StockMovement::count());
+        }
+    }
+
+    public function test_expedier_avec_un_entrepot_inactif_est_refuse(): void
+    {
+        $inactive = Warehouse::create(['name' => 'Entrepôt inactif', 'code' => 'inactif-t13', 'is_active' => false]);
+        $product = $this->makeProduct();
+        $variant = $this->makeVariant($product, ['stock' => 5]);
+
+        $order = SalesOrder::create(['reference' => 'CMD-T13-5']);
+        $item = SalesOrderItem::create([
+            'sales_order_id' => $order->id,
+            'product_id' => $product->id,
+            'product_variant_id' => $variant->id,
+            'quantity_ordered' => 3,
+        ]);
+        $order->markAsConfirmed();
+
+        $this->expectException(\Exception::class);
+
+        try {
+            $order->ship([$item->id => 3], $inactive->id);
+        } finally {
+            $this->assertSame(0, StockMovement::count());
+        }
+    }
+
+    /**
+     * Le test le plus important de T13 : la vérification de stock doit
+     * porter sur l'entrepôt SÉLECTIONNÉ, jamais uniquement sur le stock
+     * global Product/ProductVariant (même principe déjà prouvé pour les
+     * transferts en T12, ici appliqué à ship()).
+     */
+    public function test_expedition_refusee_si_stock_insuffisant_dans_lentrepot_selectionne_meme_si_stock_global_suffisant(): void
+    {
+        $warehouseA = Warehouse::create(['name' => 'Entrepôt A', 'code' => 'a-t13-insuf']);
+        $warehouseB = Warehouse::create(['name' => 'Entrepôt B', 'code' => 'b-t13-insuf']);
+        $product = $this->makeProduct();
+        $variant = $this->makeVariant($product, ['stock' => 13]); // stock global largement suffisant
+
+        \App\Models\WarehouseStock::create(['warehouse_id' => $warehouseA->id, 'product_id' => $product->id, 'product_variant_id' => $variant->id, 'stock' => 3]); // entrepôt A insuffisant
+        \App\Models\WarehouseStock::create(['warehouse_id' => $warehouseB->id, 'product_id' => $product->id, 'product_variant_id' => $variant->id, 'stock' => 10]);
+
+        $order = SalesOrder::create(['reference' => 'CMD-T13-6']);
+        $item = SalesOrderItem::create([
+            'sales_order_id' => $order->id,
+            'product_id' => $product->id,
+            'product_variant_id' => $variant->id,
+            'quantity_ordered' => 5,
+        ]);
+        $order->markAsConfirmed();
+
+        $this->expectException(\Exception::class);
+
+        try {
+            // 5 > 3 (entrepôt A) mais 5 < 13 (stock global) : doit être
+            // refusé malgré la suffisance globale.
+            $order->ship([$item->id => 5], $warehouseA->id);
+        } finally {
+            $this->assertSame(0, StockMovement::count());
+            $item->refresh();
+            $this->assertSame(0, $item->quantity_shipped);
+            $this->assertSame(13, $variant->fresh()->stock);
+            $this->assertSame(3, \App\Models\WarehouseStock::where('warehouse_id', $warehouseA->id)->value('stock'));
+            $this->assertSame(10, \App\Models\WarehouseStock::where('warehouse_id', $warehouseB->id)->value('stock'));
+        }
+    }
+
+    public function test_expedier_met_a_jour_warehouse_stocks_pour_lentrepot_selectionne(): void
+    {
+        $warehouse = Warehouse::create(['name' => 'Entrepôt A', 'code' => 'a-t13-ws']);
+        $product = $this->makeProduct();
+        $variant = $this->makeVariant($product, ['stock' => 10]);
+        \App\Models\WarehouseStock::create(['warehouse_id' => $warehouse->id, 'product_id' => $product->id, 'product_variant_id' => $variant->id, 'stock' => 10]);
+
+        $order = SalesOrder::create(['reference' => 'CMD-T13-7']);
+        $item = SalesOrderItem::create([
+            'sales_order_id' => $order->id,
+            'product_id' => $product->id,
+            'product_variant_id' => $variant->id,
+            'quantity_ordered' => 4,
+        ]);
+        $order->markAsConfirmed();
+
+        $order->ship([$item->id => 4], $warehouse->id);
+
+        $this->assertSame(
+            6,
+            \App\Models\WarehouseStock::where('warehouse_id', $warehouse->id)
+                ->where('product_variant_id', $variant->id)
+                ->value('stock')
+        );
+        $this->assertSame(6, $variant->fresh()->stock);
+    }
 }

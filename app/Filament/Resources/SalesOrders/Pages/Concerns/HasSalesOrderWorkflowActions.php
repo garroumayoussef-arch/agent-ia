@@ -4,7 +4,9 @@ namespace App\Filament\Resources\SalesOrders\Pages\Concerns;
 
 use App\Models\SalesOrder;
 use App\Models\SalesOrderItem;
+use App\Models\Warehouse;
 use Filament\Actions\Action;
+use Filament\Forms\Components\Select;
 use Filament\Forms\Components\TextInput;
 use Filament\Notifications\Notification;
 
@@ -86,37 +88,61 @@ trait HasSalesOrderWorkflowActions
                 [SalesOrder::STATUS_CONFIRMED, SalesOrder::STATUS_PARTIALLY_SHIPPED],
                 true
             ))
-            ->schema(fn (SalesOrder $record): array => $record->items()
-                ->get()
-                ->filter(fn (SalesOrderItem $item): bool => $item->quantity_shipped < $item->quantity_ordered)
-                ->map(function (SalesOrderItem $item) {
-                    $remaining = $item->quantity_ordered - $item->quantity_shipped;
-                    $label = $item->product?->nom ?? 'Produit supprimé';
+            ->schema(function (SalesOrder $record): array {
+                // Étape T13 — un seul entrepôt pour toute l'expédition
+                // (jamais par ligne). Pré-rempli uniquement s'il n'y a
+                // aucune ambiguïté réelle (0 ou 1 entrepôt actif) :
+                // dès que 2 entrepôts actifs ou plus existent, aucun
+                // n'est choisi silencieusement (cf.
+                // ValidatesOperationWarehouse::assertValidOperationWarehouse(),
+                // barrière autoritaire côté modèle — ce pré-remplissage
+                // n'est qu'un confort d'UI, jamais la seule protection).
+                $activeWarehouses = Warehouse::where('is_active', true)
+                    ->orderBy('name')
+                    ->pluck('name', 'id');
 
-                    if ($item->productVariant) {
-                        $details = implode(' / ', array_filter([
-                            $item->productVariant->size,
-                            $item->productVariant->color,
-                        ]));
+                $warehouseField = Select::make('warehouse_id')
+                    ->label('Entrepôt d\'expédition')
+                    ->options($activeWarehouses->toArray())
+                    ->default($activeWarehouses->count() <= 1 ? $activeWarehouses->keys()->first() : null)
+                    ->searchable()
+                    ->preload()
+                    ->required();
 
-                        if ($details !== '') {
-                            $label .= " ({$details})";
+                $itemFields = $record->items()
+                    ->get()
+                    ->filter(fn (SalesOrderItem $item): bool => $item->quantity_shipped < $item->quantity_ordered)
+                    ->map(function (SalesOrderItem $item) {
+                        $remaining = $item->quantity_ordered - $item->quantity_shipped;
+                        $label = $item->product?->nom ?? 'Produit supprimé';
+
+                        if ($item->productVariant) {
+                            $details = implode(' / ', array_filter([
+                                $item->productVariant->size,
+                                $item->productVariant->color,
+                            ]));
+
+                            if ($details !== '') {
+                                $label .= " ({$details})";
+                            }
                         }
-                    }
 
-                    return TextInput::make("shipped.{$item->id}")
-                        ->label("{$label} — restant à expédier : {$remaining}")
-                        ->numeric()
-                        ->default($remaining)
-                        ->minValue(0)
-                        ->maxValue($remaining)
-                        ->required();
-                })
-                ->values()
-                ->all())
+                        return TextInput::make("shipped.{$item->id}")
+                            ->label("{$label} — restant à expédier : {$remaining}")
+                            ->numeric()
+                            ->default($remaining)
+                            ->minValue(0)
+                            ->maxValue($remaining)
+                            ->required();
+                    })
+                    ->values()
+                    ->all();
+
+                return [$warehouseField, ...$itemFields];
+            })
             ->action(function (SalesOrder $record, array $data) {
                 try {
-                    $record->ship($data['shipped'] ?? []);
+                    $record->ship($data['shipped'] ?? [], $data['warehouse_id'] ?? null);
 
                     Notification::make()
                         ->title('Expédition enregistrée')

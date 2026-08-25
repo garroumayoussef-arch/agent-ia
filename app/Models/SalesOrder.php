@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Models\Concerns\ValidatesOperationWarehouse;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
@@ -12,6 +13,7 @@ class SalesOrder extends Model
 {
     /** @use HasFactory<\Database\Factories\SalesOrderFactory> */
     use HasFactory;
+    use ValidatesOperationWarehouse;
 
     protected $guarded = [];
 
@@ -173,11 +175,18 @@ class SalesOrder extends Model
      * Chaque quantité expédiée génère un StockMovement (type sale) —
      * la validation du stock disponible (rejet si insuffisant) est
      * intégralement déléguée à StockMovement::applyMovementEffect(),
-     * sans duplication de logique.
+     * sans duplication de logique. Depuis T13, cette vérification porte
+     * sur le stock de l'entrepôt SÉLECTIONNÉ (via
+     * StockMovement::applyWarehouseStockEffect(), T11b/T12, déjà
+     * générique), pas uniquement sur le stock global du produit/de la
+     * variante.
      *
      * @param  array<int|string, int|string>  $shippedQuantities  [sales_order_item_id => quantité expédiée maintenant]
+     * @param  int|null  $warehouseId  Entrepôt source pour TOUTE l'expédition (T13, une seule sélection par appel,
+     *                                 jamais par ligne). Voir ValidatesOperationWarehouse::assertValidOperationWarehouse()
+     *                                 pour la règle : jamais de choix silencieux dès lors qu'une ambiguïté réelle existe.
      */
-    public function ship(array $shippedQuantities): void
+    public function ship(array $shippedQuantities, ?int $warehouseId = null): void
     {
         if (! in_array($this->status, [self::STATUS_CONFIRMED, self::STATUS_PARTIALLY_SHIPPED], true)) {
             throw new \Exception(
@@ -194,7 +203,9 @@ class SalesOrder extends Model
             throw new \Exception("Aucune quantité à expédier n'a été renseignée.");
         }
 
-        DB::transaction(function () use ($shippedQuantities) {
+        static::assertValidOperationWarehouse($warehouseId);
+
+        DB::transaction(function () use ($shippedQuantities, $warehouseId) {
             $items = $this->items()
                 ->whereIn('id', array_keys($shippedQuantities))
                 ->get()
@@ -225,6 +236,7 @@ class SalesOrder extends Model
                     'product_id' => $item->product_id,
                     'product_variant_id' => $item->product_variant_id,
                     'sales_order_id' => $this->id,
+                    'warehouse_id' => $warehouseId,
                     'type' => 'sale',
                     'quantity' => $quantityNow,
                     'reference' => $this->reference,

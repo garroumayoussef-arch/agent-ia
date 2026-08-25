@@ -4,7 +4,9 @@ namespace App\Filament\Resources\PurchaseOrders\Pages\Concerns;
 
 use App\Models\PurchaseOrder;
 use App\Models\PurchaseOrderItem;
+use App\Models\Warehouse;
 use Filament\Actions\Action;
+use Filament\Forms\Components\Select;
 use Filament\Forms\Components\TextInput;
 use Filament\Notifications\Notification;
 
@@ -87,37 +89,61 @@ trait HasPurchaseOrderWorkflowActions
                 [PurchaseOrder::STATUS_ORDERED, PurchaseOrder::STATUS_PARTIALLY_RECEIVED],
                 true
             ))
-            ->schema(fn (PurchaseOrder $record): array => $record->items()
-                ->get()
-                ->filter(fn (PurchaseOrderItem $item): bool => $item->quantity_received < $item->quantity_ordered)
-                ->map(function (PurchaseOrderItem $item) {
-                    $remaining = $item->quantity_ordered - $item->quantity_received;
-                    $label = $item->product?->nom ?? 'Produit supprimé';
+            ->schema(function (PurchaseOrder $record): array {
+                // Étape T13 — un seul entrepôt pour toute la réception
+                // (jamais par ligne). Pré-rempli uniquement s'il n'y a
+                // aucune ambiguïté réelle (0 ou 1 entrepôt actif) :
+                // dès que 2 entrepôts actifs ou plus existent, aucun
+                // n'est choisi silencieusement (cf.
+                // ValidatesOperationWarehouse::assertValidOperationWarehouse(),
+                // barrière autoritaire côté modèle — ce pré-remplissage
+                // n'est qu'un confort d'UI, jamais la seule protection).
+                $activeWarehouses = Warehouse::where('is_active', true)
+                    ->orderBy('name')
+                    ->pluck('name', 'id');
 
-                    if ($item->productVariant) {
-                        $details = implode(' / ', array_filter([
-                            $item->productVariant->size,
-                            $item->productVariant->color,
-                        ]));
+                $warehouseField = Select::make('warehouse_id')
+                    ->label('Entrepôt de réception')
+                    ->options($activeWarehouses->toArray())
+                    ->default($activeWarehouses->count() <= 1 ? $activeWarehouses->keys()->first() : null)
+                    ->searchable()
+                    ->preload()
+                    ->required();
 
-                        if ($details !== '') {
-                            $label .= " ({$details})";
+                $itemFields = $record->items()
+                    ->get()
+                    ->filter(fn (PurchaseOrderItem $item): bool => $item->quantity_received < $item->quantity_ordered)
+                    ->map(function (PurchaseOrderItem $item) {
+                        $remaining = $item->quantity_ordered - $item->quantity_received;
+                        $label = $item->product?->nom ?? 'Produit supprimé';
+
+                        if ($item->productVariant) {
+                            $details = implode(' / ', array_filter([
+                                $item->productVariant->size,
+                                $item->productVariant->color,
+                            ]));
+
+                            if ($details !== '') {
+                                $label .= " ({$details})";
+                            }
                         }
-                    }
 
-                    return TextInput::make("received.{$item->id}")
-                        ->label("{$label} — restant à recevoir : {$remaining}")
-                        ->numeric()
-                        ->default($remaining)
-                        ->minValue(0)
-                        ->maxValue($remaining)
-                        ->required();
-                })
-                ->values()
-                ->all())
+                        return TextInput::make("received.{$item->id}")
+                            ->label("{$label} — restant à recevoir : {$remaining}")
+                            ->numeric()
+                            ->default($remaining)
+                            ->minValue(0)
+                            ->maxValue($remaining)
+                            ->required();
+                    })
+                    ->values()
+                    ->all();
+
+                return [$warehouseField, ...$itemFields];
+            })
             ->action(function (PurchaseOrder $record, array $data) {
                 try {
-                    $record->receive($data['received'] ?? []);
+                    $record->receive($data['received'] ?? [], $data['warehouse_id'] ?? null);
 
                     Notification::make()
                         ->title('Réception enregistrée')

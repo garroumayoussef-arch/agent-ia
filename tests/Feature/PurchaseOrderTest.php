@@ -1219,4 +1219,145 @@ class PurchaseOrderTest extends TestCase
         $this->assertSame('18.00', $item->tax_amount);
         $this->assertNotSame($item->gross_tax_amount, $item->tax_amount);
     }
+
+    /*
+     * =================================================================
+     * Étape T13 — sélection de l'entrepôt de réception
+     * =================================================================
+     */
+
+    public function test_receptionner_avec_un_entrepot_explicite_enregistre_le_bon_entrepot(): void
+    {
+        $warehouse = Warehouse::create(['name' => 'Entrepôt A', 'code' => 'a-t13']);
+        $product = $this->makeProduct(['stock' => 0]);
+
+        $order = PurchaseOrder::create(['reference' => 'BC-T13-1']);
+        $item = PurchaseOrderItem::create([
+            'purchase_order_id' => $order->id,
+            'product_id' => $product->id,
+            'quantity_ordered' => 5,
+        ]);
+        $order->markAsOrdered();
+
+        $order->receive([$item->id => 5], $warehouse->id);
+
+        $movement = StockMovement::first();
+        $this->assertSame($warehouse->id, $movement->warehouse_id);
+    }
+
+    public function test_receptionner_sans_entrepot_avec_un_seul_entrepot_actif_retombe_dessus(): void
+    {
+        // Un seul entrepôt actif (le défaut créé en setUp()) : aucune
+        // ambiguïté, le repli automatique de StockMovement::creating()
+        // (T11b) reste inchangé.
+        $default = Warehouse::where('is_default', true)->first();
+        $product = $this->makeProduct(['stock' => 0]);
+
+        $order = PurchaseOrder::create(['reference' => 'BC-T13-2']);
+        $item = PurchaseOrderItem::create([
+            'purchase_order_id' => $order->id,
+            'product_id' => $product->id,
+            'quantity_ordered' => 5,
+        ]);
+        $order->markAsOrdered();
+
+        $order->receive([$item->id => 5]);
+
+        $movement = StockMovement::first();
+        $this->assertSame($default->id, $movement->warehouse_id);
+    }
+
+    public function test_receptionner_est_refuse_si_plusieurs_entrepots_actifs_sans_selection_explicite(): void
+    {
+        Warehouse::create(['name' => 'Entrepôt B', 'code' => 'b-t13']); // 2e entrepôt actif, en plus du défaut de setUp()
+        $product = $this->makeProduct(['stock' => 0]);
+
+        $order = PurchaseOrder::create(['reference' => 'BC-T13-3']);
+        $item = PurchaseOrderItem::create([
+            'purchase_order_id' => $order->id,
+            'product_id' => $product->id,
+            'quantity_ordered' => 5,
+        ]);
+        $order->markAsOrdered();
+
+        $this->expectException(\Exception::class);
+
+        try {
+            $order->receive([$item->id => 5]);
+        } finally {
+            $this->assertSame(0, StockMovement::count());
+            $item->refresh();
+            $this->assertSame(0, $item->quantity_received);
+        }
+    }
+
+    public function test_receptionner_avec_un_entrepot_inexistant_est_refuse(): void
+    {
+        $product = $this->makeProduct(['stock' => 0]);
+
+        $order = PurchaseOrder::create(['reference' => 'BC-T13-4']);
+        $item = PurchaseOrderItem::create([
+            'purchase_order_id' => $order->id,
+            'product_id' => $product->id,
+            'quantity_ordered' => 5,
+        ]);
+        $order->markAsOrdered();
+
+        $this->expectException(\Exception::class);
+
+        try {
+            $order->receive([$item->id => 5], 999999);
+        } finally {
+            $this->assertSame(0, StockMovement::count());
+        }
+    }
+
+    public function test_receptionner_avec_un_entrepot_inactif_est_refuse(): void
+    {
+        $inactive = Warehouse::create(['name' => 'Entrepôt inactif', 'code' => 'inactif-t13', 'is_active' => false]);
+        $product = $this->makeProduct(['stock' => 0]);
+
+        $order = PurchaseOrder::create(['reference' => 'BC-T13-5']);
+        $item = PurchaseOrderItem::create([
+            'purchase_order_id' => $order->id,
+            'product_id' => $product->id,
+            'quantity_ordered' => 5,
+        ]);
+        $order->markAsOrdered();
+
+        $this->expectException(\Exception::class);
+
+        try {
+            $order->receive([$item->id => 5], $inactive->id);
+        } finally {
+            $this->assertSame(0, StockMovement::count());
+        }
+    }
+
+    public function test_receptionner_met_a_jour_warehouse_stocks_pour_lentrepot_selectionne(): void
+    {
+        $warehouse = Warehouse::create(['name' => 'Entrepôt A', 'code' => 'a-t13-ws']);
+        $product = $this->makeProduct(['stock' => 0]);
+
+        $order = PurchaseOrder::create(['reference' => 'BC-T13-6']);
+        $item = PurchaseOrderItem::create([
+            'purchase_order_id' => $order->id,
+            'product_id' => $product->id,
+            'quantity_ordered' => 7,
+        ]);
+        $order->markAsOrdered();
+
+        $order->receive([$item->id => 7], $warehouse->id);
+
+        $this->assertSame(
+            7,
+            \App\Models\WarehouseStock::where('warehouse_id', $warehouse->id)
+                ->where('product_id', $product->id)
+                ->whereNull('product_variant_id')
+                ->value('stock')
+        );
+        // Le mécanisme réutilisé (T11b/T12) laisse le stock global inchangé... ici il augmente
+        // normalement puisqu'il s'agit d'un achat (comportement receive() inchangé).
+        $this->assertSame(7, $product->fresh()->stock);
+    }
 }

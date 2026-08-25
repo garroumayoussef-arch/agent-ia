@@ -200,4 +200,72 @@ class SalesOrderResourceTest extends TestCase
             ->assertActionHidden('shipOrder')
             ->assertActionVisible('confirmOrder');
     }
+
+    /*
+     * =================================================================
+     * Étape T13 — sélection de l'entrepôt via l'action shipOrder
+     * =================================================================
+     */
+
+    public function test_expedier_via_laction_avec_entrepot_explicite_enregistre_le_bon_entrepot(): void
+    {
+        $this->actingAs(User::factory()->create()->assignRole('manager'));
+
+        $warehouse = Warehouse::create(['name' => 'Entrepôt A', 'code' => 'a-t13-ui']);
+        $product = $this->makeProduct();
+        $variant = ProductVariant::create([
+            'product_id' => $product->id,
+            'sku' => 'SKU-UI-T13-SHIP',
+            'stock' => 5,
+            'status' => 'active',
+        ]);
+        \App\Models\WarehouseStock::create(['warehouse_id' => $warehouse->id, 'product_id' => $product->id, 'product_variant_id' => $variant->id, 'stock' => 5]);
+
+        $order = SalesOrder::create(['reference' => 'CMD-UI-T13-1']);
+        $item = SalesOrderItem::create([
+            'sales_order_id' => $order->id,
+            'product_id' => $product->id,
+            'product_variant_id' => $variant->id,
+            'quantity_ordered' => 5,
+        ]);
+
+        $component = Livewire::test(EditSalesOrder::class, ['record' => $order->getKey()]);
+        $component->callAction('confirmOrder');
+
+        $component->callAction('shipOrder', data: [
+            'warehouse_id' => $warehouse->id,
+            'shipped' => [$item->id => 5],
+        ]);
+
+        $movement = \App\Models\StockMovement::first();
+        $this->assertSame($warehouse->id, $movement->warehouse_id);
+    }
+
+    public function test_expedier_via_laction_est_refuse_si_plusieurs_entrepots_actifs_sans_selection(): void
+    {
+        $this->actingAs(User::factory()->create()->assignRole('manager'));
+
+        Warehouse::create(['name' => 'Entrepôt B', 'code' => 'b-t13-ui']); // 2e entrepôt actif, en plus du défaut de setUp()
+        $product = $this->makeProduct();
+        $order = SalesOrder::create(['reference' => 'CMD-UI-T13-2']);
+        $item = SalesOrderItem::create([
+            'sales_order_id' => $order->id,
+            'product_id' => $product->id,
+            'quantity_ordered' => 5,
+        ]);
+
+        $component = Livewire::test(EditSalesOrder::class, ['record' => $order->getKey()]);
+        $component->callAction('confirmOrder');
+
+        // Aucun warehouse_id transmis, alors que 2 entrepôts actifs
+        // existent : ne doit provoquer aucune écriture (bloqué par la
+        // validation du formulaire et/ou la garde modèle).
+        $component->callAction('shipOrder', data: [
+            'shipped' => [$item->id => 5],
+        ]);
+
+        $this->assertSame(0, \App\Models\StockMovement::count());
+        $item->refresh();
+        $this->assertSame(0, $item->quantity_shipped);
+    }
 }

@@ -193,4 +193,67 @@ class PurchaseOrderResourceTest extends TestCase
             ->assertActionHidden('receiveOrder')
             ->assertActionVisible('confirmOrder');
     }
+
+    /*
+     * =================================================================
+     * Étape T13 — sélection de l'entrepôt via l'action receiveOrder
+     * =================================================================
+     */
+
+    public function test_receptionner_via_laction_avec_entrepot_explicite_enregistre_le_bon_entrepot(): void
+    {
+        $this->actingAs(User::factory()->create()->assignRole('manager'));
+
+        $warehouse = Warehouse::create(['name' => 'Entrepôt A', 'code' => 'a-t13-ui']);
+        $product = $this->makeProduct();
+        $order = PurchaseOrder::create(['reference' => 'BC-UI-T13-1']);
+        $item = PurchaseOrderItem::create([
+            'purchase_order_id' => $order->id,
+            'product_id' => $product->id,
+            'quantity_ordered' => 5,
+        ]);
+
+        $component = Livewire::test(EditPurchaseOrder::class, ['record' => $order->getKey()]);
+        $component->callAction('confirmOrder');
+
+        $component->callAction('receiveOrder', data: [
+            'warehouse_id' => $warehouse->id,
+            'received' => [$item->id => 5],
+        ]);
+
+        $movement = \App\Models\StockMovement::first();
+        $this->assertSame($warehouse->id, $movement->warehouse_id);
+    }
+
+    public function test_receptionner_via_laction_est_refuse_si_plusieurs_entrepots_actifs_sans_selection(): void
+    {
+        $this->actingAs(User::factory()->create()->assignRole('manager'));
+
+        Warehouse::create(['name' => 'Entrepôt B', 'code' => 'b-t13-ui']); // 2e entrepôt actif, en plus du défaut de setUp()
+        $product = $this->makeProduct();
+        $order = PurchaseOrder::create(['reference' => 'BC-UI-T13-2']);
+        $item = PurchaseOrderItem::create([
+            'purchase_order_id' => $order->id,
+            'product_id' => $product->id,
+            'quantity_ordered' => 5,
+        ]);
+
+        $component = Livewire::test(EditPurchaseOrder::class, ['record' => $order->getKey()]);
+        $component->callAction('confirmOrder');
+
+        // Le champ warehouse_id n'a plus de valeur par défaut dès que
+        // 2 entrepôts actifs existent (cf. schema()) : aucune valeur
+        // n'est transmise ici, simulant un envoi sans sélection.
+        // L'appel ne doit PAS lever d'exception jusqu'au test (capturée
+        // par le try/catch de l'action, notification d'erreur affichée
+        // à la place) : on vérifie seulement qu'aucune écriture n'a eu
+        // lieu.
+        $component->callAction('receiveOrder', data: [
+            'received' => [$item->id => 5],
+        ]);
+
+        $this->assertSame(0, \App\Models\StockMovement::count());
+        $item->refresh();
+        $this->assertSame(0, $item->quantity_received);
+    }
 }
