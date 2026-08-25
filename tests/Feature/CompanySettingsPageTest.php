@@ -65,6 +65,9 @@ class CompanySettingsPageTest extends TestCase
                 'vat_number' => 'FR11111222333',
                 'recovery_indemnity_amount' => 40,
                 'invoice_number_prefix' => 'FA',
+                // Étape T24 — nouveau champ requis, ajouté à la même
+                // page (préfixe de numérotation des avoirs).
+                'credit_note_number_prefix' => 'AV',
             ])
             ->call('save')
             ->assertHasNoFormErrors();

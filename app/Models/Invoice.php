@@ -259,4 +259,15 @@ class Invoice extends Model
     {
         return $this->hasMany(InvoiceLine::class);
     }
+
+    /**
+     * Étape T24 — avoirs émis sur cette facture (0, 1, ou plusieurs si
+     * créditée par avoirs partiels successifs). Relation additive en
+     * lecture seule : ne crée aucune nouvelle écriture sur Invoice,
+     * l'immuabilité de la facture reste entièrement préservée.
+     */
+    public function creditNotes(): HasMany
+    {
+        return $this->hasMany(CreditNote::class);
+    }
 }

@@ -1,5 +1,6 @@
 <?php
 
+use App\Http\Controllers\CreditNotePdfController;
 use App\Http\Controllers\InvoicePdfController;
 use App\Http\Controllers\ProfileController;
 use App\Http\Controllers\VtcRideReceiptController;
@@ -39,6 +40,13 @@ Route::middleware('auth')->group(function () {
     // est vérifiée dans le contrôleur (cf. InvoicePdfController).
     Route::get('/invoices/{invoice}/pdf', [InvoicePdfController::class, 'show'])
         ->name('invoices.pdf');
+
+    // Étape T24 — PDF d'un avoir émis, régénéré à chaque appel depuis
+    // les données figées de CreditNote/CreditNoteLine (jamais depuis
+    // Invoice/Customer/CompanySettings). Même principe que le PDF de
+    // facture ci-dessus.
+    Route::get('/credit-notes/{creditNote}/pdf', [CreditNotePdfController::class, 'show'])
+        ->name('credit-notes.pdf');
 });
 
 require __DIR__.'/auth.php';

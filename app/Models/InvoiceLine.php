@@ -4,6 +4,7 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasOne;
 
 /**
  * Étape T23 — ligne de facture, snapshot figé d'une SalesOrderItem au
@@ -52,5 +53,16 @@ class InvoiceLine extends Model
     public function productVariant(): BelongsTo
     {
         return $this->belongsTo(ProductVariant::class);
+    }
+
+    /**
+     * Étape T24 — au plus une CreditNoteLine par InvoiceLine, garanti
+     * par la contrainte UNIQUE sur credit_note_lines.invoice_line_id
+     * (empêche structurellement le sur-crédit). Relation additive en
+     * lecture seule.
+     */
+    public function creditNoteLine(): HasOne
+    {
+        return $this->hasOne(CreditNoteLine::class);
     }
 }
