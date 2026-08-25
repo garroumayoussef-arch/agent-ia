@@ -166,4 +166,78 @@ class StockMovementResourceTest extends TestCase
 
         $this->assertSame(2, $transfer->stockMovements()->count());
     }
+
+    /*
+     * =================================================================
+     * Étape T17 — libellés transfer_out/transfer_in (table + Infolist)
+     * =================================================================
+     */
+
+    public function test_la_table_affiche_les_libelles_dedies_transfer_out_et_transfer_in(): void
+    {
+        $this->actingAs(User::factory()->create()->assignRole('manager'));
+
+        $warehouseA = Warehouse::create(['name' => 'Entrepôt Source', 'code' => 'source-t17']);
+        $warehouseB = Warehouse::create(['name' => 'Entrepôt Destination', 'code' => 'dest-t17']);
+        $product = $this->makeProduct(['stock' => 10]);
+
+        \App\Models\WarehouseStock::create(['warehouse_id' => $warehouseA->id, 'product_id' => $product->id, 'stock' => 10]);
+
+        \App\Models\StockTransfer::execute([
+            'from_warehouse_id' => $warehouseA->id,
+            'to_warehouse_id' => $warehouseB->id,
+            'product_id' => $product->id,
+            'quantity' => 4,
+        ]);
+
+        Livewire::test(ListStockMovements::class)
+            ->assertSee('Transfert sortant')
+            ->assertSee('Transfert entrant')
+            // Le texte brut (non traduit) ne doit plus apparaître seul.
+            ->assertDontSeeText('transfer_out')
+            ->assertDontSeeText('transfer_in');
+    }
+
+    public function test_la_fiche_de_detail_affiche_le_libelle_dedie_transfer_out(): void
+    {
+        $this->actingAs(User::factory()->create()->assignRole('manager'));
+
+        $warehouseA = Warehouse::create(['name' => 'Entrepôt Source', 'code' => 'source-t17-view']);
+        $warehouseB = Warehouse::create(['name' => 'Entrepôt Destination', 'code' => 'dest-t17-view']);
+        $product = $this->makeProduct(['stock' => 10]);
+
+        \App\Models\WarehouseStock::create(['warehouse_id' => $warehouseA->id, 'product_id' => $product->id, 'stock' => 10]);
+
+        $transfer = \App\Models\StockTransfer::execute([
+            'from_warehouse_id' => $warehouseA->id,
+            'to_warehouse_id' => $warehouseB->id,
+            'product_id' => $product->id,
+            'quantity' => 4,
+        ]);
+
+        $transferOutMovement = $transfer->stockMovements()->where('type', 'transfer_out')->firstOrFail();
+
+        Livewire::test(ViewStockMovement::class, ['record' => $transferOutMovement->getKey()])
+            ->assertSee('Transfert sortant')
+            ->assertDontSeeText('transfer_out');
+    }
+
+    /**
+     * Non-régression : les 5 types existants conservent exactement
+     * leur libellé actuel après l'ajout des cas transfer_out/transfer_in.
+     */
+    public function test_les_libelles_des_types_existants_restent_inchanges(): void
+    {
+        $this->actingAs(User::factory()->create()->assignRole('manager'));
+
+        $warehouse = Warehouse::create(['name' => 'Entrepôt A', 'code' => 'a-t17-existants']);
+        $product = $this->makeProduct(['stock' => 0]);
+
+        StockMovement::create(['product_id' => $product->id, 'warehouse_id' => $warehouse->id, 'type' => 'purchase', 'quantity' => 5]);
+        StockMovement::create(['product_id' => $product->id, 'warehouse_id' => $warehouse->id, 'type' => 'adjustment', 'quantity' => 3]);
+
+        Livewire::test(ListStockMovements::class)
+            ->assertSee('🟢 Achat')
+            ->assertSee('🟠 Ajustement');
+    }
 }

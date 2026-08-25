@@ -54,12 +54,15 @@ class StockMovementInfolist
                                 'return' => '🟡 Retour',
                                 'adjustment' => '🟠 Ajustement',
                                 'inventory' => '⚪ Inventaire',
+                                'transfer_out' => '📤 Transfert sortant',
+                                'transfer_in' => '📥 Transfert entrant',
                                 default => $state,
                             })
                             ->color(fn (string $state): string => match ($state) {
                                 'purchase', 'return' => 'success',
                                 'sale' => 'danger',
                                 'adjustment' => 'warning',
+                                'transfer_out', 'transfer_in' => 'info',
                                 default => 'gray',
                             }),
 
