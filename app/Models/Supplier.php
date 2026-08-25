@@ -21,4 +21,14 @@ class Supplier extends Model
     {
         return $this->hasMany(PurchaseOrder::class);
     }
+
+    /**
+     * Étape T28 — factures fournisseurs enregistrées pour ce
+     * fournisseur, tous bons de commande confondus. Relation additive
+     * en lecture seule.
+     */
+    public function supplierInvoices(): HasMany
+    {
+        return $this->hasMany(SupplierInvoice::class);
+    }
 }

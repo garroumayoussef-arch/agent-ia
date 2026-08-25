@@ -401,4 +401,16 @@ class PurchaseOrder extends Model
     {
         return $this->hasMany(StockMovement::class);
     }
+
+    /**
+     * Étape T28 — factures fournisseurs enregistrées contre ce bon de
+     * commande (0, 1, ou plusieurs si facturé en plusieurs fois par le
+     * fournisseur). Relation additive en lecture seule : ne crée
+     * aucune nouvelle écriture sur PurchaseOrder, son cycle de statut
+     * (T13/T19) reste entièrement inchangé.
+     */
+    public function supplierInvoices(): HasMany
+    {
+        return $this->hasMany(SupplierInvoice::class);
+    }
 }
