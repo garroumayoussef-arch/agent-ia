@@ -75,7 +75,9 @@ class WarehouseStocksTable
                 SelectFilter::make('warehouse_id')
                     ->label('Entrepôt')
                     ->options(function () {
-                        $allowedWarehouseIds = static::currentUserWarehouseIds();
+                        // T21 (D5) — currentUserReadWarehouseIds() (lecture,
+                        // manager+viewer), jamais currentUserWarehouseIds() (écriture).
+                        $allowedWarehouseIds = static::currentUserReadWarehouseIds();
 
                         return Warehouse::query()
                             ->when(

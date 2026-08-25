@@ -40,17 +40,19 @@ class UserForm
                     ->preload()
                     ->helperText('Sans rôle, l’utilisateur a un accès en lecture seule (lecteur) à tout le panel, mais ne peut rien créer/modifier/supprimer.'),
 
-                // Étape T19 — permissions par entrepôt : n'a d'effet
-                // réel que pour un utilisateur ayant le rôle manager
-                // (cf. ScopesToOwnWarehouses, décision D3). Un admin
-                // garde un accès global quel que soit le contenu de ce
-                // champ ; pour viewer/sans rôle, il reste inutilisé.
+                // Étape T19 (écriture, manager) / T21 (lecture, viewer) —
+                // permissions par entrepôt : n'a d'effet réel que pour un
+                // utilisateur ayant le rôle manager OU viewer (cf.
+                // ScopesToOwnWarehouses). Un admin garde un accès global
+                // quel que soit le contenu de ce champ ; pour un compte
+                // sans rôle, il reste inutilisé (D3 T21 : jamais étendu
+                // aux comptes sans rôle).
                 Select::make('warehouses')
                     ->label('Entrepôt(s) attribué(s)')
                     ->relationship('warehouses', 'name')
                     ->multiple()
                     ->preload()
-                    ->helperText('Pour un manager : restreint la création de mouvements, réceptions, expéditions et transferts à ces entrepôts. Sans entrepôt attribué, un manager ne peut effectuer aucune de ces opérations. Sans effet pour un admin (accès global) ou un viewer.'),
+                    ->helperText('Pour un manager : restreint la création de mouvements, réceptions, expéditions et transferts à ces entrepôts (sans entrepôt attribué, aucune de ces opérations n\'est possible). Pour un viewer : restreint la CONSULTATION des stocks/mouvements par entrepôt à ces mêmes entrepôts (sans entrepôt attribué, aucune donnée de stock/mouvement n\'est visible). Sans effet pour un admin (accès global) ou un compte sans rôle.'),
             ]);
     }
 }

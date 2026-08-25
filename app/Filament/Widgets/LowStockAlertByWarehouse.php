@@ -28,10 +28,10 @@ use Filament\Widgets\TableWidget;
  * réutilisé tel quel — pas de seuil configurable par entrepôt (hors
  * périmètre T15).
  *
- * Étape T20 — n'étant pas une Resource, ce widget ne bénéficie pas de
- * getEloquentQuery() : sa requête est scopée directement ici, même
- * principe (managers uniquement, D1) que WarehouseStockResource/
- * StockMovementResource.
+ * Étape T20 (manager) / T21 (viewer) — n'étant pas une Resource, ce
+ * widget ne bénéficie pas de getEloquentQuery() : sa requête est scopée
+ * directement ici, via currentUserReadWarehouseIds() — même mécanisme
+ * que WarehouseStockResource/StockMovementResource.
  */
 class LowStockAlertByWarehouse extends TableWidget
 {
@@ -65,7 +65,9 @@ class LowStockAlertByWarehouse extends TableWidget
                 .'dans un entrepôt actif, même si le stock global du produit reste suffisant ailleurs.'
             )
             ->query(function () {
-                $allowedWarehouseIds = static::currentUserWarehouseIds();
+                // T21 (D5) — currentUserReadWarehouseIds() (lecture,
+                // manager+viewer), jamais currentUserWarehouseIds() (écriture).
+                $allowedWarehouseIds = static::currentUserReadWarehouseIds();
 
                 return WarehouseStock::query()
                     ->where('stock', '<=', Product::LOW_STOCK_THRESHOLD)

@@ -32,8 +32,8 @@ use Illuminate\Database\Eloquent\Builder;
  * canDelete) restent inertes en pratique : aucune page/action de
  * mutation n'existe pour les invoquer.
  *
- * Étape T20 — scoping en LECTURE par entrepôt (managers uniquement,
- * D1) : getEloquentQuery() est le point d'extension officiel de
+ * Étape T20 (manager) / T21 (viewer) — scoping en LECTURE par
+ * entrepôt : getEloquentQuery() est le point d'extension officiel de
  * Filament pour ça (cf. son commentaire natif "Security: Override this
  * method to scope queries..."). Comme cette Resource n'a qu'une page
  * "index" (aucune page "view"/"edit", cf. getPages() ci-dessous), seule
@@ -62,16 +62,19 @@ class WarehouseStockResource extends Resource
     }
 
     /**
-     * Étape T20 — barrière autoritaire côté serveur (jamais seulement
-     * l'UI, cf. le filtre déjà restreint dans WarehouseStocksTable) :
-     * un manager sans entrepôt attribué obtient une liste vide (aucune
-     * exception, une requête filtrée sur un ensemble vide ne retourne
-     * simplement aucune ligne) ; admin/viewer/sans rôle : inchangé.
+     * Étape T20 (manager) / T21 (viewer, D3) — barrière autoritaire côté
+     * serveur (jamais seulement l'UI, cf. le filtre déjà restreint dans
+     * WarehouseStocksTable) : un manager ou un viewer sans entrepôt
+     * attribué obtient une liste vide (aucune exception, une requête
+     * filtrée sur un ensemble vide ne retourne simplement aucune ligne) ;
+     * admin/sans rôle : inchangé. currentUserReadWarehouseIds() (T21,
+     * D5) — jamais currentUserWarehouseIds() (T19, écriture) — pour ne
+     * jamais affecter les permissions admin/manager déjà validées.
      */
     public static function getEloquentQuery(): Builder
     {
         $query = parent::getEloquentQuery();
-        $allowedWarehouseIds = static::currentUserWarehouseIds();
+        $allowedWarehouseIds = static::currentUserReadWarehouseIds();
 
         if ($allowedWarehouseIds !== null) {
             $query->whereIn('warehouse_id', $allowedWarehouseIds);

@@ -332,21 +332,30 @@ class WarehouseReadScopingTest extends TestCase
 
     /*
      * =================================================================
-     * D1 — viewer inchangé
+     * T20 — non-régression explicite : le comportement manager (déjà
+     * testé ci-dessus par les autres méthodes de ce fichier) doit rester
+     * strictement identique après l'introduction de
+     * currentUserReadWarehouseIds() en T21 (D3/D5) — un seul test dédié
+     * suffit ici, les autres méthodes manager de ce fichier n'ont
+     * elles-mêmes pas été modifiées et couvrent déjà le reste.
      * =================================================================
      */
 
-    public function test_un_viewer_voit_toutes_les_lignes_warehouse_stock_et_mouvements_sans_etre_attribue(): void
+    public function test_le_comportement_manager_reste_inchange_apres_lintroduction_du_scoping_viewer(): void
     {
-        $this->actingAs(User::factory()->create()->assignRole('viewer'));
+        $user = User::factory()->create()->assignRole('manager');
+        $this->actingAs($user);
 
-        $warehouse = $this->makeWarehouse();
+        $warehouseAllowed = $this->makeWarehouse();
+        $warehouseForbidden = $this->makeWarehouse();
+        $user->warehouses()->attach($warehouseAllowed);
+
         $product = $this->makeProduct();
-        $line = WarehouseStock::create(['warehouse_id' => $warehouse->id, 'product_id' => $product->id, 'stock' => 5]);
-        $movement = StockMovement::create(['product_id' => $product->id, 'warehouse_id' => $warehouse->id, 'type' => 'purchase', 'quantity' => 5]);
+        $lineAllowed = WarehouseStock::create(['warehouse_id' => $warehouseAllowed->id, 'product_id' => $product->id, 'stock' => 5]);
+        $lineForbidden = WarehouseStock::create(['warehouse_id' => $warehouseForbidden->id, 'product_id' => $product->id, 'stock' => 8]);
 
-        Livewire::test(ListWarehouseStocks::class)->assertCanSeeTableRecords([$line]);
-        Livewire::test(ListStockMovements::class)->assertCanSeeTableRecords([$movement]);
-        $this->get(StockMovementResource::getUrl('view', ['record' => $movement]))->assertSuccessful();
+        Livewire::test(ListWarehouseStocks::class)
+            ->assertCanSeeTableRecords([$lineAllowed])
+            ->assertCanNotSeeTableRecords([$lineForbidden]);
     }
 }

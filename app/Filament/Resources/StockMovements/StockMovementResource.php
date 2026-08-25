@@ -21,9 +21,9 @@ use Filament\Tables\Table;
 use Illuminate\Database\Eloquent\Builder;
 
 /**
- * Étape T20 — scoping en LECTURE par entrepôt (managers uniquement,
- * D1), via getEloquentQuery() (cf. getEloquentQuery() ci-dessous). Ce
- * point unique protège à la fois la liste ET les pages "view"/"edit" :
+ * Étape T20 (manager) / T21 (viewer) — scoping en LECTURE par
+ * entrepôt, via getEloquentQuery() (cf. getEloquentQuery() ci-dessous).
+ * Ce point unique protège à la fois la liste ET les pages "view"/"edit" :
  * Filament résout l'enregistrement de ces pages via cette même
  * requête, un accès direct par URL à une fiche hors périmètre devient
  * donc un 404 natif, sans logique supplémentaire à écrire (D3 : chaque
@@ -58,16 +58,19 @@ class StockMovementResource extends Resource
     }
 
     /**
-     * Étape T20 — barrière autoritaire côté serveur (jamais seulement
-     * l'UI, cf. le filtre déjà restreint dans StockMovementsTable) :
-     * un manager sans entrepôt attribué obtient une liste vide (aucune
-     * exception) et un 404 sur toute fiche hors périmètre ; admin/
-     * viewer/sans rôle : inchangé.
+     * Étape T20 (manager) / T21 (viewer, D3) — barrière autoritaire côté
+     * serveur (jamais seulement l'UI, cf. le filtre déjà restreint dans
+     * StockMovementsTable) : un manager ou un viewer sans entrepôt
+     * attribué obtient une liste vide (aucune exception) et un 404 sur
+     * toute fiche hors périmètre ; admin/sans rôle : inchangé.
+     * currentUserReadWarehouseIds() (T21, D5) — jamais
+     * currentUserWarehouseIds() (T19, écriture) — pour ne jamais
+     * affecter les permissions admin/manager déjà validées.
      */
     public static function getEloquentQuery(): Builder
     {
         $query = parent::getEloquentQuery();
-        $allowedWarehouseIds = static::currentUserWarehouseIds();
+        $allowedWarehouseIds = static::currentUserReadWarehouseIds();
 
         if ($allowedWarehouseIds !== null) {
             $query->whereIn('warehouse_id', $allowedWarehouseIds);
