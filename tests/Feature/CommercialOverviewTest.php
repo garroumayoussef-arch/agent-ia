@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Filament\Resources\Invoices\Pages\ListInvoices;
 use App\Filament\Widgets\CommercialOverview;
 use App\Models\CompanySettings;
 use App\Models\CreditNote;
@@ -114,6 +115,50 @@ class CommercialOverviewTest extends TestCase
     private function backdateCreditNoteIssuedAtTo(CreditNote $creditNote, \Carbon\Carbon $date): void
     {
         DB::table('credit_notes')->where('id', $creditNote->id)->update(['issued_at' => $date->toDateString()]);
+    }
+
+    /**
+     * Chantier "réconciliation avoirs" (D1/D6/D7) — facture à 2 lignes
+     * (TVA 20%, déjà configurée en setUp) : 40 € HT -> 48 € TTC, 20 €
+     * HT -> 24 € TTC (total facture = 72 € TTC), pour pouvoir créditer
+     * une seule ligne à la fois.
+     */
+    private function makeInvoiceWithTwoLines(): Invoice
+    {
+        $customer = Customer::create([
+            'name' => 'Client Reconciliation Widget',
+            'customer_type' => Customer::TYPE_INDIVIDUAL,
+            'address' => 'Adresse',
+            'city' => 'Lyon',
+            'country' => 'France',
+        ]);
+        $order = SalesOrder::create(['reference' => 'CMD-'.uniqid(), 'customer_id' => $customer->id]);
+
+        $shipped = [];
+        foreach ([40, 20] as $unitPriceHt) {
+            $product = Product::create([
+                'reference' => 'REF-'.uniqid(),
+                'nom' => 'Maillot Reconciliation Widget',
+                'categorie' => 'Maillots',
+                'type' => 'Player Version',
+                'taille' => 'M',
+                'stock' => 100,
+                'prix_achat' => 10,
+                'prix_vente' => $unitPriceHt,
+            ]);
+            $item = SalesOrderItem::create([
+                'sales_order_id' => $order->id,
+                'product_id' => $product->id,
+                'quantity_ordered' => 1,
+                'unit_price' => $unitPriceHt,
+            ]);
+            $shipped[$item->id] = 1;
+        }
+
+        $order->markAsConfirmed();
+        $order->fresh()->ship($shipped);
+
+        return Invoice::generateFromSalesOrder($order->fresh());
     }
 
     /*
@@ -361,5 +406,131 @@ class CommercialOverviewTest extends TestCase
             ->assertSee('120,00 €') // CA TTC facturé : inchangé par le paiement
             ->assertSee('Nombre de factures (total)')
             ->assertSee('1'); // toujours 1 facture, jamais affecté par un paiement
+    }
+
+    /*
+     * =================================================================
+     * Chantier "réconciliation avoirs" (D1/D6/D7, validés) — "Restant
+     * dû" retranche désormais aussi les avoirs, avec le même ancrage
+     * temporel (D7) que les paiements : les avoirs comptés sont ceux
+     * liés aux factures ÉMISES pendant la période, jamais filtrés sur
+     * la date d'émission de l'avoir lui-même (contrairement à "Montant
+     * des avoirs", qui reste volontairement ancrée sur l'avoir).
+     * =================================================================
+     */
+
+    public function test_restant_du_deduit_un_avoir_emis_pendant_la_periode(): void
+    {
+        // Facture 120 TTC émise ce mois, avoir total émis ce mois aussi
+        // -> net = 0, aucun paiement -> Restant dû = 0,00 €.
+        $invoice = $this->makeInvoice(100); // 120 TTC, ce mois
+        CreditNote::generateFromInvoice($invoice, $invoice->lines->pluck('id')->all(), 'Retour', CreditNote::SETTLEMENT_REFUND);
+
+        $this->actingAs(User::factory()->create()->assignRole('manager'));
+
+        Livewire::test(CommercialOverview::class)
+            ->assertSee('Restant dû (ce mois)')
+            ->assertSee('0,00 €');
+
+        $this->assertSame(0.0, $invoice->fresh()->amountRemaining());
+    }
+
+    /**
+     * D7 (validé) — cas explicitement demandé : un avoir dont la date
+     * d'émission PROPRE tombe APRÈS la fin de la période, mais qui
+     * porte sur une facture émise PENDANT la période, doit malgré tout
+     * être déduit de "Restant dû" de cette période (ancrage sur la
+     * facture, jamais sur l'avoir) — alors que "Montant des avoirs" de
+     * cette même période reste volontairement à 0 (ancrage sur
+     * l'avoir), ces deux tuiles n'ayant jamais le même ancrage.
+     */
+    public function test_avoir_emis_apres_la_periode_est_exclu_du_montant_des_avoirs_mais_inclus_dans_le_restant_du(): void
+    {
+        $invoice = $this->makeInvoice(100); // 120 TTC, émise ce mois
+        $creditNote = CreditNote::generateFromInvoice($invoice, $invoice->lines->pluck('id')->all(), 'Retour', CreditNote::SETTLEMENT_REFUND);
+        // Avoir daté du mois PROCHAIN : après la fin de "ce mois".
+        $this->backdateCreditNoteIssuedAtTo($creditNote, now()->addMonthNoOverflow()->startOfMonth());
+
+        $this->actingAs(User::factory()->create()->assignRole('manager'));
+
+        $component = Livewire::test(CommercialOverview::class);
+        $component->assertSee('Montant des avoirs (ce mois)');
+        $component->assertSee('Restant dû (ce mois)');
+        $component->assertSee('0,00 €');
+
+        // Vérification numérique non ambiguë via le modèle : l'avoir
+        // (120 €) est bien pris en compte dans le solde, peu importe sa
+        // propre date d'émission (D7).
+        $this->assertSame(0.0, $invoice->fresh()->amountRemaining());
+        $this->assertSame(120.0, $invoice->fresh()->creditedAmount());
+    }
+
+    /**
+     * Bornes de période (D7) — un avoir sur une facture DU MOIS DERNIER
+     * ne doit jamais affecter le "Restant dû" de CE MOIS ; une facture
+     * SANS AUCUN avoir garde son "Restant dû" intact.
+     */
+    public function test_le_restant_du_du_mois_dernier_nest_pas_affecte_par_un_avoir_sur_une_facture_de_ce_mois(): void
+    {
+        // Facture A émise CE MOIS (120 TTC), avoir total dessus -> 0 dû.
+        $invoiceThisMonth = $this->makeInvoice(100, 1, '-this');
+        CreditNote::generateFromInvoice($invoiceThisMonth, $invoiceThisMonth->lines->pluck('id')->all(), 'Retour', CreditNote::SETTLEMENT_REFUND);
+
+        // Facture B émise LE MOIS DERNIER (60 TTC), SANS AUCUN avoir.
+        $invoiceLastMonth = $this->makeInvoice(50, 1, '-last');
+        $this->backdateInvoiceIssuedAtTo($invoiceLastMonth, now()->subMonthNoOverflow()->startOfMonth()->addDay());
+
+        $this->actingAs(User::factory()->create()->assignRole('admin'));
+
+        Livewire::test(CommercialOverview::class)
+            ->assertSee('Restant dû (mois dernier)')
+            ->assertSee('60,00 €') // facture B intégrale, aucun avoir dessus
+            ->assertSee('Restant dû (ce mois)')
+            ->assertSee('0,00 €'); // facture A soldée par avoir
+
+        $this->assertSame(60.0, $invoiceLastMonth->fresh()->amountRemaining());
+        $this->assertSame(0.0, $invoiceThisMonth->fresh()->amountRemaining());
+    }
+
+    /**
+     * Vérification demandée explicitement : le modèle Invoice
+     * (amountRemaining()), le filtre InvoicesTable (payment_status) et
+     * l'agrégat CommercialOverview ("Restant dû") doivent donner
+     * EXACTEMENT le même résultat sur une facture avec avoir ET
+     * paiement combinés (D6 : 3 implémentations indépendantes mais
+     * jamais divergentes).
+     */
+    public function test_le_modele_le_filtre_et_le_widget_saccordent_sur_le_restant_du_avec_avoir_et_paiement(): void
+    {
+        // Facture 72 TTC (2 lignes : 48 + 24). Avoir sur la ligne de
+        // 48 € -> net = 24 €. Paiement de 10 € (partiel du net).
+        // Reste dû attendu : 72 - 48 - 10 = 14 €.
+        $invoice = $this->makeInvoiceWithTwoLines();
+        CreditNote::generateFromInvoice($invoice, [$invoice->lines->first()->id], 'Retour', CreditNote::SETTLEMENT_REFUND);
+        InvoicePayment::recordFor($invoice->fresh(), 10, now()->toDateString());
+
+        $freshInvoice = $invoice->fresh();
+
+        // 1) Modèle.
+        $this->assertSame(14.0, $freshInvoice->amountRemaining());
+        $this->assertSame(Invoice::PAYMENT_STATUS_PARTIAL, $freshInvoice->paymentStatus());
+
+        // 2) Filtre InvoicesTable : classée "partiellement payée",
+        // jamais "payée" (72 brut jamais utilisé), jamais "non payée".
+        $this->actingAs(User::factory()->create()->assignRole('manager'));
+
+        Livewire::test(ListInvoices::class)
+            ->filterTable('payment_status', Invoice::PAYMENT_STATUS_PARTIAL)
+            ->assertCanSeeTableRecords([$freshInvoice]);
+
+        Livewire::test(ListInvoices::class)
+            ->filterTable('payment_status', Invoice::PAYMENT_STATUS_PAID)
+            ->assertCanNotSeeTableRecords([$freshInvoice]);
+
+        // 3) Widget : "Restant dû (total)" affiche le même montant net
+        // (14,00 €) que le modèle en (1).
+        Livewire::test(CommercialOverview::class)
+            ->assertSee('Restant dû (total)')
+            ->assertSee('14,00 €');
     }
 }

@@ -3,6 +3,7 @@
 namespace Tests\Feature;
 
 use App\Models\CompanySettings;
+use App\Models\CreditNote;
 use App\Models\Customer;
 use App\Models\Invoice;
 use App\Models\InvoicePayment;
@@ -308,6 +309,197 @@ class InvoicePaymentTest extends TestCase
 
     /*
      * =================================================================
+     * Chantier "réconciliation avoirs" (D5, validé) — le plafond de
+     * recordFor() doit désormais être le solde NET (total_ttc −
+     * avoirs), jamais le total_ttc brut. Les scénarios ci-dessous
+     * utilisent des factures à 2 lignes (contrairement à makeInvoice()
+     * ci-dessus, à ligne unique) pour pouvoir créditer une seule ligne
+     * et obtenir un solde net précisément connu.
+     * =================================================================
+     */
+
+    /**
+     * Facture avec une ligne par prix indiqué (quantité 1 chacune, TVA
+     * 0% — cf. setUp), pour créditer une ligne précise et connaître
+     * exactement le solde net résultant.
+     */
+    private function makeInvoiceWithLines(array $linePrices): Invoice
+    {
+        $customer = Customer::create([
+            'name' => 'Client Paiement D5',
+            'customer_type' => Customer::TYPE_INDIVIDUAL,
+            'address' => 'Adresse',
+            'city' => 'Lyon',
+            'country' => 'France',
+        ]);
+        $order = SalesOrder::create(['reference' => 'CMD-'.uniqid(), 'customer_id' => $customer->id]);
+
+        $shipped = [];
+        foreach ($linePrices as $price) {
+            $product = Product::create([
+                'reference' => 'REF-'.uniqid(),
+                'nom' => 'Maillot Paiement D5',
+                'categorie' => 'Maillots',
+                'type' => 'Player Version',
+                'taille' => 'M',
+                'stock' => 100,
+                'prix_achat' => 10,
+                'prix_vente' => $price,
+            ]);
+            $item = SalesOrderItem::create([
+                'sales_order_id' => $order->id,
+                'product_id' => $product->id,
+                'quantity_ordered' => 1,
+                'unit_price' => $price,
+            ]);
+            $shipped[$item->id] = 1;
+        }
+
+        $order->markAsConfirmed();
+        $order->fresh()->ship($shipped);
+
+        return Invoice::generateFromSalesOrder($order->fresh());
+    }
+
+    private function creditLine(Invoice $invoice, int $lineIndex): CreditNote
+    {
+        $line = $invoice->lines()->get()[$lineIndex];
+
+        return CreditNote::generateFromInvoice($invoice, [$line->id], 'Retour produit', CreditNote::SETTLEMENT_REFUND);
+    }
+
+    public function test_sans_avoir_le_plafond_reste_le_total_ttc_brut(): void
+    {
+        $invoice = $this->makeInvoiceWithLines([1000]);
+
+        $payment = InvoicePayment::recordFor($invoice, 1000, now()->toDateString());
+
+        $this->assertNotNull($payment->id);
+    }
+
+    public function test_avec_avoir_un_paiement_egal_exactement_au_solde_net_est_accepte(): void
+    {
+        $invoice = $this->makeInvoiceWithLines([700, 300]);
+        $this->creditLine($invoice, 1); // avoir de 300 -> net = 700
+
+        $payment = InvoicePayment::recordFor($invoice->fresh(), 700, now()->toDateString());
+
+        $this->assertNotNull($payment->id);
+    }
+
+    public function test_avec_avoir_un_paiement_superieur_au_solde_net_est_rejete_meme_sous_le_total_ttc_brut(): void
+    {
+        $invoice = $this->makeInvoiceWithLines([700, 300]);
+        $this->creditLine($invoice, 1); // avoir de 300 -> net = 700
+
+        // 800 € < 1000 € (total_ttc brut) : aurait été accepté AVANT D5.
+        // 800 € > 700 € (net) : doit être rejeté APRÈS D5.
+        $this->expectException(\Exception::class);
+        $this->expectExceptionMessage('dépasse le solde restant dû');
+
+        InvoicePayment::recordFor($invoice->fresh(), 800, now()->toDateString());
+    }
+
+    public function test_avec_avoir_le_cumul_de_plusieurs_paiements_ne_peut_pas_depasser_le_solde_net(): void
+    {
+        $invoice = $this->makeInvoiceWithLines([700, 300]);
+        $this->creditLine($invoice, 1); // avoir de 300 -> net = 700
+
+        InvoicePayment::recordFor($invoice->fresh(), 500, now()->toDateString());
+
+        $this->expectException(\Exception::class);
+        $this->expectExceptionMessage('dépasse le solde restant dû');
+
+        InvoicePayment::recordFor($invoice->fresh(), 250, now()->toDateString()); // 500+250=750 > 700
+    }
+
+    public function test_avec_avoir_plusieurs_paiements_partiels_couvrent_exactement_le_solde_net(): void
+    {
+        $invoice = $this->makeInvoiceWithLines([700, 300]);
+        $this->creditLine($invoice, 1); // avoir de 300 -> net = 700
+
+        InvoicePayment::recordFor($invoice->fresh(), 300, now()->toDateString());
+        InvoicePayment::recordFor($invoice->fresh(), 300, now()->toDateString());
+        $lastPayment = InvoicePayment::recordFor($invoice->fresh(), 100, now()->toDateString());
+
+        $this->assertNotNull($lastPayment->id);
+        $freshInvoice = $invoice->fresh();
+        $this->assertSame(700.0, $freshInvoice->amountPaid());
+        $this->assertSame(0.0, $freshInvoice->amountRemaining());
+        $this->assertSame(Invoice::PAYMENT_STATUS_PAID, $freshInvoice->paymentStatus());
+    }
+
+    /**
+     * Concurrence avec avoir préexistant : facture 1000 €, avoir déjà
+     * émis de 300 € (net = 700 €). Deux paiements concurrents de 400 €
+     * chacun (800 € au total) : 800 ≤ 1000 € (brut) — les DEUX
+     * auraient été acceptés AVANT D5 ; 800 € > 700 € (net) — UN SEUL
+     * doit être accepté APRÈS D5. Même mécanisme multi-process/base
+     * isolée que les tests de concurrence T31 ci-dessus.
+     */
+    public function test_deux_paiements_concurrents_avec_un_avoir_preexistant_respectent_le_plafond_net(): void
+    {
+        [$scratchDir, $dbFile, $invoiceId] = $this->prepareIsolatedDatabaseWithInvoiceAndCreditNote(1000, 300);
+
+        $basePath = base_path();
+        $envOverrides = ['DB_CONNECTION' => 'sqlite', 'DB_DATABASE' => $dbFile] + getenv();
+        $resultsFile = $scratchDir.'/results.txt';
+        $probeFile = $scratchDir.'/probe.php';
+
+        file_put_contents($probeFile, <<<PHP
+            <?php
+            require '{$basePath}/vendor/autoload.php';
+            \$app = require '{$basePath}/bootstrap/app.php';
+            \$app->make(Illuminate\\Contracts\\Console\\Kernel::class)->bootstrap();
+
+            \$invoice = \\App\\Models\\Invoice::find({$invoiceId});
+            \$result = 'FAILED';
+            try {
+                \\App\\Models\\InvoicePayment::recordFor(\$invoice, 400, now()->toDateString());
+                \$result = 'ACCEPTED';
+            } catch (\\Throwable \$e) {
+                \$result = 'REJECTED';
+            }
+
+            \$fp = fopen(\$argv[1], 'a');
+            flock(\$fp, LOCK_EX);
+            fwrite(\$fp, \$result."\\n");
+            flock(\$fp, LOCK_UN);
+            fclose(\$fp);
+            PHP);
+
+        $handles = [];
+        $allPipes = [];
+        for ($i = 0; $i < 2; $i++) {
+            $handles[] = proc_open(
+                ['php', $probeFile, $resultsFile],
+                [1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
+                $pipes,
+                null,
+                $envOverrides,
+            );
+            $allPipes[$i] = $pipes;
+        }
+        foreach ($handles as $i => $handle) {
+            stream_get_contents($allPipes[$i][1]);
+            stream_get_contents($allPipes[$i][2]);
+            proc_close($handle);
+        }
+
+        $results = array_values(array_filter(explode("\n", file_get_contents($resultsFile))));
+        $accepted = count(array_filter($results, fn ($r) => $r === 'ACCEPTED'));
+        $rejected = count(array_filter($results, fn ($r) => $r === 'REJECTED'));
+
+        $this->assertSame(1, $accepted, 'Exactement un des deux paiements concurrents doit être accepté (plafond net = 700 €).');
+        $this->assertSame(1, $rejected, "L'autre doit être rejeté (dépassement du solde NET après avoir).");
+
+        $totalPaidInIsolatedDb = $this->sumPaymentsInIsolatedDatabase($dbFile, $invoiceId);
+        $this->assertSame(400.0, $totalPaidInIsolatedDb, 'Un seul paiement de 400 € doit avoir été persisté.');
+        $this->assertLessThanOrEqual(700.0, $totalPaidInIsolatedDb, 'Le total réellement persisté ne doit jamais dépasser le solde net (700 €).');
+    }
+
+    /*
+     * =================================================================
      * Concurrence / atomicité
      * =================================================================
      */
@@ -486,6 +678,98 @@ class InvoicePaymentTest extends TestCase
             )
             SQL);
         $invoiceId = (int) $pdo->lastInsertId();
+
+        return [$scratchDir, $dbFile, $invoiceId];
+    }
+
+    /**
+     * Chantier "réconciliation avoirs" (D5) — même principe que
+     * prepareIsolatedDatabaseWithInvoice() ci-dessus, mais avec DEUX
+     * InvoiceLine (une conservée, une créditée intégralement — un
+     * avoir ne porte jamais que sur des lignes entières, T24) et un
+     * CreditNote déjà émis sur la seconde ligne, pour tester le
+     * plafond NET (D5) sous concurrence réelle.
+     *
+     * @return array{0: string, 1: string, 2: int}
+     */
+    private function prepareIsolatedDatabaseWithInvoiceAndCreditNote(float $totalTtc, float $creditNoteAmount): array
+    {
+        $scratchDir = sys_get_temp_dir().'/t_d5_payment_test_'.uniqid();
+        mkdir($scratchDir);
+        $dbFile = $scratchDir.'/concurrency.sqlite';
+        touch($dbFile);
+
+        $basePath = base_path();
+        $envOverrides = ['DB_CONNECTION' => 'sqlite', 'DB_DATABASE' => $dbFile] + getenv();
+
+        $migrateProcess = proc_open(
+            ['php', 'artisan', 'migrate', '--database=sqlite', '--force'],
+            [1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
+            $migratePipes,
+            $basePath,
+            $envOverrides,
+        );
+        $migrateOutput = stream_get_contents($migratePipes[1]).stream_get_contents($migratePipes[2]);
+        $migrateStatus = proc_close($migrateProcess);
+        $this->assertSame(0, $migrateStatus, 'La migration de la base isolée a échoué : '.$migrateOutput);
+
+        $pdo = new \PDO('sqlite:'.$dbFile);
+        $pdo->exec("INSERT INTO sales_orders (reference, status, created_at, updated_at) VALUES ('CMD-D5-CONC', 'shipped', datetime('now'), datetime('now'))");
+        $salesOrderId = (int) $pdo->lastInsertId();
+
+        $remainderTtc = round($totalTtc - $creditNoteAmount, 2);
+
+        $pdo->exec(<<<SQL
+            INSERT INTO invoices (
+                sales_order_id, number, issued_at, sale_completed_at, operation_category,
+                transaction_type, sales_order_reference, customer_type, customer_name,
+                seller_legal_name, seller_address, seller_postal_code, seller_city, seller_country,
+                seller_siren, vat_regime_snapshot, recovery_indemnity_amount_snapshot,
+                total_ht, discount_amount, tax_amount, total_ttc, status, created_at, updated_at
+            ) VALUES (
+                {$salesOrderId}, 'FA-D5-CONC', date('now'), date('now'), 'vente',
+                'b2c_domestic', 'CMD-D5-CONC', 'individual', 'Client Concurrence D5',
+                'Magarrou', '1 rue du Sport', '75000', 'Paris', 'France',
+                '111222333', 'standard', 40,
+                {$totalTtc}, 0, 0, {$totalTtc}, 'issued', datetime('now'), datetime('now')
+            )
+            SQL);
+        $invoiceId = (int) $pdo->lastInsertId();
+
+        // Ligne 1 — conservée, jamais créditée.
+        $pdo->exec(<<<SQL
+            INSERT INTO invoice_lines (invoice_id, product_name, quantity, unit_price_ht, subtotal_ht, total_ttc, created_at, updated_at)
+            VALUES ({$invoiceId}, 'Ligne conservée', 1, {$remainderTtc}, {$remainderTtc}, {$remainderTtc}, datetime('now'), datetime('now'))
+            SQL);
+
+        // Ligne 2 — créditée intégralement ci-dessous.
+        $pdo->exec(<<<SQL
+            INSERT INTO invoice_lines (invoice_id, product_name, quantity, unit_price_ht, subtotal_ht, total_ttc, created_at, updated_at)
+            VALUES ({$invoiceId}, 'Ligne créditée', 1, {$creditNoteAmount}, {$creditNoteAmount}, {$creditNoteAmount}, datetime('now'), datetime('now'))
+            SQL);
+        $creditedLineId = (int) $pdo->lastInsertId();
+
+        $pdo->exec(<<<SQL
+            INSERT INTO credit_notes (
+                invoice_id, number, issued_at, scope, reason, settlement_type,
+                seller_legal_name, seller_address, seller_postal_code, seller_city, seller_country,
+                seller_siren, customer_type, customer_name,
+                invoice_number_reference, invoice_issued_at_reference, sales_order_reference,
+                total_ht, tax_amount, total_ttc, status, created_at, updated_at
+            ) VALUES (
+                {$invoiceId}, 'AV-D5-CONC', date('now'), 'partial', 'Test concurrence D5', 'refund',
+                'Magarrou', '1 rue du Sport', '75000', 'Paris', 'France',
+                '111222333', 'individual', 'Client Concurrence D5',
+                'FA-D5-CONC', date('now'), 'CMD-D5-CONC',
+                {$creditNoteAmount}, 0, {$creditNoteAmount}, 'issued', datetime('now'), datetime('now')
+            )
+            SQL);
+        $creditNoteId = (int) $pdo->lastInsertId();
+
+        $pdo->exec(<<<SQL
+            INSERT INTO credit_note_lines (credit_note_id, invoice_line_id, product_name, quantity, unit_price_ht, subtotal_ht, total_ttc, created_at, updated_at)
+            VALUES ({$creditNoteId}, {$creditedLineId}, 'Ligne créditée', 1, {$creditNoteAmount}, {$creditNoteAmount}, {$creditNoteAmount}, datetime('now'), datetime('now'))
+            SQL);
 
         return [$scratchDir, $dbFile, $invoiceId];
     }

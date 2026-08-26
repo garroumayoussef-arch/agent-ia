@@ -28,14 +28,36 @@ use Illuminate\Support\Facades\DB;
  *    c'est cet INSERT qui force le verrou d'écriture au niveau du
  *    fichier dès le début de la transaction.
  * 3. Vérification APRÈS écriture, dans la même transaction : si le
- *    total dépasse le TTC de la facture, une exception est levée
- *    (ROLLBACK SQL, jamais un appel à delete() qui échouerait de toute
- *    façon sur un modèle immuable) — le paiement n'est jamais persisté.
+ *    total dépasse le solde NET de la facture (total_ttc − avoirs,
+ *    cf. D5 ci-dessous), une exception est levée (ROLLBACK SQL, jamais
+ *    un appel à delete() qui échouerait de toute façon sur un modèle
+ *    immuable) — le paiement n'est jamais persisté.
  * 4. Boucle de nouvelle tentative (20 essais, délai aléatoire) qui ne
  *    retente QUE les Illuminate\Database\QueryException (contention
  *    transitoire type "database is locked", découverte et corrigée
  *    pendant T30) — jamais l'exception métier "dépasse le solde", qui
  *    se propage immédiatement, message inchangé.
+ *
+ * ============================================================
+ * Chantier "réconciliation avoirs" (D5, validé)
+ * ============================================================
+ * Le plafond de paiement était auparavant total_ttc BRUT. Il est
+ * désormais total_ttc − Invoice::creditedAmount() (solde NET après
+ * avoirs, cf. Invoice::amountRemaining()/paymentStatus()) : un
+ * paiement ne peut plus jamais faire dépasser au client le montant
+ * réellement dû après avoirs. Changement de comportement assumé (D5,
+ * validé) : un paiement aujourd'hui accepté (≤ total_ttc brut) peut
+ * désormais être refusé si un avoir existe déjà sur la facture.
+ *
+ * creditedAmount() est lu APRÈS le verrouillage de l'Invoice
+ * (lockForUpdate() ci-dessous), donc dans la même transaction que la
+ * vérification du solde payé — même niveau de fraîcheur que
+ * $totalPaid. Limite résiduelle assumée, non traitée dans ce chantier
+ * (hors périmètre D1-D7) : CreditNote::generateFromInvoice() ne
+ * verrouille pas la ligne Invoice de son côté, donc un avoir émis de
+ * façon strictement concurrente à un recordFor() sur la même facture
+ * n'est pas mutuellement exclu par un verrou commun — cas rare, déjà
+ * identifié lors de l'analyse validée, non couvert par D1-D7.
  *
  * ============================================================
  * PRÉCISION DES MONTANTS — cohérent avec l'architecture existante
@@ -84,9 +106,9 @@ class InvoicePayment extends Model
     /**
      * Enregistre un paiement contre une facture. Jamais confiance dans
      * le montant venu de l'appelant : revérifié intégralement ici
-     * (montant > 0, cumul jamais supérieur au total TTC), sous
-     * transaction et verrouillage (cf. documentation de tête de
-     * classe).
+     * (montant > 0, cumul jamais supérieur au solde NET après avoirs —
+     * D5, validé), sous transaction et verrouillage (cf. documentation
+     * de tête de classe).
      */
     public static function recordFor(
         Invoice $invoice,
@@ -117,7 +139,14 @@ class InvoicePayment extends Model
 
                     $totalPaid = round((float) static::where('invoice_id', $lockedInvoice->id)->sum('amount'), 2);
 
-                    if ($totalPaid > round((float) $lockedInvoice->total_ttc, 2)) {
+                    // D5 (validé) — plafond NET (total_ttc − avoirs),
+                    // jamais total_ttc brut : cf. documentation de tête
+                    // de classe. $lockedInvoice->creditedAmount() est lu
+                    // ici, une fois l'Invoice verrouillée, pour rester au
+                    // même niveau de fraîcheur que $totalPaid ci-dessus.
+                    $netCeiling = round((float) $lockedInvoice->total_ttc - $lockedInvoice->creditedAmount(), 2);
+
+                    if ($totalPaid > $netCeiling) {
                         // Rejet métier définitif : jamais retenté, message
                         // inchangé (distinct d'une QueryException technique
                         // ci-dessous).

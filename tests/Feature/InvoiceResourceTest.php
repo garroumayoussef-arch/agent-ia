@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use App\Filament\Resources\Invoices\InvoiceResource;
 use App\Filament\Resources\Invoices\Pages\ListInvoices;
 use App\Models\CompanySettings;
+use App\Models\CreditNote;
 use App\Models\Customer;
 use App\Models\Driver;
 use App\Models\Invoice;
@@ -88,6 +89,50 @@ class InvoiceResourceTest extends TestCase
         ]);
         $order->markAsConfirmed();
         $order->fresh()->ship([$item->id => 2]);
+
+        return Invoice::generateFromSalesOrder($order->fresh());
+    }
+
+    /**
+     * Chantier "réconciliation avoirs" (D1/D2/D6) — facture à 2 lignes
+     * (TVA 20%, déjà configurée en setUp), montants HT distincts pour
+     * pouvoir créditer une seule ligne à la fois : 40 € HT -> 48 € TTC,
+     * 20 € HT -> 24 € TTC (total facture = 72 € TTC).
+     */
+    private function makeInvoiceWithTwoLines(): Invoice
+    {
+        $customer = Customer::create([
+            'name' => 'Client Reconciliation Filtre',
+            'customer_type' => Customer::TYPE_INDIVIDUAL,
+            'address' => 'Adresse',
+            'city' => 'Lyon',
+            'country' => 'France',
+        ]);
+        $order = SalesOrder::create(['reference' => 'CMD-'.uniqid(), 'customer_id' => $customer->id]);
+
+        $shipped = [];
+        foreach ([40, 20] as $unitPriceHt) {
+            $product = Product::create([
+                'reference' => 'REF-'.uniqid(),
+                'nom' => 'Maillot Reconciliation Filtre',
+                'categorie' => 'Maillots',
+                'type' => 'Player Version',
+                'taille' => 'M',
+                'stock' => 100,
+                'prix_achat' => 10,
+                'prix_vente' => $unitPriceHt,
+            ]);
+            $item = SalesOrderItem::create([
+                'sales_order_id' => $order->id,
+                'product_id' => $product->id,
+                'quantity_ordered' => 1,
+                'unit_price' => $unitPriceHt,
+            ]);
+            $shipped[$item->id] = 1;
+        }
+
+        $order->markAsConfirmed();
+        $order->fresh()->ship($shipped);
 
         return Invoice::generateFromSalesOrder($order->fresh());
     }
@@ -229,6 +274,65 @@ class InvoiceResourceTest extends TestCase
             ->filterTable('payment_status', Invoice::PAYMENT_STATUS_PAID)
             ->assertCanSeeTableRecords([$invoice]);
 
+        Livewire::test(ListInvoices::class)
+            ->filterTable('payment_status', Invoice::PAYMENT_STATUS_PARTIAL)
+            ->assertCanNotSeeTableRecords([$invoice]);
+    }
+
+    /*
+     * =================================================================
+     * Chantier "réconciliation avoirs" (D1/D2/D6, validés) — le filtre
+     * payment_status doit désormais tenir compte des avoirs, avec la
+     * même formule NETTE que Invoice::paymentStatus() (D6 : dupliquée
+     * ici à l'identique, aucun helper partagé).
+     * =================================================================
+     */
+
+    public function test_le_filtre_soldee_par_avoir_ne_capture_quune_facture_integralement_creditee_sans_paiement(): void
+    {
+        // Facture totalement créditée (72 € TTC d'avoir), aucun
+        // paiement -> soldee_par_avoir, jamais non_payee ni payee.
+        $invoiceSettled = $this->makeInvoiceWithTwoLines(); // 72 TTC
+        CreditNote::generateFromInvoice($invoiceSettled, $invoiceSettled->lines->pluck('id')->all(), 'Retour intégral', CreditNote::SETTLEMENT_REFUND);
+
+        // Facture avec un avoir PARTIEL (48 €), aucun paiement -> reste
+        // 24 € dus -> non_payee (D2 : rien n'a été payé, ce n'est pas
+        // "soldée", il reste un montant réel à encaisser).
+        $invoicePartialCredit = $this->makeInvoiceWithTwoLines(); // 72 TTC
+        CreditNote::generateFromInvoice($invoicePartialCredit, [$invoicePartialCredit->lines->first()->id], 'Retour partiel', CreditNote::SETTLEMENT_REFUND);
+
+        // Facture normale, sans aucun avoir -> non_payee, jamais
+        // capturée par le nouveau filtre soldee_par_avoir.
+        $invoiceNoCredit = $this->makeInvoice(); // 48 TTC
+
+        $this->actingAs(User::factory()->create()->assignRole('manager'));
+
+        Livewire::test(ListInvoices::class)
+            ->filterTable('payment_status', Invoice::PAYMENT_STATUS_SETTLED_BY_CREDIT_NOTE)
+            ->assertCanSeeTableRecords([$invoiceSettled])
+            ->assertCanNotSeeTableRecords([$invoicePartialCredit, $invoiceNoCredit]);
+
+        Livewire::test(ListInvoices::class)
+            ->filterTable('payment_status', Invoice::PAYMENT_STATUS_UNPAID)
+            ->assertCanSeeTableRecords([$invoicePartialCredit, $invoiceNoCredit])
+            ->assertCanNotSeeTableRecords([$invoiceSettled]);
+    }
+
+    public function test_le_filtre_paye_tient_compte_du_solde_net_apres_avoir(): void
+    {
+        // Avoir de 48 € -> net = 24 €. Paiement de 24 € == net -> payée.
+        $invoice = $this->makeInvoiceWithTwoLines(); // 72 TTC
+        CreditNote::generateFromInvoice($invoice, [$invoice->lines->first()->id], 'Retour', CreditNote::SETTLEMENT_REFUND);
+        InvoicePayment::recordFor($invoice->fresh(), 24, now()->toDateString());
+
+        $this->actingAs(User::factory()->create()->assignRole('manager'));
+
+        Livewire::test(ListInvoices::class)
+            ->filterTable('payment_status', Invoice::PAYMENT_STATUS_PAID)
+            ->assertCanSeeTableRecords([$invoice]);
+
+        // Jamais classée "payée" par erreur sur le total_ttc BRUT (72 €,
+        // que 24 € ne couvrirait pas) : seul le net (24 €) compte.
         Livewire::test(ListInvoices::class)
             ->filterTable('payment_status', Invoice::PAYMENT_STATUS_PARTIAL)
             ->assertCanNotSeeTableRecords([$invoice]);

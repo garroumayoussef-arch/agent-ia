@@ -49,6 +49,16 @@ use Filament\Notifications\Notification;
  * jamais de dépassement du solde, transaction + verrouillage). Même
  * garde ->visible()/->authorize() que les deux actions d'avoir
  * ci-dessus, masquée dès que paymentStatus() === PAYMENT_STATUS_PAID.
+ *
+ * Chantier "réconciliation avoirs" (D4, validé) — CreditNote::
+ * generateFromInvoice() reste volontairement libre (aucune validation
+ * ajoutée là-bas, jamais bloquant) : le modèle n'importe aucune classe
+ * Filament, comme tous les modèles de ce projet. C'est ICI, seul
+ * endroit où Notification::make() est déjà utilisé, qu'un avertissement
+ * (jamais un blocage) est ajouté après la création réussie d'un avoir,
+ * lorsqu'il laisse un solde créditeur (cf. notifyIfCreditBalanceGenerated()
+ * ci-dessous, qui réutilise Invoice::creditBalance() — D3, déjà
+ * implémentée et testée — aucune nouvelle logique de calcul ici).
  */
 trait HasInvoiceWorkflowActions
 {
@@ -98,6 +108,8 @@ trait HasInvoiceWorkflowActions
                         ->title("Avoir {$creditNote->number} créé")
                         ->success()
                         ->send();
+
+                    static::notifyIfCreditBalanceGenerated($record);
                 } catch (\Throwable $e) {
                     Notification::make()
                         ->title("Création de l'avoir impossible")
@@ -161,6 +173,8 @@ trait HasInvoiceWorkflowActions
                         ->title("Avoir {$creditNote->number} créé")
                         ->success()
                         ->send();
+
+                    static::notifyIfCreditBalanceGenerated($record);
                 } catch (\Throwable $e) {
                     Notification::make()
                         ->title("Création de l'avoir impossible")
@@ -233,6 +247,42 @@ trait HasInvoiceWorkflowActions
                         ->send();
                 }
             });
+    }
+
+    /**
+     * D4 (validé) — avertit, SANS JAMAIS bloquer, lorsque l'avoir qui
+     * vient d'être créé laisse un solde créditeur (paiements déjà
+     * encaissés dépassant le nouveau montant net après avoir, cf.
+     * Invoice::creditBalance() — D3, déjà implémentée et testée à
+     * l'étape 1). Appelée uniquement APRÈS la création réussie de
+     * l'avoir (jamais avant, jamais comme condition de blocage) : ce
+     * n'est en aucun cas une validation, seulement une information
+     * pour l'utilisateur, cohérent avec le choix D4 explicitement
+     * validé ("ne pas bloquer la création de l'avoir").
+     *
+     * $record est relu fraîchement (fresh()) : creditBalance() dépend
+     * des avoirs et paiements en base à l'instant présent, jamais
+     * d'une valeur potentiellement obsolète sur l'instance déjà en
+     * mémoire.
+     */
+    private static function notifyIfCreditBalanceGenerated(Invoice $record): void
+    {
+        $creditBalance = $record->fresh()->creditBalance();
+
+        if ($creditBalance <= 0) {
+            return;
+        }
+
+        Notification::make()
+            ->title('Solde créditeur généré')
+            ->body(
+                'Cet avoir laisse un solde créditeur de '
+                .number_format($creditBalance, 2, ',', ' ')
+                .' € : un remboursement est dû au client.'
+            )
+            ->warning()
+            ->persistent()
+            ->send();
     }
 
     private static function creditNoteLineLabel(InvoiceLine $line): string

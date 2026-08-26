@@ -277,6 +277,13 @@ class Invoice extends Model
      * toujours recalculé depuis la somme réelle de InvoicePayment (cf.
      * paymentStatus() ci-dessous) — aucun champ à désynchroniser. Report
      * exact du mécanisme déjà validé sur SupplierInvoice (T30).
+     *
+     * Chantier "réconciliation avoirs" (D1-D7, validés) — le solde dû
+     * et le statut tiennent désormais compte des avoirs (CreditNote,
+     * T24) en plus des paiements, jamais l'un sans l'autre. Formule
+     * unique (D1), répliquée à l'identique (D6, aucune abstraction
+     * nouvelle) dans InvoicesTable (filtre payment_status) et
+     * CommercialOverview (tuile "Restant dû").
      * =================================================================
      */
     public const PAYMENT_STATUS_UNPAID = 'non_payee';
@@ -284,6 +291,15 @@ class Invoice extends Model
     public const PAYMENT_STATUS_PARTIAL = 'partiellement_payee';
 
     public const PAYMENT_STATUS_PAID = 'payee';
+
+    /**
+     * D2 (validé) — facture dont le montant net (après avoirs) est
+     * totalement couvert par un ou plusieurs avoirs, SANS aucun
+     * paiement réel. Distincte de PAYMENT_STATUS_PAID : "payée"
+     * signifie toujours un encaissement réel, jamais un simple solde
+     * net nul obtenu par avoir (cf. paymentStatus() ci-dessous).
+     */
+    public const PAYMENT_STATUS_SETTLED_BY_CREDIT_NOTE = 'soldee_par_avoir';
 
     /**
      * Étape T31 — paiements enregistrés contre cette facture (0, 1, ou
@@ -309,23 +325,92 @@ class Invoice extends Model
         return round((float) $this->payments()->sum('amount'), 2);
     }
 
+    /**
+     * D1 (validé) — somme des avoirs (CreditNote, T24) émis contre
+     * cette facture. Même convention qu'amountPaid() ci-dessus :
+     * toujours une requête fraîche, jamais mise en cache sur
+     * l'instance, somme calculée côté base sur la colonne
+     * decimal(10,2).
+     *
+     * Ne peut structurellement jamais dépasser total_ttc : un avoir ne
+     * porte jamais que sur un sous-ensemble des lignes de CETTE
+     * facture (CreditNote::generateFromInvoice()), et la contrainte
+     * UNIQUE sur credit_note_lines.invoice_line_id interdit qu'une
+     * même ligne soit créditée deux fois, tous avoirs confondus — donc
+     * aucun risque de double comptage même avec plusieurs avoirs
+     * successifs (cf. CreditNoteLine).
+     */
+    public function creditedAmount(): float
+    {
+        return round((float) $this->creditNotes()->sum('total_ttc'), 2);
+    }
+
+    /**
+     * Montant net réellement dû après avoirs, avant déduction des
+     * paiements. Jamais négatif (cf. creditedAmount() ci-dessus).
+     * Privé : détail de calcul interne à amountRemaining()/
+     * creditBalance()/paymentStatus(), jamais exposé tel quel (D6 —
+     * aucune nouvelle API publique au-delà de ce que D1-D5 exigent).
+     */
+    private function netTotalDue(): float
+    {
+        return round((float) $this->total_ttc - $this->creditedAmount(), 2);
+    }
+
+    /**
+     * D1 (validé) — reste dû = total_ttc − avoirs − paiements. D3
+     * (validé) — plafonné à 0 : un éventuel excédent (paiements déjà
+     * encaissés dépassant le nouveau montant net après un avoir émis
+     * après-coup) n'est jamais affiché ici en négatif, cf.
+     * creditBalance() ci-dessous qui l'expose séparément — jamais
+     * fusionné avec ce montant.
+     */
     public function amountRemaining(): float
     {
-        return round((float) $this->total_ttc - $this->amountPaid(), 2);
+        return max(0.0, round($this->netTotalDue() - $this->amountPaid(), 2));
+    }
+
+    /**
+     * D3 (validé) — solde créditeur : montant que Magarrou doit au
+     * client lorsque les paiements déjà encaissés dépassent le montant
+     * net réellement dû après avoirs (ex. avoir émis après un paiement
+     * déjà intégral). Toujours ≥ 0, jamais mélangé à
+     * amountRemaining() : une information distincte (une dette envers
+     * le client), jamais une simple valeur négative de "reste dû".
+     */
+    public function creditBalance(): float
+    {
+        return max(0.0, round($this->amountPaid() - $this->netTotalDue(), 2));
     }
 
     /**
      * Source de vérité unique du statut de paiement : jamais un champ
-     * stocké, toujours recalculé depuis amountPaid() ci-dessus.
+     * stocké, toujours recalculé depuis amountPaid()/creditedAmount()
+     * ci-dessus.
+     *
+     * D2 (validé) — statut à 4 valeurs. "payée" exige un encaissement
+     * réel (paid > 0 et couvrant le net) : une facture intégralement
+     * soldée par avoir SANS aucun paiement obtient le statut dédié
+     * PAYMENT_STATUS_SETTLED_BY_CREDIT_NOTE, jamais confondue avec
+     * PAYMENT_STATUS_PAID. Le garde `$credited > 0` évite qu'une
+     * facture à 0 € sans aucun avoir (paid=0, net=0) ne soit prise à
+     * tort pour "soldée par avoir" — comportement inchangé pour ce cas
+     * marginal (retombe sur PAYMENT_STATUS_UNPAID, comme avant ce
+     * chantier).
      */
     public function paymentStatus(): string
     {
         $paid = $this->amountPaid();
-        $total = round((float) $this->total_ttc, 2);
+        $credited = $this->creditedAmount();
+        $netTotal = round((float) $this->total_ttc - $credited, 2);
+
+        if ($paid <= 0 && $netTotal <= 0 && $credited > 0) {
+            return self::PAYMENT_STATUS_SETTLED_BY_CREDIT_NOTE;
+        }
 
         return match (true) {
             $paid <= 0 => self::PAYMENT_STATUS_UNPAID,
-            $paid >= $total => self::PAYMENT_STATUS_PAID,
+            $paid >= $netTotal => self::PAYMENT_STATUS_PAID,
             default => self::PAYMENT_STATUS_PARTIAL,
         };
     }

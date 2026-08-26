@@ -50,11 +50,26 @@ use Illuminate\Support\Carbon;
  *   la totalité des factures — pas un comportement spécial introduit
  *   ici, simple conséquence du gabarit à bornes nulles déjà en place.
  *
- * Limite héritée de T31, non introduite ici : amountRemaining() ne
- * retranche jamais les avoirs (CreditNote) — un avoir sur une facture
- * partiellement créditée fait donc apparaître un "Restant dû" légèrement
- * surestimé par rapport à la réalité commerciale. Connu, non traité
- * dans ce chantier (hors périmètre validé D1-D4).
+ * ============================================================
+ * Chantier "réconciliation avoirs" (D1/D3/D6/D7, validés)
+ * ============================================================
+ * La limite ci-dessus (héritée de T31) est désormais corrigée : la
+ * tuile "Restant dû" retranche également les avoirs (CreditNote),
+ * jamais seulement les paiements, avec la même formule NETTE que
+ * Invoice::amountRemaining() (D1), plafonnée à 0 (D3) — reproduite ici
+ * à l'identique (D6 : duplication contrôlée assumée, aucun helper
+ * partagé introduit).
+ *
+ * D7 (validé) — ancrage temporel des avoirs dans cette tuile
+ * uniquement : les avoirs comptés sont ceux liés aux factures ÉMISES
+ * pendant la période (même ancrage que invoicedTtc/paidOnPeriodInvoices
+ * ci-dessous), quelle que soit la date d'émission de l'avoir
+ * lui-même — jamais l'ancrage de la tuile "Montant des avoirs"
+ * ci-dessus, qui reste volontairement distincte (issued_at de
+ * l'avoir). Un avoir émis APRÈS la période mais portant sur une
+ * facture émise PENDANT la période compte donc toujours dans "Restant
+ * dû" de cette période, mais jamais dans "Montant des avoirs" de
+ * cette même période.
  */
 class CommercialOverview extends StatsOverviewWidget
 {
@@ -126,7 +141,26 @@ class CommercialOverview extends StatsOverviewWidget
             })
             ->sum('amount');
 
-        $remainingTtc = round($invoicedTtc - $paidOnPeriodInvoices, 2);
+        // Chantier "réconciliation avoirs" (D1/D7, validés) — avoirs
+        // liés aux factures ÉMISES pendant la période (même ancrage que
+        // $paidOnPeriodInvoices ci-dessus), JAMAIS filtrés sur la date
+        // d'émission de l'avoir lui-même (cf. documentation de tête de
+        // classe, D7) : un avoir émis après la période mais portant sur
+        // une facture de la période est donc bien compté ici.
+        $creditedOnPeriodInvoicesTtc = (float) CreditNote::query()
+            ->whereHas('invoice', function ($invoiceQuery) use ($start, $end) {
+                if ($start !== null && $end !== null) {
+                    $invoiceQuery->whereBetween('issued_at', [$start, $end]);
+                }
+            })
+            ->sum('total_ttc');
+
+        // D1 (validé) — reste dû = total_ttc − avoirs − paiements,
+        // même formule que Invoice::amountRemaining(). D3 (validé) —
+        // plafonné à 0, jamais négatif (un éventuel excédent est un
+        // solde créditeur, hors périmètre de cette tuile).
+        $netInvoicedOnPeriodTtc = round($invoicedTtc - $creditedOnPeriodInvoicesTtc, 2);
+        $remainingTtc = max(0.0, round($netInvoicedOnPeriodTtc - $paidOnPeriodInvoices, 2));
 
         return [
             Stat::make("CA TTC facturé ({$label})", static::formatMoney($invoicedTtc))
@@ -150,7 +184,7 @@ class CommercialOverview extends StatsOverviewWidget
                 ->color('success'),
 
             Stat::make("Restant dû ({$label})", static::formatMoney($remainingTtc))
-                ->description('Sur les factures émises sur la période')
+                ->description('Sur les factures émises sur la période, net des avoirs')
                 ->color('danger'),
         ];
     }
