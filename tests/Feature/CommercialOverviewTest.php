@@ -8,6 +8,7 @@ use App\Models\CreditNote;
 use App\Models\Customer;
 use App\Models\Driver;
 use App\Models\Invoice;
+use App\Models\InvoicePayment;
 use App\Models\Product;
 use App\Models\SalesOrder;
 use App\Models\SalesOrderItem;
@@ -252,5 +253,113 @@ class CommercialOverviewTest extends TestCase
         // = CA facturé de ce mois = 0 (aucune facture ce mois-ci).
         // "Total" : avoir de 120,00 € bien compté.
         $component->assertSee('120,00 €');
+    }
+
+    /*
+     * =================================================================
+     * Chantier A — "Encaissé"/"Restant dû" (D1-D4 validés)
+     * =================================================================
+     */
+
+    public function test_encaisse_additionne_les_paiements_sur_plusieurs_factures(): void
+    {
+        // Facture A 120 TTC payée intégralement, facture B 60 TTC payée
+        // partiellement (30) -> Encaissé (total) = 120 + 30 = 150,00 €.
+        $invoiceA = $this->makeInvoice(100, 1, '-A'); // 120 TTC
+        $invoiceB = $this->makeInvoice(50, 1, '-B');  // 60 TTC
+        InvoicePayment::recordFor($invoiceA, 120, now()->toDateString());
+        InvoicePayment::recordFor($invoiceB, 30, now()->toDateString());
+
+        $this->actingAs(User::factory()->create()->assignRole('manager'));
+
+        Livewire::test(CommercialOverview::class)
+            ->assertSee('Encaissé (total)')
+            ->assertSee('150,00 €');
+    }
+
+    public function test_restant_du_correspond_au_solde_non_encore_paye_sur_les_factures_de_la_periode(): void
+    {
+        // Facture 120 TTC, paiement partiel de 50 -> Restant dû = 70,00 €.
+        $invoice = $this->makeInvoice(100); // 120 TTC
+        InvoicePayment::recordFor($invoice, 50, now()->toDateString());
+
+        $this->actingAs(User::factory()->create()->assignRole('manager'));
+
+        Livewire::test(CommercialOverview::class)
+            ->assertSee('Restant dû (total)')
+            ->assertSee('70,00 €');
+    }
+
+    public function test_une_facture_sans_aucun_paiement_a_un_restant_du_egal_a_son_total_ttc(): void
+    {
+        $this->makeInvoice(100); // 120 TTC, aucun paiement.
+
+        $this->actingAs(User::factory()->create()->assignRole('manager'));
+
+        Livewire::test(CommercialOverview::class)
+            ->assertSee('Encaissé (total)')
+            ->assertSee('0,00 €') // rien d'encaissé
+            ->assertSee('120,00 €'); // restant dû = total_ttc intégral
+    }
+
+    public function test_une_facture_integralement_payee_a_un_restant_du_de_zero(): void
+    {
+        $invoice = $this->makeInvoice(100); // 120 TTC
+        InvoicePayment::recordFor($invoice, 120, now()->toDateString());
+
+        $this->actingAs(User::factory()->create()->assignRole('manager'));
+
+        Livewire::test(CommercialOverview::class)
+            ->assertSee('Restant dû (total)')
+            ->assertSee('0,00 €');
+    }
+
+    /**
+     * D1 — "Encaissé" est ancré sur paid_at, jamais sur issued_at de la
+     * facture : un paiement reçu ce mois-ci sur une facture émise ce
+     * mois-ci, mais dont le paid_at est backdaté au mois dernier,
+     * compte dans "Encaissé (mois dernier)", pas dans "Encaissé (ce
+     * mois)" — alors que D3 continue de scoper "Restant dû (ce mois)"
+     * sur la date d'ÉMISSION de la facture (ce mois), et retombe donc à
+     * zéro puisque le paiement (quelle que soit sa propre date) couvre
+     * déjà tout le solde.
+     */
+    public function test_encaisse_est_ancre_sur_la_date_du_paiement_pas_sur_la_date_de_la_facture(): void
+    {
+        $invoice = $this->makeInvoice(100); // 120 TTC, émise ce mois-ci.
+        InvoicePayment::recordFor(
+            $invoice,
+            120,
+            now()->subMonthNoOverflow()->startOfMonth()->addDay()->toDateString(),
+        );
+
+        $this->actingAs(User::factory()->create()->assignRole('admin'));
+
+        $component = Livewire::test(CommercialOverview::class);
+
+        $component->assertSee('Encaissé (mois dernier)');
+        $component->assertSee('Encaissé (ce mois)');
+        // "Restant dû (ce mois)" = 0 : la facture (émise ce mois) est
+        // intégralement couverte, peu importe la date du paiement.
+        $component->assertSee('Restant dû (ce mois)');
+        $component->assertSee('0,00 €');
+    }
+
+    /**
+     * Non-régression — les 4 indicateurs déjà existants avant le
+     * chantier A ne doivent jamais être affectés par l'existence d'un
+     * paiement.
+     */
+    public function test_les_4_indicateurs_existants_restent_inchanges_en_presence_dun_paiement(): void
+    {
+        $invoice = $this->makeInvoice(100); // 120 TTC
+        InvoicePayment::recordFor($invoice, 50, now()->toDateString());
+
+        $this->actingAs(User::factory()->create()->assignRole('manager'));
+
+        Livewire::test(CommercialOverview::class)
+            ->assertSee('120,00 €') // CA TTC facturé : inchangé par le paiement
+            ->assertSee('Nombre de factures (total)')
+            ->assertSee('1'); // toujours 1 facture, jamais affecté par un paiement
     }
 }

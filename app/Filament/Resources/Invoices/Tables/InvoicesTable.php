@@ -8,6 +8,7 @@ use Filament\Actions\ViewAction;
 use Filament\Tables\Columns\TextColumn;
 use Filament\Tables\Filters\SelectFilter;
 use Filament\Tables\Table;
+use Illuminate\Database\Eloquent\Builder;
 
 /**
  * Étape T23 — table strictement en lecture : aucune colonne d'action
@@ -67,6 +68,49 @@ class InvoicesTable
                         'individual' => 'Particulier',
                         'business' => 'Professionnel',
                     ]),
+
+                // Chantier A — payment_status est une colonne CALCULÉE
+                // (jamais stockée, cf. Invoice::paymentStatus()), donc
+                // non filtrable par une clause WHERE directe sur un
+                // champ. Comparaison via une sous-requête CORRÉLÉE dans
+                // le WHERE (jamais un withSum()+having() : rejeté par
+                // SQLite avec "HAVING clause on a non-aggregate query",
+                // vérifié empiriquement — SQLite n'autorise HAVING que
+                // sur une requête avec un agrégat/GROUP BY réel).
+                // COALESCE(..., 0) gère nativement l'absence de paiement
+                // (NULL), ROUND(..., 2) neutralise le bruit flottant de
+                // l'affinité NUMERIC de SQLite sur les colonnes
+                // decimal(10,2). Mêmes seuils exacts que
+                // Invoice::paymentStatus() (<=0 / >=total_ttc / entre
+                // les deux) — jamais une deuxième définition du statut
+                // qui pourrait diverger de la première.
+                SelectFilter::make('payment_status')
+                    ->label('Statut de paiement')
+                    ->options([
+                        Invoice::PAYMENT_STATUS_UNPAID => 'Non payée',
+                        Invoice::PAYMENT_STATUS_PARTIAL => 'Partiellement payée',
+                        Invoice::PAYMENT_STATUS_PAID => 'Payée',
+                    ])
+                    ->query(function (Builder $query, array $data): void {
+                        $status = $data['value'] ?? null;
+
+                        if (blank($status)) {
+                            return;
+                        }
+
+                        $paidExpr = 'ROUND((select coalesce(sum(amount), 0) from invoice_payments '
+                            .'where invoice_payments.invoice_id = invoices.id), 2)';
+                        $totalExpr = 'ROUND(total_ttc, 2)';
+
+                        match ($status) {
+                            Invoice::PAYMENT_STATUS_UNPAID => $query->whereRaw("{$paidExpr} <= 0"),
+                            Invoice::PAYMENT_STATUS_PAID => $query->whereRaw("{$paidExpr} >= {$totalExpr}"),
+                            Invoice::PAYMENT_STATUS_PARTIAL => $query
+                                ->whereRaw("{$paidExpr} > 0")
+                                ->whereRaw("{$paidExpr} < {$totalExpr}"),
+                            default => null,
+                        };
+                    }),
             ])
             ->recordActions([
                 ViewAction::make(),

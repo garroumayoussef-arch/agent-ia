@@ -5,6 +5,7 @@ namespace App\Filament\Widgets;
 use App\Filament\Concerns\ScopesToOwnDriver;
 use App\Models\PurchaseOrder;
 use App\Models\SupplierInvoice;
+use App\Models\SupplierInvoicePayment;
 use Filament\Widgets\StatsOverviewWidget;
 use Filament\Widgets\StatsOverviewWidget\Stat;
 use Illuminate\Support\Carbon;
@@ -35,6 +36,20 @@ use Illuminate\Support\Carbon;
  * entrepôt : vérifié que purchase_orders n'a aucune colonne
  * warehouse_id et que PurchaseOrderResource ne surcharge pas
  * getEloquentQuery() — même absence de scoping que SupplierInvoice.
+ *
+ * ============================================================
+ * Chantier A — trésorerie (D1-D4 validés), symétrique EXACT de
+ * CommercialOverview
+ * ============================================================
+ * Deux indicateurs supplémentaires ajoutés aux 4 déjà existants
+ * ci-dessus (jamais retirés ni modifiés) :
+ * - "Décaissé" (D1/D4) : ancré sur SupplierInvoicePayment.paid_at —
+ *   même logique que "Encaissé" côté vente, jamais invoice_date de la
+ *   facture fournisseur.
+ * - "Restant dû fournisseurs" (D3/D4) : scopé aux factures fournisseurs
+ *   ENREGISTRÉES pendant la période (même ancrage qu'invoicedTtc
+ *   ci-dessous), paiements comptés sans filtre de date — même logique
+ *   que "Restant dû" côté vente.
  */
 class PurchasingOverview extends StatsOverviewWidget
 {
@@ -95,6 +110,31 @@ class PurchasingOverview extends StatsOverviewWidget
         $invoicedCount = $invoiceQuery->count();
         $invoicedTtc = (float) $invoiceQuery->sum('total_ttc');
 
+        // Chantier A (D1/D4) — "Décaissé" : ancré sur paid_at, symétrique
+        // exact de CommercialOverview::periodStats() (cf. documentation
+        // de tête de classe).
+        $paymentQuery = SupplierInvoicePayment::query();
+
+        if ($start !== null && $end !== null) {
+            $paymentQuery->whereBetween('paid_at', [$start, $end]);
+        }
+
+        $paidOutTtc = (float) $paymentQuery->sum('amount');
+
+        // Chantier A (D3/D4) — "Restant dû fournisseurs" : scopé aux
+        // factures fournisseurs enregistrées pendant la période (même
+        // ancrage qu'invoicedTtc ci-dessus), symétrique exact de
+        // CommercialOverview::periodStats().
+        $paidOnPeriodInvoices = (float) SupplierInvoicePayment::query()
+            ->whereHas('supplierInvoice', function ($invoiceQuery) use ($start, $end) {
+                if ($start !== null && $end !== null) {
+                    $invoiceQuery->whereBetween('invoice_date', [$start, $end]);
+                }
+            })
+            ->sum('amount');
+
+        $remainingTtc = round($invoicedTtc - $paidOnPeriodInvoices, 2);
+
         return [
             Stat::make("Montant commandé TTC ({$label})", static::formatMoney($orderedTtc))
                 ->description('Bons de commande passés (hors brouillon/annulé)')
@@ -111,6 +151,14 @@ class PurchasingOverview extends StatsOverviewWidget
             Stat::make("Nombre de factures fournisseurs ({$label})", $invoicedCount)
                 ->description('Factures fournisseurs enregistrées sur la période')
                 ->color('warning'),
+
+            Stat::make("Décaissé ({$label})", static::formatMoney($paidOutTtc))
+                ->description('Paiements fournisseurs versés sur la période')
+                ->color('success'),
+
+            Stat::make("Restant dû fournisseurs ({$label})", static::formatMoney($remainingTtc))
+                ->description('Sur les factures fournisseurs enregistrées sur la période')
+                ->color('danger'),
         ];
     }
 

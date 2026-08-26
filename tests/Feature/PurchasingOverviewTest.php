@@ -9,6 +9,7 @@ use App\Models\PurchaseOrder;
 use App\Models\PurchaseOrderItem;
 use App\Models\Supplier;
 use App\Models\SupplierInvoice;
+use App\Models\SupplierInvoicePayment;
 use App\Models\TaxRate;
 use App\Models\User;
 use App\Models\Warehouse;
@@ -283,5 +284,104 @@ class PurchasingOverviewTest extends TestCase
         Livewire::test(PurchasingOverview::class)
             ->assertSee('60,00 €') // total : 40 + 20
             ->assertSee('20,00 €'); // ce mois : seulement la nouvelle
+    }
+
+    /*
+     * =================================================================
+     * Chantier A — "Décaissé"/"Restant dû fournisseurs" (D1-D4 validés),
+     * symétrique exact de CommercialOverviewTest
+     * =================================================================
+     */
+
+    public function test_decaisse_additionne_les_paiements_sur_plusieurs_factures(): void
+    {
+        $supplier = $this->makeSupplier();
+        $orderA = $this->makeOrder($supplier, 100);
+        $orderB = $this->makeOrder($supplier, 50);
+        $invoiceA = $this->makeSupplierInvoice($supplier, $orderA, 120);
+        $invoiceB = $this->makeSupplierInvoice($supplier, $orderB, 60);
+        SupplierInvoicePayment::recordFor($invoiceA, 120, now()->toDateString());
+        SupplierInvoicePayment::recordFor($invoiceB, 30, now()->toDateString());
+
+        $this->actingAs(User::factory()->create()->assignRole('manager'));
+
+        Livewire::test(PurchasingOverview::class)
+            ->assertSee('Décaissé (total)')
+            ->assertSee('150,00 €');
+    }
+
+    public function test_restant_du_fournisseurs_correspond_au_solde_non_encore_paye(): void
+    {
+        $supplier = $this->makeSupplier();
+        $order = $this->makeOrder($supplier, 100);
+        $invoice = $this->makeSupplierInvoice($supplier, $order, 120);
+        SupplierInvoicePayment::recordFor($invoice, 50, now()->toDateString());
+
+        $this->actingAs(User::factory()->create()->assignRole('manager'));
+
+        Livewire::test(PurchasingOverview::class)
+            ->assertSee('Restant dû fournisseurs (total)')
+            ->assertSee('70,00 €');
+    }
+
+    public function test_une_facture_fournisseur_integralement_payee_a_un_restant_du_de_zero(): void
+    {
+        $supplier = $this->makeSupplier();
+        $order = $this->makeOrder($supplier, 100);
+        $invoice = $this->makeSupplierInvoice($supplier, $order, 120);
+        SupplierInvoicePayment::recordFor($invoice, 120, now()->toDateString());
+
+        $this->actingAs(User::factory()->create()->assignRole('manager'));
+
+        Livewire::test(PurchasingOverview::class)
+            ->assertSee('Restant dû fournisseurs (total)')
+            ->assertSee('0,00 €');
+    }
+
+    /**
+     * D1/D4 — "Décaissé" est ancré sur paid_at, jamais sur invoice_date,
+     * symétrique exact du test équivalent côté vente.
+     */
+    public function test_decaisse_est_ancre_sur_la_date_du_paiement_pas_sur_la_date_de_la_facture(): void
+    {
+        $supplier = $this->makeSupplier();
+        $order = $this->makeOrder($supplier, 100);
+        $invoice = $this->makeSupplierInvoice($supplier, $order, 120); // enregistrée ce mois-ci.
+        SupplierInvoicePayment::recordFor(
+            $invoice,
+            120,
+            now()->subMonthNoOverflow()->startOfMonth()->addDay()->toDateString(),
+        );
+
+        $this->actingAs(User::factory()->create()->assignRole('admin'));
+
+        $component = Livewire::test(PurchasingOverview::class);
+
+        $component->assertSee('Décaissé (mois dernier)');
+        $component->assertSee('Décaissé (ce mois)');
+        // "Restant dû fournisseurs (ce mois)" = 0 : la facture
+        // (enregistrée ce mois) est intégralement couverte, peu importe
+        // la date du paiement.
+        $component->assertSee('Restant dû fournisseurs (ce mois)');
+        $component->assertSee('0,00 €');
+    }
+
+    /**
+     * Non-régression — les 4 indicateurs déjà existants avant le
+     * chantier A ne doivent jamais être affectés par l'existence d'un
+     * paiement.
+     */
+    public function test_les_4_indicateurs_existants_restent_inchanges_en_presence_dun_paiement(): void
+    {
+        $supplier = $this->makeSupplier();
+        $order = $this->makeOrder($supplier, 100);
+        $invoice = $this->makeSupplierInvoice($supplier, $order, 120);
+        SupplierInvoicePayment::recordFor($invoice, 50, now()->toDateString());
+
+        $this->actingAs(User::factory()->create()->assignRole('manager'));
+
+        Livewire::test(PurchasingOverview::class)
+            ->assertSee('100,00 €') // montant commandé : inchangé par le paiement
+            ->assertSee('120,00 €'); // montant facturé : inchangé par le paiement
     }
 }

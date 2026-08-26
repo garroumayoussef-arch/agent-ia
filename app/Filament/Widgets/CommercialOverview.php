@@ -5,6 +5,7 @@ namespace App\Filament\Widgets;
 use App\Filament\Concerns\ScopesToOwnDriver;
 use App\Models\CreditNote;
 use App\Models\Invoice;
+use App\Models\InvoicePayment;
 use Filament\Widgets\StatsOverviewWidget;
 use Filament\Widgets\StatsOverviewWidget\Stat;
 use Illuminate\Support\Carbon;
@@ -29,6 +30,31 @@ use Illuminate\Support\Carbon;
  * bénéficie pas de canView($record) d'une Resource. Aucun scoping par
  * entrepôt (D4 T24 : facturation/avoirs restent hors périmètre
  * ScopesToOwnWarehouses).
+ *
+ * ============================================================
+ * Chantier A — trésorerie (D1-D4 validés)
+ * ============================================================
+ * Deux indicateurs supplémentaires ajoutés aux 4 déjà existants
+ * ci-dessus (jamais retirés ni modifiés) :
+ * - "Encaissé" (D1) : ancré sur InvoicePayment.paid_at — la date RÉELLE
+ *   d'encaissement, jamais issued_at de la facture. Un paiement reçu ce
+ *   mois-ci pour une facture émise le mois dernier compte dans le mois
+ *   en cours, pas dans le mois d'émission de la facture.
+ * - "Restant dû" (D3) : scopé aux factures ÉMISES pendant la période
+ *   (même ancrage qu'invoicedTtc ci-dessous, jamais un solde global à
+ *   date) — les paiements reçus contre CES factures sont comptés quelle
+ *   que soit la date de CES paiements (cohérent avec
+ *   Invoice::amountRemaining(), qui ne filtre jamais ses paiements par
+ *   date). Pour la période "total" (bornes nulles, comme les 4 autres
+ *   tuiles), ce calcul redonne mécaniquement le solde dû à ce jour sur
+ *   la totalité des factures — pas un comportement spécial introduit
+ *   ici, simple conséquence du gabarit à bornes nulles déjà en place.
+ *
+ * Limite héritée de T31, non introduite ici : amountRemaining() ne
+ * retranche jamais les avoirs (CreditNote) — un avoir sur une facture
+ * partiellement créditée fait donc apparaître un "Restant dû" légèrement
+ * surestimé par rapport à la réalité commerciale. Connu, non traité
+ * dans ce chantier (hors périmètre validé D1-D4).
  */
 class CommercialOverview extends StatsOverviewWidget
 {
@@ -77,6 +103,31 @@ class CommercialOverview extends StatsOverviewWidget
         $creditNotesTtc = (float) $creditNoteQuery->sum('total_ttc');
         $netTtc = $invoicedTtc - $creditNotesTtc;
 
+        // Chantier A (D1) — "Encaissé" : ancré sur paid_at (date réelle
+        // d'encaissement), jamais sur issued_at de la facture (cf.
+        // documentation de tête de classe).
+        $paymentQuery = InvoicePayment::query();
+
+        if ($start !== null && $end !== null) {
+            $paymentQuery->whereBetween('paid_at', [$start, $end]);
+        }
+
+        $collectedTtc = (float) $paymentQuery->sum('amount');
+
+        // Chantier A (D3) — "Restant dû" : scopé aux factures ÉMISES
+        // pendant la période (même ancrage qu'invoicedTtc ci-dessus),
+        // paiements comptés sans filtre de date (cf. documentation de
+        // tête de classe).
+        $paidOnPeriodInvoices = (float) InvoicePayment::query()
+            ->whereHas('invoice', function ($invoiceQuery) use ($start, $end) {
+                if ($start !== null && $end !== null) {
+                    $invoiceQuery->whereBetween('issued_at', [$start, $end]);
+                }
+            })
+            ->sum('amount');
+
+        $remainingTtc = round($invoicedTtc - $paidOnPeriodInvoices, 2);
+
         return [
             Stat::make("CA TTC facturé ({$label})", static::formatMoney($invoicedTtc))
                 ->description('Somme des factures émises')
@@ -93,6 +144,14 @@ class CommercialOverview extends StatsOverviewWidget
             Stat::make("CA net ({$label})", static::formatMoney($netTtc))
                 ->description('CA TTC facturé − avoirs émis')
                 ->color('warning'),
+
+            Stat::make("Encaissé ({$label})", static::formatMoney($collectedTtc))
+                ->description('Paiements clients reçus sur la période')
+                ->color('success'),
+
+            Stat::make("Restant dû ({$label})", static::formatMoney($remainingTtc))
+                ->description('Sur les factures émises sur la période')
+                ->color('danger'),
         ];
     }
 

@@ -3,6 +3,7 @@
 namespace Tests\Feature;
 
 use App\Filament\Resources\SupplierInvoices\Pages\CreateSupplierInvoice;
+use App\Filament\Resources\SupplierInvoices\Pages\ListSupplierInvoices;
 use App\Filament\Resources\SupplierInvoices\Pages\ViewSupplierInvoice;
 use App\Filament\Resources\SupplierInvoices\SupplierInvoiceResource;
 use App\Models\Driver;
@@ -11,6 +12,7 @@ use App\Models\PurchaseOrder;
 use App\Models\PurchaseOrderItem;
 use App\Models\Supplier;
 use App\Models\SupplierInvoice;
+use App\Models\SupplierInvoicePayment;
 use App\Models\User;
 use Database\Seeders\RoleSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -57,6 +59,19 @@ class SupplierInvoiceResourceTest extends TestCase
         $order->markAsOrdered();
 
         return $order->fresh();
+    }
+
+    private function makeSupplierInvoice(PurchaseOrder $order, float $totalTtc, string $suffix = ''): SupplierInvoice
+    {
+        return SupplierInvoice::create([
+            'supplier_id' => $order->supplier_id,
+            'purchase_order_id' => $order->id,
+            'supplier_invoice_number' => 'FF-'.uniqid().$suffix,
+            'invoice_date' => now()->toDateString(),
+            'total_ht' => $totalTtc,
+            'tax_amount' => 0,
+            'total_ttc' => $totalTtc,
+        ]);
     }
 
     /*
@@ -167,5 +182,85 @@ class SupplierInvoiceResourceTest extends TestCase
 
         Livewire::test(ViewSupplierInvoice::class, ['record' => $invoice->getKey()])
             ->assertSuccessful();
+    }
+
+    /*
+     * =================================================================
+     * Chantier A — filtre par statut de paiement (colonne calculée),
+     * symétrique exact du filtre sur InvoicesTable
+     * =================================================================
+     */
+
+    public function test_le_filtre_statut_de_paiement_retourne_le_bon_sous_ensemble_de_factures(): void
+    {
+        $order = $this->makeOrderedPurchaseOrder();
+
+        $invoiceUnpaid = $this->makeSupplierInvoice($order, 120, '-unpaid');
+
+        $invoicePartial = $this->makeSupplierInvoice($order, 120, '-partial');
+        SupplierInvoicePayment::recordFor($invoicePartial, 50, now()->toDateString());
+
+        $invoicePaid = $this->makeSupplierInvoice($order, 120, '-paid');
+        SupplierInvoicePayment::recordFor($invoicePaid, 120, now()->toDateString());
+
+        $this->actingAs(User::factory()->create()->assignRole('manager'));
+
+        Livewire::test(ListSupplierInvoices::class)
+            ->filterTable('payment_status', SupplierInvoice::PAYMENT_STATUS_UNPAID)
+            ->assertCanSeeTableRecords([$invoiceUnpaid])
+            ->assertCanNotSeeTableRecords([$invoicePartial, $invoicePaid]);
+
+        Livewire::test(ListSupplierInvoices::class)
+            ->filterTable('payment_status', SupplierInvoice::PAYMENT_STATUS_PARTIAL)
+            ->assertCanSeeTableRecords([$invoicePartial])
+            ->assertCanNotSeeTableRecords([$invoiceUnpaid, $invoicePaid]);
+
+        Livewire::test(ListSupplierInvoices::class)
+            ->filterTable('payment_status', SupplierInvoice::PAYMENT_STATUS_PAID)
+            ->assertCanSeeTableRecords([$invoicePaid])
+            ->assertCanNotSeeTableRecords([$invoiceUnpaid, $invoicePartial]);
+    }
+
+    /**
+     * Sans valeur sélectionnée, le filtre reste inactif : toutes les
+     * factures fournisseurs restent visibles, quel que soit leur statut
+     * de paiement.
+     */
+    public function test_le_filtre_statut_de_paiement_sans_valeur_ne_masque_aucune_facture(): void
+    {
+        $order = $this->makeOrderedPurchaseOrder();
+        $invoiceUnpaid = $this->makeSupplierInvoice($order, 120, '-unpaid');
+        $invoicePaid = $this->makeSupplierInvoice($order, 120, '-paid');
+        SupplierInvoicePayment::recordFor($invoicePaid, 120, now()->toDateString());
+
+        $this->actingAs(User::factory()->create()->assignRole('manager'));
+
+        Livewire::test(ListSupplierInvoices::class)
+            ->filterTable('payment_status', null)
+            ->assertCanSeeTableRecords([$invoiceUnpaid, $invoicePaid]);
+    }
+
+    /**
+     * Robustesse contre le bruit flottant de l'affinité NUMERIC de
+     * SQLite sur les colonnes decimal(10,2), symétrique exact du test
+     * équivalent sur InvoiceResourceTest.
+     */
+    public function test_le_filtre_paye_resiste_au_bruit_flottant_dune_somme_de_paiements(): void
+    {
+        $order = $this->makeOrderedPurchaseOrder();
+        $invoice = $this->makeSupplierInvoice($order, 48, '-precision');
+        SupplierInvoicePayment::recordFor($invoice, 16, now()->toDateString());
+        SupplierInvoicePayment::recordFor($invoice, 16, now()->toDateString());
+        SupplierInvoicePayment::recordFor($invoice, 16, now()->toDateString());
+
+        $this->actingAs(User::factory()->create()->assignRole('manager'));
+
+        Livewire::test(ListSupplierInvoices::class)
+            ->filterTable('payment_status', SupplierInvoice::PAYMENT_STATUS_PAID)
+            ->assertCanSeeTableRecords([$invoice]);
+
+        Livewire::test(ListSupplierInvoices::class)
+            ->filterTable('payment_status', SupplierInvoice::PAYMENT_STATUS_PARTIAL)
+            ->assertCanNotSeeTableRecords([$invoice]);
     }
 }

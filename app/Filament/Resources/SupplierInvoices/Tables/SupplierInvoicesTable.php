@@ -8,6 +8,7 @@ use Filament\Actions\ViewAction;
 use Filament\Tables;
 use Filament\Tables\Filters\SelectFilter;
 use Filament\Tables\Table;
+use Illuminate\Database\Eloquent\Builder;
 
 /**
  * Étape T28 — aucune EditAction/DeleteAction enregistrée ici (facture
@@ -68,11 +69,45 @@ class SupplierInvoicesTable
                     ->options(fn () => Supplier::query()->orderBy('name')->pluck('name', 'id')->toArray())
                     ->searchable(),
 
-                // Pas de filtre sur le statut de paiement : c'est une
-                // colonne CALCULÉE (jamais stockée en base, cf.
-                // SupplierInvoice::paymentStatus()), non filtrable par
-                // une simple clause WHERE — hors périmètre V1, non
-                // demandé explicitement.
+                // Chantier A — payment_status est une colonne CALCULÉE
+                // (jamais stockée, cf. SupplierInvoice::paymentStatus()),
+                // donc non filtrable par une clause WHERE directe sur un
+                // champ. Symétrique exact du filtre sur InvoicesTable :
+                // sous-requête CORRÉLÉE dans le WHERE (jamais un
+                // withSum()+having(), rejeté par SQLite avec "HAVING
+                // clause on a non-aggregate query", vérifié
+                // empiriquement). COALESCE(..., 0) gère nativement
+                // l'absence de paiement, ROUND(..., 2) neutralise le
+                // bruit flottant de l'affinité NUMERIC de SQLite sur les
+                // colonnes decimal(10,2). Mêmes seuils exacts que
+                // SupplierInvoice::paymentStatus().
+                SelectFilter::make('payment_status')
+                    ->label('Statut de paiement')
+                    ->options([
+                        SupplierInvoice::PAYMENT_STATUS_UNPAID => 'Non payée',
+                        SupplierInvoice::PAYMENT_STATUS_PARTIAL => 'Partiellement payée',
+                        SupplierInvoice::PAYMENT_STATUS_PAID => 'Payée',
+                    ])
+                    ->query(function (Builder $query, array $data): void {
+                        $status = $data['value'] ?? null;
+
+                        if (blank($status)) {
+                            return;
+                        }
+
+                        $paidExpr = 'ROUND((select coalesce(sum(amount), 0) from supplier_invoice_payments '
+                            .'where supplier_invoice_payments.supplier_invoice_id = supplier_invoices.id), 2)';
+                        $totalExpr = 'ROUND(total_ttc, 2)';
+
+                        match ($status) {
+                            SupplierInvoice::PAYMENT_STATUS_UNPAID => $query->whereRaw("{$paidExpr} <= 0"),
+                            SupplierInvoice::PAYMENT_STATUS_PAID => $query->whereRaw("{$paidExpr} >= {$totalExpr}"),
+                            SupplierInvoice::PAYMENT_STATUS_PARTIAL => $query
+                                ->whereRaw("{$paidExpr} > 0")
+                                ->whereRaw("{$paidExpr} < {$totalExpr}"),
+                            default => null,
+                        };
+                    }),
             ])
             ->recordActions([
                 ViewAction::make(),

@@ -8,6 +8,7 @@ use App\Models\CompanySettings;
 use App\Models\Customer;
 use App\Models\Driver;
 use App\Models\Invoice;
+use App\Models\InvoicePayment;
 use App\Models\Product;
 use App\Models\SalesOrder;
 use App\Models\SalesOrderItem;
@@ -153,5 +154,83 @@ class InvoiceResourceTest extends TestCase
         $this->assertArrayHasKey('view', $pages);
         $this->assertArrayNotHasKey('create', $pages);
         $this->assertArrayNotHasKey('edit', $pages);
+    }
+
+    /*
+     * =================================================================
+     * Chantier A — filtre par statut de paiement (colonne calculée)
+     * =================================================================
+     */
+
+    public function test_le_filtre_statut_de_paiement_retourne_le_bon_sous_ensemble_de_factures(): void
+    {
+        $invoiceUnpaid = $this->makeInvoice(); // 48 TTC, aucun paiement.
+
+        $invoicePartial = $this->makeInvoice();
+        InvoicePayment::recordFor($invoicePartial, 20, now()->toDateString());
+
+        $invoicePaid = $this->makeInvoice();
+        InvoicePayment::recordFor($invoicePaid, 48, now()->toDateString());
+
+        $this->actingAs(User::factory()->create()->assignRole('manager'));
+
+        Livewire::test(ListInvoices::class)
+            ->filterTable('payment_status', Invoice::PAYMENT_STATUS_UNPAID)
+            ->assertCanSeeTableRecords([$invoiceUnpaid])
+            ->assertCanNotSeeTableRecords([$invoicePartial, $invoicePaid]);
+
+        Livewire::test(ListInvoices::class)
+            ->filterTable('payment_status', Invoice::PAYMENT_STATUS_PARTIAL)
+            ->assertCanSeeTableRecords([$invoicePartial])
+            ->assertCanNotSeeTableRecords([$invoiceUnpaid, $invoicePaid]);
+
+        Livewire::test(ListInvoices::class)
+            ->filterTable('payment_status', Invoice::PAYMENT_STATUS_PAID)
+            ->assertCanSeeTableRecords([$invoicePaid])
+            ->assertCanNotSeeTableRecords([$invoiceUnpaid, $invoicePartial]);
+    }
+
+    /**
+     * Sans valeur sélectionnée, le filtre reste inactif : toutes les
+     * factures restent visibles, quel que soit leur statut de paiement.
+     */
+    public function test_le_filtre_statut_de_paiement_sans_valeur_ne_masque_aucune_facture(): void
+    {
+        $invoiceUnpaid = $this->makeInvoice();
+        $invoicePaid = $this->makeInvoice();
+        InvoicePayment::recordFor($invoicePaid, 48, now()->toDateString());
+
+        $this->actingAs(User::factory()->create()->assignRole('manager'));
+
+        Livewire::test(ListInvoices::class)
+            ->filterTable('payment_status', null)
+            ->assertCanSeeTableRecords([$invoiceUnpaid, $invoicePaid]);
+    }
+
+    /**
+     * Robustesse contre le bruit flottant de l'affinité NUMERIC de
+     * SQLite sur les colonnes decimal(10,2) : une somme de paiements
+     * dont l'accumulation flottante peut légèrement dévier du total
+     * TTC (33.33 x 3, même séquence-piège que celle qui avait révélé un
+     * bug lors de T30) doit malgré tout être classée "Payée", jamais
+     * laissée en "Partiellement payée" par un artefact de comparaison
+     * SQL non arrondie.
+     */
+    public function test_le_filtre_paye_resiste_au_bruit_flottant_dune_somme_de_paiements(): void
+    {
+        $invoice = $this->makeInvoice(); // 48 TTC
+        InvoicePayment::recordFor($invoice, 16, now()->toDateString());
+        InvoicePayment::recordFor($invoice, 16, now()->toDateString());
+        InvoicePayment::recordFor($invoice, 16, now()->toDateString());
+
+        $this->actingAs(User::factory()->create()->assignRole('manager'));
+
+        Livewire::test(ListInvoices::class)
+            ->filterTable('payment_status', Invoice::PAYMENT_STATUS_PAID)
+            ->assertCanSeeTableRecords([$invoice]);
+
+        Livewire::test(ListInvoices::class)
+            ->filterTable('payment_status', Invoice::PAYMENT_STATUS_PARTIAL)
+            ->assertCanNotSeeTableRecords([$invoice]);
     }
 }
