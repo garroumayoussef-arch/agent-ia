@@ -2,6 +2,9 @@
 
 namespace App\Filament\Resources\SupplierInvoices\Schemas;
 
+use App\Filament\Resources\SupplierInvoices\Tables\SupplierInvoicesTable;
+use App\Models\SupplierInvoice;
+use Filament\Infolists\Components\RepeatableEntry;
 use Filament\Infolists\Components\TextEntry;
 use Filament\Schemas\Components\Section;
 use Filament\Schemas\Schema;
@@ -58,6 +61,61 @@ class SupplierInvoiceInfolist
                             ->placeholder('-'),
                     ])
                     ->visible(fn ($record): bool => filled($record?->notes)),
+
+                /*
+                 * Étape T30 — statut et historique des paiements.
+                 * Toujours recalculé depuis SupplierInvoice::paymentStatus()/
+                 * amountPaid()/amountRemaining() : jamais un champ stocké,
+                 * aucune désynchronisation possible avec les paiements
+                 * réellement enregistrés.
+                 */
+                Section::make('Paiements')
+                    ->columns(3)
+                    ->schema([
+                        TextEntry::make('payment_status')
+                            ->label('Statut')
+                            ->state(fn (SupplierInvoice $record): string => $record->paymentStatus())
+                            ->badge()
+                            ->formatStateUsing(fn (string $state): string => SupplierInvoicesTable::paymentStatusLabel($state))
+                            ->color(fn (string $state): string => SupplierInvoicesTable::paymentStatusColor($state)),
+
+                        TextEntry::make('amount_paid')
+                            ->label('Montant réglé')
+                            ->state(fn (SupplierInvoice $record): string => number_format($record->amountPaid(), 2, ',', ' ').' €'),
+
+                        TextEntry::make('amount_remaining')
+                            ->label('Solde restant dû')
+                            ->state(fn (SupplierInvoice $record): string => number_format($record->amountRemaining(), 2, ',', ' ').' €'),
+
+                        RepeatableEntry::make('payments')
+                            ->label('Historique des paiements')
+                            ->columnSpanFull()
+                            ->schema([
+                                TextEntry::make('paid_at')
+                                    ->label('Date')
+                                    ->date('d/m/Y'),
+
+                                TextEntry::make('amount')
+                                    ->label('Montant')
+                                    ->money('EUR'),
+
+                                TextEntry::make('reference')
+                                    ->label('Référence')
+                                    ->placeholder('-'),
+
+                                TextEntry::make('notes')
+                                    ->label('Notes')
+                                    ->placeholder('-'),
+
+                                TextEntry::make('user.name')
+                                    ->label('Enregistré par')
+                                    ->placeholder('Système / import'),
+                            ])
+                            ->columns(5),
+                    ]),
+                    // Toujours visible, y compris sans aucun paiement
+                    // encore enregistré : c'est précisément là que le
+                    // statut "non payée" doit apparaître.
             ]);
     }
 }

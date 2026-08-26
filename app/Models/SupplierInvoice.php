@@ -4,6 +4,7 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 
 /**
  * Étape T28 — enregistrement d'une facture fournisseur reçue.
@@ -27,6 +28,19 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 class SupplierInvoice extends Model
 {
     protected $guarded = [];
+
+    /*
+     * =================================================================
+     * Étape T30 — suivi des paiements. Statut jamais stocké : toujours
+     * recalculé depuis la somme réelle de SupplierInvoicePayment (cf.
+     * paymentStatus() ci-dessous) — aucun champ à désynchroniser.
+     * =================================================================
+     */
+    public const PAYMENT_STATUS_UNPAID = 'non_payee';
+
+    public const PAYMENT_STATUS_PARTIAL = 'partiellement_payee';
+
+    public const PAYMENT_STATUS_PAID = 'payee';
 
     protected $casts = [
         'invoice_date' => 'date',
@@ -83,5 +97,51 @@ class SupplierInvoice extends Model
     public function user(): BelongsTo
     {
         return $this->belongsTo(User::class);
+    }
+
+    /**
+     * Étape T30 — paiements enregistrés contre cette facture (0, 1, ou
+     * plusieurs si réglée en plusieurs fois). Relation additive en
+     * lecture seule : ne crée aucune nouvelle écriture sur
+     * SupplierInvoice, son immuabilité (T28) reste entièrement
+     * préservée.
+     */
+    public function payments(): HasMany
+    {
+        return $this->hasMany(SupplierInvoicePayment::class);
+    }
+
+    /**
+     * Toujours une requête fraîche (jamais mise en cache sur
+     * l'instance) : garantit que le montant reflète l'état réel de la
+     * base à l'instant de l'appel, y compris juste après un
+     * enregistrement concurrent ailleurs (cf. SupplierInvoicePayment::recordFor()).
+     * Somme calculée côté base sur la colonne decimal(10,2), jamais en
+     * additionnant manuellement des valeurs PHP récupérées une par une.
+     */
+    public function amountPaid(): float
+    {
+        return round((float) $this->payments()->sum('amount'), 2);
+    }
+
+    public function amountRemaining(): float
+    {
+        return round((float) $this->total_ttc - $this->amountPaid(), 2);
+    }
+
+    /**
+     * Source de vérité unique du statut de paiement : jamais un champ
+     * stocké, toujours recalculé depuis amountPaid() ci-dessus.
+     */
+    public function paymentStatus(): string
+    {
+        $paid = $this->amountPaid();
+        $total = round((float) $this->total_ttc, 2);
+
+        return match (true) {
+            $paid <= 0 => self::PAYMENT_STATUS_UNPAID,
+            $paid >= $total => self::PAYMENT_STATUS_PAID,
+            default => self::PAYMENT_STATUS_PARTIAL,
+        };
     }
 }

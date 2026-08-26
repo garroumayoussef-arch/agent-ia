@@ -3,6 +3,7 @@
 namespace App\Filament\Resources\SupplierInvoices\Tables;
 
 use App\Models\Supplier;
+use App\Models\SupplierInvoice;
 use Filament\Actions\ViewAction;
 use Filament\Tables;
 use Filament\Tables\Filters\SelectFilter;
@@ -46,6 +47,16 @@ class SupplierInvoicesTable
                     ->money('EUR')
                     ->sortable(),
 
+                // Étape T30 — toujours recalculé depuis
+                // SupplierInvoice::paymentStatus(), jamais un champ
+                // stocké (cf. sa documentation).
+                Tables\Columns\TextColumn::make('payment_status')
+                    ->label('Paiement')
+                    ->state(fn (SupplierInvoice $record): string => $record->paymentStatus())
+                    ->badge()
+                    ->formatStateUsing(fn (string $state): string => static::paymentStatusLabel($state))
+                    ->color(fn (string $state): string => static::paymentStatusColor($state)),
+
                 Tables\Columns\TextColumn::make('created_at')
                     ->label('Enregistrée le')
                     ->dateTime('d/m/Y H:i')
@@ -56,10 +67,36 @@ class SupplierInvoicesTable
                     ->label('Fournisseur')
                     ->options(fn () => Supplier::query()->orderBy('name')->pluck('name', 'id')->toArray())
                     ->searchable(),
+
+                // Pas de filtre sur le statut de paiement : c'est une
+                // colonne CALCULÉE (jamais stockée en base, cf.
+                // SupplierInvoice::paymentStatus()), non filtrable par
+                // une simple clause WHERE — hors périmètre V1, non
+                // demandé explicitement.
             ])
             ->recordActions([
                 ViewAction::make(),
             ])
             ->defaultSort('created_at', 'desc');
+    }
+
+    public static function paymentStatusLabel(string $status): string
+    {
+        return match ($status) {
+            SupplierInvoice::PAYMENT_STATUS_UNPAID => 'Non payée',
+            SupplierInvoice::PAYMENT_STATUS_PARTIAL => 'Partiellement payée',
+            SupplierInvoice::PAYMENT_STATUS_PAID => 'Payée',
+            default => $status,
+        };
+    }
+
+    public static function paymentStatusColor(string $status): string
+    {
+        return match ($status) {
+            SupplierInvoice::PAYMENT_STATUS_UNPAID => 'danger',
+            SupplierInvoice::PAYMENT_STATUS_PARTIAL => 'warning',
+            SupplierInvoice::PAYMENT_STATUS_PAID => 'success',
+            default => 'gray',
+        };
     }
 }
