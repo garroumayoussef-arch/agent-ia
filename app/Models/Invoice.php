@@ -270,4 +270,63 @@ class Invoice extends Model
     {
         return $this->hasMany(CreditNote::class);
     }
+
+    /*
+     * =================================================================
+     * Étape T31 — suivi des paiements clients. Statut jamais stocké :
+     * toujours recalculé depuis la somme réelle de InvoicePayment (cf.
+     * paymentStatus() ci-dessous) — aucun champ à désynchroniser. Report
+     * exact du mécanisme déjà validé sur SupplierInvoice (T30).
+     * =================================================================
+     */
+    public const PAYMENT_STATUS_UNPAID = 'non_payee';
+
+    public const PAYMENT_STATUS_PARTIAL = 'partiellement_payee';
+
+    public const PAYMENT_STATUS_PAID = 'payee';
+
+    /**
+     * Étape T31 — paiements enregistrés contre cette facture (0, 1, ou
+     * plusieurs si réglée en plusieurs fois). Relation additive en
+     * lecture seule : ne crée aucune nouvelle écriture sur Invoice, son
+     * immuabilité (T23) reste entièrement préservée.
+     */
+    public function payments(): HasMany
+    {
+        return $this->hasMany(InvoicePayment::class);
+    }
+
+    /**
+     * Toujours une requête fraîche (jamais mise en cache sur
+     * l'instance) : garantit que le montant reflète l'état réel de la
+     * base à l'instant de l'appel, y compris juste après un
+     * enregistrement concurrent ailleurs (cf. InvoicePayment::recordFor()).
+     * Somme calculée côté base sur la colonne decimal(10,2), jamais en
+     * additionnant manuellement des valeurs PHP récupérées une par une.
+     */
+    public function amountPaid(): float
+    {
+        return round((float) $this->payments()->sum('amount'), 2);
+    }
+
+    public function amountRemaining(): float
+    {
+        return round((float) $this->total_ttc - $this->amountPaid(), 2);
+    }
+
+    /**
+     * Source de vérité unique du statut de paiement : jamais un champ
+     * stocké, toujours recalculé depuis amountPaid() ci-dessus.
+     */
+    public function paymentStatus(): string
+    {
+        $paid = $this->amountPaid();
+        $total = round((float) $this->total_ttc, 2);
+
+        return match (true) {
+            $paid <= 0 => self::PAYMENT_STATUS_UNPAID,
+            $paid >= $total => self::PAYMENT_STATUS_PAID,
+            default => self::PAYMENT_STATUS_PARTIAL,
+        };
+    }
 }

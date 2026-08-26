@@ -25,6 +25,7 @@ class ViewInvoice extends ViewRecord
                 ->openUrlInNewTab(),
             $this->generateTotalCreditNoteAction(),
             $this->generatePartialCreditNoteAction(),
+            $this->recordPaymentAction(),
         ];
     }
 }

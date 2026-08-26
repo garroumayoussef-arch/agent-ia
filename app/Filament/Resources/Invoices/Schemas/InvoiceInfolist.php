@@ -2,6 +2,8 @@
 
 namespace App\Filament\Resources\Invoices\Schemas;
 
+use App\Filament\Resources\Invoices\Tables\InvoicesTable;
+use App\Models\Invoice;
 use Filament\Infolists\Components\RepeatableEntry;
 use Filament\Infolists\Components\TextEntry;
 use Filament\Schemas\Components\Section;
@@ -92,6 +94,58 @@ class InvoiceInfolist
                         TextEntry::make('discount_terms_snapshot')->label('Conditions d\'escompte')->placeholder('-'),
                         TextEntry::make('late_penalty_snapshot')->label('Pénalités de retard')->placeholder('-'),
                         TextEntry::make('recovery_indemnity_amount_snapshot')->label('Indemnité forfaitaire de recouvrement')->money('EUR'),
+                    ]),
+
+                /*
+                 * Étape T31 — statut et historique des paiements.
+                 * Toujours recalculé depuis Invoice::paymentStatus()/
+                 * amountPaid()/amountRemaining() : jamais un champ
+                 * stocké, aucune désynchronisation possible avec les
+                 * paiements réellement enregistrés.
+                 */
+                Section::make('Paiements')
+                    ->columns(3)
+                    ->schema([
+                        TextEntry::make('payment_status')
+                            ->label('Statut')
+                            ->state(fn (Invoice $record): string => $record->paymentStatus())
+                            ->badge()
+                            ->formatStateUsing(fn (string $state): string => InvoicesTable::paymentStatusLabel($state))
+                            ->color(fn (string $state): string => InvoicesTable::paymentStatusColor($state)),
+
+                        TextEntry::make('amount_paid')
+                            ->label('Montant réglé')
+                            ->state(fn (Invoice $record): string => number_format($record->amountPaid(), 2, ',', ' ').' €'),
+
+                        TextEntry::make('amount_remaining')
+                            ->label('Solde restant dû')
+                            ->state(fn (Invoice $record): string => number_format($record->amountRemaining(), 2, ',', ' ').' €'),
+
+                        RepeatableEntry::make('payments')
+                            ->label('Historique des paiements')
+                            ->columnSpanFull()
+                            ->schema([
+                                TextEntry::make('paid_at')
+                                    ->label('Date')
+                                    ->date('d/m/Y'),
+
+                                TextEntry::make('amount')
+                                    ->label('Montant')
+                                    ->money('EUR'),
+
+                                TextEntry::make('reference')
+                                    ->label('Référence')
+                                    ->placeholder('-'),
+
+                                TextEntry::make('notes')
+                                    ->label('Notes')
+                                    ->placeholder('-'),
+
+                                TextEntry::make('user.name')
+                                    ->label('Enregistré par')
+                                    ->placeholder('Système / import'),
+                            ])
+                            ->columns(5),
                     ]),
             ]);
     }

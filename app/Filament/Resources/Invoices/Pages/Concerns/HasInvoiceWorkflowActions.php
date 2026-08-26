@@ -6,10 +6,13 @@ use App\Filament\Resources\Invoices\InvoiceResource;
 use App\Models\CreditNote;
 use App\Models\Invoice;
 use App\Models\InvoiceLine;
+use App\Models\InvoicePayment;
 use Filament\Actions\Action;
 use Filament\Forms\Components\CheckboxList;
+use Filament\Forms\Components\DatePicker;
 use Filament\Forms\Components\Select;
 use Filament\Forms\Components\Textarea;
+use Filament\Forms\Components\TextInput;
 use Filament\Notifications\Notification;
 
 /**
@@ -39,6 +42,13 @@ use Filament\Notifications\Notification;
  * l'action (mountAction()/callMountedAction()), y compris un tel appel
  * direct : c'est la barrière ajoutée ici, en plus de ->visible() qui
  * reste inchangée (comportement d'affichage identique à avant).
+ *
+ * Étape T31 — recordPaymentAction() : suivi des paiements clients,
+ * symétrique exact de HasSupplierInvoicePaymentAction (T30). Délègue
+ * entièrement la validation à InvoicePayment::recordFor() (montant > 0,
+ * jamais de dépassement du solde, transaction + verrouillage). Même
+ * garde ->visible()/->authorize() que les deux actions d'avoir
+ * ci-dessus, masquée dès que paymentStatus() === PAYMENT_STATUS_PAID.
  */
 trait HasInvoiceWorkflowActions
 {
@@ -154,6 +164,70 @@ trait HasInvoiceWorkflowActions
                 } catch (\Throwable $e) {
                     Notification::make()
                         ->title("Création de l'avoir impossible")
+                        ->body($e->getMessage())
+                        ->danger()
+                        ->send();
+                }
+            });
+    }
+
+    /**
+     * Étape T31 — enregistrement d'un paiement client. Masquée dès que
+     * la facture est intégralement payée : aucune raison de proposer un
+     * nouveau paiement sur un solde nul, même principe que
+     * generateTotalCreditNoteAction()/generatePartialCreditNoteAction()
+     * masquées dès qu'aucune ligne n'est plus créditable.
+     */
+    protected function recordPaymentAction(): Action
+    {
+        return Action::make('recordPayment')
+            ->label('Enregistrer un paiement')
+            ->icon('heroicon-o-banknotes')
+            ->color('success')
+            ->visible(fn (Invoice $record): bool => InvoiceResource::canEdit($record)
+                && $record->paymentStatus() !== Invoice::PAYMENT_STATUS_PAID)
+            ->authorize(fn (Invoice $record): bool => InvoiceResource::canEdit($record))
+            ->authorizationNotification()
+            ->authorizationMessage("Cette action est réservée aux administrateurs et gestionnaires.")
+            ->schema([
+                TextInput::make('amount')
+                    ->label('Montant du paiement')
+                    ->numeric()
+                    ->minValue(0.01)
+                    ->prefix('€')
+                    ->required(),
+
+                DatePicker::make('paid_at')
+                    ->label('Date du paiement')
+                    ->required()
+                    ->default(now()->toDateString()),
+
+                TextInput::make('reference')
+                    ->label('Référence (optionnelle)')
+                    ->maxLength(255),
+
+                Textarea::make('notes')
+                    ->label('Notes')
+                    ->rows(3)
+                    ->columnSpanFull(),
+            ])
+            ->action(function (Invoice $record, array $data) {
+                try {
+                    InvoicePayment::recordFor(
+                        $record,
+                        (float) $data['amount'],
+                        $data['paid_at'],
+                        $data['reference'] ?? null,
+                        $data['notes'] ?? null,
+                    );
+
+                    Notification::make()
+                        ->title('Paiement enregistré')
+                        ->success()
+                        ->send();
+                } catch (\Throwable $e) {
+                    Notification::make()
+                        ->title("Enregistrement du paiement impossible")
                         ->body($e->getMessage())
                         ->danger()
                         ->send();
