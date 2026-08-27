@@ -77,16 +77,24 @@ class SupplierInvoicesTable
                 // withSum()+having(), rejeté par SQLite avec "HAVING
                 // clause on a non-aggregate query", vérifié
                 // empiriquement). COALESCE(..., 0) gère nativement
-                // l'absence de paiement, ROUND(..., 2) neutralise le
-                // bruit flottant de l'affinité NUMERIC de SQLite sur les
-                // colonnes decimal(10,2). Mêmes seuils exacts que
-                // SupplierInvoice::paymentStatus().
+                // l'absence de paiement/d'avoir, ROUND(..., 2) neutralise
+                // le bruit flottant de l'affinité NUMERIC de SQLite sur
+                // les colonnes decimal(10,2).
+                //
+                // Chantier "avoir fournisseur" (réconciliation) — même
+                // formule NETTE (total_ttc − avoirs − paiements) et mêmes
+                // 4 seuils exacts que SupplierInvoice::paymentStatus(),
+                // reproduits ici à l'identique (même convention que
+                // InvoicesTable : duplication contrôlée assumée, aucun
+                // helper partagé) — jamais une deuxième définition du
+                // statut qui pourrait diverger de la première.
                 SelectFilter::make('payment_status')
                     ->label('Statut de paiement')
                     ->options([
                         SupplierInvoice::PAYMENT_STATUS_UNPAID => 'Non payée',
                         SupplierInvoice::PAYMENT_STATUS_PARTIAL => 'Partiellement payée',
                         SupplierInvoice::PAYMENT_STATUS_PAID => 'Payée',
+                        SupplierInvoice::PAYMENT_STATUS_SETTLED_BY_CREDIT_NOTE => 'Soldée par avoir',
                     ])
                     ->query(function (Builder $query, array $data): void {
                         $status = $data['value'] ?? null;
@@ -97,14 +105,34 @@ class SupplierInvoicesTable
 
                         $paidExpr = 'ROUND((select coalesce(sum(amount), 0) from supplier_invoice_payments '
                             .'where supplier_invoice_payments.supplier_invoice_id = supplier_invoices.id), 2)';
-                        $totalExpr = 'ROUND(total_ttc, 2)';
+                        // Avoirs liés à CETTE facture, même sous-requête
+                        // corrélée que $paidExpr.
+                        $creditedExpr = 'ROUND((select coalesce(sum(total_ttc), 0) from supplier_credit_notes '
+                            .'where supplier_credit_notes.supplier_invoice_id = supplier_invoices.id), 2)';
+                        $netTotalExpr = "ROUND(total_ttc - ({$creditedExpr}), 2)";
 
                         match ($status) {
-                            SupplierInvoice::PAYMENT_STATUS_UNPAID => $query->whereRaw("{$paidExpr} <= 0"),
-                            SupplierInvoice::PAYMENT_STATUS_PAID => $query->whereRaw("{$paidExpr} >= {$totalExpr}"),
+                            // Net à 0 par avoir, SANS aucun paiement réel
+                            // (credited > 0 exclut le cas marginal d'une
+                            // facture à 0 € sans avoir, cf.
+                            // SupplierInvoice::paymentStatus()).
+                            SupplierInvoice::PAYMENT_STATUS_SETTLED_BY_CREDIT_NOTE => $query
+                                ->whereRaw("{$paidExpr} <= 0")
+                                ->whereRaw("{$netTotalExpr} <= 0")
+                                ->whereRaw("({$creditedExpr}) > 0"),
+                            // Exclut explicitement le cas ci-dessus :
+                            // paid<=0 ET net<=0 ET credited>0 relève de
+                            // soldee_par_avoir, jamais de non_payee (même
+                            // ordre de priorité que le match PHP).
+                            SupplierInvoice::PAYMENT_STATUS_UNPAID => $query
+                                ->whereRaw("{$paidExpr} <= 0")
+                                ->whereRaw("({$netTotalExpr} > 0 OR ({$creditedExpr}) <= 0)"),
+                            SupplierInvoice::PAYMENT_STATUS_PAID => $query
+                                ->whereRaw("{$paidExpr} > 0")
+                                ->whereRaw("{$paidExpr} >= {$netTotalExpr}"),
                             SupplierInvoice::PAYMENT_STATUS_PARTIAL => $query
                                 ->whereRaw("{$paidExpr} > 0")
-                                ->whereRaw("{$paidExpr} < {$totalExpr}"),
+                                ->whereRaw("{$paidExpr} < {$netTotalExpr}"),
                             default => null,
                         };
                     }),
@@ -121,6 +149,7 @@ class SupplierInvoicesTable
             SupplierInvoice::PAYMENT_STATUS_UNPAID => 'Non payée',
             SupplierInvoice::PAYMENT_STATUS_PARTIAL => 'Partiellement payée',
             SupplierInvoice::PAYMENT_STATUS_PAID => 'Payée',
+            SupplierInvoice::PAYMENT_STATUS_SETTLED_BY_CREDIT_NOTE => 'Soldée par avoir',
             default => $status,
         };
     }
@@ -131,6 +160,10 @@ class SupplierInvoicesTable
             SupplierInvoice::PAYMENT_STATUS_UNPAID => 'danger',
             SupplierInvoice::PAYMENT_STATUS_PARTIAL => 'warning',
             SupplierInvoice::PAYMENT_STATUS_PAID => 'success',
+            // Distincte de "payée" (success) : aucun décaissement réel
+            // n'a eu lieu, jamais la même couleur qu'un vrai paiement
+            // (même convention qu'Invoice::PAYMENT_STATUS_SETTLED_BY_CREDIT_NOTE).
+            SupplierInvoice::PAYMENT_STATUS_SETTLED_BY_CREDIT_NOTE => 'gray',
             default => 'gray',
         };
     }

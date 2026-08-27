@@ -8,6 +8,7 @@ use App\Models\Product;
 use App\Models\PurchaseOrder;
 use App\Models\PurchaseOrderItem;
 use App\Models\Supplier;
+use App\Models\SupplierCreditNote;
 use App\Models\SupplierInvoice;
 use App\Models\SupplierInvoicePayment;
 use App\Models\TaxRate;
@@ -383,5 +384,83 @@ class PurchasingOverviewTest extends TestCase
         Livewire::test(PurchasingOverview::class)
             ->assertSee('100,00 €') // montant commandé : inchangé par le paiement
             ->assertSee('120,00 €'); // montant facturé : inchangé par le paiement
+    }
+
+    /*
+     * =================================================================
+     * Chantier "avoir fournisseur" (réconciliation) — "Restant dû
+     * fournisseurs" retranche désormais aussi les avoirs
+     * (SupplierCreditNote), avec le même ancrage temporel que les
+     * paiements (facture ENREGISTRÉE pendant la période), symétrique
+     * exact de CommercialOverviewTest.
+     * =================================================================
+     */
+
+    public function test_restant_du_fournisseurs_deduit_un_avoir_recu_sur_une_facture_de_la_periode(): void
+    {
+        $supplier = $this->makeSupplier();
+        $order = $this->makeOrder($supplier, 100);
+        $invoice = $this->makeSupplierInvoice($supplier, $order, 120);
+        SupplierCreditNote::recordFor($invoice, 'AV-001', now()->toDateString(), 120, 0, 120);
+
+        $this->actingAs(User::factory()->create()->assignRole('manager'));
+
+        Livewire::test(PurchasingOverview::class)
+            ->assertSee('Restant dû fournisseurs (total)')
+            ->assertSee('0,00 €');
+    }
+
+    public function test_un_avoir_partiel_reduit_le_restant_du_fournisseurs_sans_lannuler(): void
+    {
+        $supplier = $this->makeSupplier();
+        $order = $this->makeOrder($supplier, 100);
+        $invoice = $this->makeSupplierInvoice($supplier, $order, 120);
+        SupplierCreditNote::recordFor($invoice, 'AV-002', now()->toDateString(), 50, 0, 50);
+
+        $this->actingAs(User::factory()->create()->assignRole('manager'));
+
+        Livewire::test(PurchasingOverview::class)
+            ->assertSee('Restant dû fournisseurs (total)')
+            ->assertSee('70,00 €');
+    }
+
+    /**
+     * Avoir + paiement combinés : le restant dû tient compte des deux à
+     * la fois, jamais l'un sans l'autre.
+     */
+    public function test_restant_du_fournisseurs_combine_avoir_et_paiement(): void
+    {
+        $supplier = $this->makeSupplier();
+        $order = $this->makeOrder($supplier, 100);
+        $invoice = $this->makeSupplierInvoice($supplier, $order, 120);
+        SupplierCreditNote::recordFor($invoice, 'AV-003', now()->toDateString(), 60, 0, 60); // net = 60
+        SupplierInvoicePayment::recordFor($invoice->fresh(), 40, now()->toDateString());
+
+        $this->actingAs(User::factory()->create()->assignRole('manager'));
+
+        Livewire::test(PurchasingOverview::class)
+            ->assertSee('Restant dû fournisseurs (total)')
+            ->assertSee('20,00 €');
+    }
+
+    /**
+     * Non-régression — "Montant commandé"/"Montant facturé"/"Décaissé"
+     * ne doivent jamais être affectés par l'existence d'un avoir.
+     */
+    public function test_les_indicateurs_existants_restent_inchanges_en_presence_dun_avoir(): void
+    {
+        $supplier = $this->makeSupplier();
+        $order = $this->makeOrder($supplier, 100);
+        $invoice = $this->makeSupplierInvoice($supplier, $order, 120);
+        SupplierInvoicePayment::recordFor($invoice, 50, now()->toDateString());
+        SupplierCreditNote::recordFor($invoice->fresh(), 'AV-004', now()->toDateString(), 30, 0, 30);
+
+        $this->actingAs(User::factory()->create()->assignRole('manager'));
+
+        Livewire::test(PurchasingOverview::class)
+            ->assertSee('100,00 €') // montant commandé : inchangé par l'avoir
+            ->assertSee('120,00 €') // montant facturé : inchangé par l'avoir
+            ->assertSee('Décaissé (total)')
+            ->assertSee('50,00 €'); // décaissé : inchangé par l'avoir
     }
 }

@@ -42,6 +42,17 @@ class SupplierInvoice extends Model
 
     public const PAYMENT_STATUS_PAID = 'payee';
 
+    /**
+     * Chantier "avoir fournisseur" (réconciliation, D2 de l'analyse
+     * sur Invoice, répliquée à l'identique) — facture dont le montant
+     * net (après avoirs) est totalement couvert par un ou plusieurs
+     * avoirs, SANS aucun paiement réel. Distincte de
+     * PAYMENT_STATUS_PAID : "payée" signifie toujours un décaissement
+     * réel de Magarrou vers le fournisseur, jamais un simple solde net
+     * nul obtenu par avoir (cf. paymentStatus() ci-dessous).
+     */
+    public const PAYMENT_STATUS_SETTLED_BY_CREDIT_NOTE = 'soldee_par_avoir';
+
     protected $casts = [
         'invoice_date' => 'date',
         'total_ht' => 'decimal:2',
@@ -124,19 +135,12 @@ class SupplierInvoice extends Model
         return round((float) $this->payments()->sum('amount'), 2);
     }
 
-    public function amountRemaining(): float
-    {
-        return round((float) $this->total_ttc - $this->amountPaid(), 2);
-    }
-
     /**
      * Chantier "avoir fournisseur" — avoirs reçus contre cette facture
      * (0, 1, ou plusieurs si créditée par avoirs partiels successifs).
      * Relation additive en lecture seule : ne crée aucune nouvelle
      * écriture sur SupplierInvoice, son immuabilité (T28) reste
-     * entièrement préservée. La prise en compte de ces avoirs dans
-     * amountRemaining()/paymentStatus() ci-dessous est hors périmètre
-     * de ce commit (chantier de réconciliation séparé, à venir).
+     * entièrement préservée.
      */
     public function creditNotes(): HasMany
     {
@@ -144,17 +148,89 @@ class SupplierInvoice extends Model
     }
 
     /**
+     * Chantier "avoir fournisseur" (réconciliation) — somme des avoirs
+     * (SupplierCreditNote) reçus contre cette facture. Même convention
+     * qu'amountPaid() ci-dessus : toujours une requête fraîche, jamais
+     * mise en cache sur l'instance, somme calculée côté base sur la
+     * colonne decimal(10,2).
+     *
+     * Ne peut structurellement jamais dépasser total_ttc :
+     * SupplierCreditNote::recordFor() plafonne déjà le cumul des
+     * avoirs au total_ttc de CETTE facture (T32).
+     */
+    public function creditedAmount(): float
+    {
+        return round((float) $this->creditNotes()->sum('total_ttc'), 2);
+    }
+
+    /**
+     * Montant net réellement dû après avoirs, avant déduction des
+     * paiements. Jamais négatif (cf. creditedAmount() ci-dessus).
+     * Privé : détail de calcul interne à amountRemaining()/
+     * creditBalance()/paymentStatus(), même principe qu'Invoice::netTotalDue()
+     * (chantier de réconciliation avoirs/paiements, T24/T31).
+     */
+    private function netTotalDue(): float
+    {
+        return round((float) $this->total_ttc - $this->creditedAmount(), 2);
+    }
+
+    /**
+     * Reste dû = total_ttc − avoirs − paiements. Plafonné à 0 : un
+     * éventuel excédent (paiements déjà versés dépassant le nouveau
+     * montant net après un avoir reçu après-coup) n'est jamais affiché
+     * ici en négatif, cf. creditBalance() ci-dessous qui l'expose
+     * séparément — jamais fusionné avec ce montant. Même formule
+     * qu'Invoice::amountRemaining() (réconciliation avoirs/paiements).
+     */
+    public function amountRemaining(): float
+    {
+        return max(0.0, round($this->netTotalDue() - $this->amountPaid(), 2));
+    }
+
+    /**
+     * Solde créditeur : montant que le fournisseur doit à Magarrou
+     * lorsque les paiements déjà versés dépassent le montant net
+     * réellement dû après avoirs (ex. avoir reçu après un paiement déjà
+     * intégral). Toujours ≥ 0, jamais mélangé à amountRemaining() : une
+     * information distincte (une créance sur le fournisseur), jamais
+     * une simple valeur négative de "reste dû". Même principe
+     * qu'Invoice::creditBalance().
+     */
+    public function creditBalance(): float
+    {
+        return max(0.0, round($this->amountPaid() - $this->netTotalDue(), 2));
+    }
+
+    /**
      * Source de vérité unique du statut de paiement : jamais un champ
-     * stocké, toujours recalculé depuis amountPaid() ci-dessus.
+     * stocké, toujours recalculé depuis amountPaid()/creditedAmount()
+     * ci-dessus.
+     *
+     * Statut à 4 valeurs (chantier "avoir fournisseur", réconciliation,
+     * même logique qu'Invoice::paymentStatus()) : "payée" exige un
+     * décaissement réel (paid > 0 et couvrant le net) : une facture
+     * intégralement soldée par avoir SANS aucun paiement obtient le
+     * statut dédié PAYMENT_STATUS_SETTLED_BY_CREDIT_NOTE, jamais
+     * confondue avec PAYMENT_STATUS_PAID. Le garde `$credited > 0`
+     * évite qu'une facture à 0 € sans aucun avoir (paid=0, net=0) ne
+     * soit prise à tort pour "soldée par avoir" — comportement
+     * inchangé pour ce cas marginal (retombe sur PAYMENT_STATUS_UNPAID,
+     * comme avant ce chantier).
      */
     public function paymentStatus(): string
     {
         $paid = $this->amountPaid();
-        $total = round((float) $this->total_ttc, 2);
+        $credited = $this->creditedAmount();
+        $netTotal = round((float) $this->total_ttc - $credited, 2);
+
+        if ($paid <= 0 && $netTotal <= 0 && $credited > 0) {
+            return self::PAYMENT_STATUS_SETTLED_BY_CREDIT_NOTE;
+        }
 
         return match (true) {
             $paid <= 0 => self::PAYMENT_STATUS_UNPAID,
-            $paid >= $total => self::PAYMENT_STATUS_PAID,
+            $paid >= $netTotal => self::PAYMENT_STATUS_PAID,
             default => self::PAYMENT_STATUS_PARTIAL,
         };
     }

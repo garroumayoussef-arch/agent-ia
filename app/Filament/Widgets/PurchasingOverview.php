@@ -4,6 +4,7 @@ namespace App\Filament\Widgets;
 
 use App\Filament\Concerns\ScopesToOwnDriver;
 use App\Models\PurchaseOrder;
+use App\Models\SupplierCreditNote;
 use App\Models\SupplierInvoice;
 use App\Models\SupplierInvoicePayment;
 use Filament\Widgets\StatsOverviewWidget;
@@ -50,6 +51,23 @@ use Illuminate\Support\Carbon;
  *   ENREGISTRÉES pendant la période (même ancrage qu'invoicedTtc
  *   ci-dessous), paiements comptés sans filtre de date — même logique
  *   que "Restant dû" côté vente.
+ *
+ * ============================================================
+ * Chantier "avoir fournisseur" (réconciliation, D1/D6/D7 de l'analyse
+ * sur CommercialOverview, répliquée à l'identique côté achats)
+ * ============================================================
+ * La limite ci-dessus (héritée du chantier A) est désormais corrigée :
+ * la tuile "Restant dû fournisseurs" retranche également les avoirs
+ * (SupplierCreditNote), jamais seulement les paiements, avec la même
+ * formule NETTE que SupplierInvoice::amountRemaining() (D1), plafonnée
+ * à 0 — reproduite ici à l'identique (D6 : duplication contrôlée
+ * assumée, aucun helper partagé introduit).
+ *
+ * D7 (validé, répliqué) — ancrage temporel des avoirs dans cette tuile
+ * uniquement : les avoirs comptés sont ceux liés aux factures
+ * fournisseurs ENREGISTRÉES pendant la période (même ancrage que
+ * invoicedTtc/paidOnPeriodInvoices ci-dessous), quelle que soit la date
+ * de l'avoir lui-même.
  */
 class PurchasingOverview extends StatsOverviewWidget
 {
@@ -133,7 +151,25 @@ class PurchasingOverview extends StatsOverviewWidget
             })
             ->sum('amount');
 
-        $remainingTtc = round($invoicedTtc - $paidOnPeriodInvoices, 2);
+        // Chantier "avoir fournisseur" (réconciliation, D1/D7) — avoirs
+        // liés aux factures fournisseurs ENREGISTRÉES pendant la période
+        // (même ancrage que $paidOnPeriodInvoices ci-dessus), JAMAIS
+        // filtrés sur la date de l'avoir lui-même (cf. documentation de
+        // tête de classe, D7).
+        $creditedOnPeriodInvoicesTtc = (float) SupplierCreditNote::query()
+            ->whereHas('supplierInvoice', function ($invoiceQuery) use ($start, $end) {
+                if ($start !== null && $end !== null) {
+                    $invoiceQuery->whereBetween('invoice_date', [$start, $end]);
+                }
+            })
+            ->sum('total_ttc');
+
+        // D1 (validé, répliqué) — reste dû = total_ttc − avoirs −
+        // paiements, même formule que SupplierInvoice::amountRemaining().
+        // Plafonné à 0, jamais négatif (un éventuel excédent est un
+        // solde créditeur, hors périmètre de cette tuile).
+        $netInvoicedOnPeriodTtc = round($invoicedTtc - $creditedOnPeriodInvoicesTtc, 2);
+        $remainingTtc = max(0.0, round($netInvoicedOnPeriodTtc - $paidOnPeriodInvoices, 2));
 
         return [
             Stat::make("Montant commandé TTC ({$label})", static::formatMoney($orderedTtc))
@@ -157,7 +193,7 @@ class PurchasingOverview extends StatsOverviewWidget
                 ->color('success'),
 
             Stat::make("Restant dû fournisseurs ({$label})", static::formatMoney($remainingTtc))
-                ->description('Sur les factures fournisseurs enregistrées sur la période')
+                ->description('Sur les factures fournisseurs enregistrées sur la période, net des avoirs')
                 ->color('danger'),
         ];
     }

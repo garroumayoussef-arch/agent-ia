@@ -11,6 +11,7 @@ use App\Models\Product;
 use App\Models\PurchaseOrder;
 use App\Models\PurchaseOrderItem;
 use App\Models\Supplier;
+use App\Models\SupplierCreditNote;
 use App\Models\SupplierInvoice;
 use App\Models\SupplierInvoicePayment;
 use App\Models\User;
@@ -259,6 +260,69 @@ class SupplierInvoiceResourceTest extends TestCase
             ->filterTable('payment_status', SupplierInvoice::PAYMENT_STATUS_PAID)
             ->assertCanSeeTableRecords([$invoice]);
 
+        Livewire::test(ListSupplierInvoices::class)
+            ->filterTable('payment_status', SupplierInvoice::PAYMENT_STATUS_PARTIAL)
+            ->assertCanNotSeeTableRecords([$invoice]);
+    }
+
+    /*
+     * =================================================================
+     * Chantier "avoir fournisseur" (réconciliation) — le filtre
+     * payment_status doit désormais tenir compte des avoirs, avec la
+     * même formule NETTE que SupplierInvoice::paymentStatus() (dupliquée
+     * ici à l'identique, aucun helper partagé), symétrique exact du
+     * filtre équivalent sur InvoiceResourceTest.
+     * =================================================================
+     */
+
+    public function test_le_filtre_soldee_par_avoir_ne_capture_quune_facture_integralement_creditee_sans_paiement(): void
+    {
+        $order = $this->makeOrderedPurchaseOrder();
+
+        // Facture totalement créditée (120 € d'avoir), aucun paiement
+        // -> soldee_par_avoir, jamais non_payee ni payee.
+        $invoiceSettled = $this->makeSupplierInvoice($order, 120, '-settled');
+        SupplierCreditNote::recordFor($invoiceSettled, 'AV-SETTLED', now()->toDateString(), 120, 0, 120);
+
+        // Avoir PARTIEL (60 €), aucun paiement -> reste 60 € dus ->
+        // non_payee (rien n'a été payé, ce n'est pas "soldée").
+        $invoicePartialCredit = $this->makeSupplierInvoice($order, 120, '-partial-credit');
+        SupplierCreditNote::recordFor($invoicePartialCredit, 'AV-PARTIAL', now()->toDateString(), 60, 0, 60);
+
+        // Facture normale, sans aucun avoir -> non_payee, jamais
+        // capturée par le nouveau filtre soldee_par_avoir.
+        $invoiceNoCredit = $this->makeSupplierInvoice($order, 120, '-no-credit');
+
+        $this->actingAs(User::factory()->create()->assignRole('manager'));
+
+        Livewire::test(ListSupplierInvoices::class)
+            ->filterTable('payment_status', SupplierInvoice::PAYMENT_STATUS_SETTLED_BY_CREDIT_NOTE)
+            ->assertCanSeeTableRecords([$invoiceSettled])
+            ->assertCanNotSeeTableRecords([$invoicePartialCredit, $invoiceNoCredit]);
+
+        Livewire::test(ListSupplierInvoices::class)
+            ->filterTable('payment_status', SupplierInvoice::PAYMENT_STATUS_UNPAID)
+            ->assertCanSeeTableRecords([$invoicePartialCredit, $invoiceNoCredit])
+            ->assertCanNotSeeTableRecords([$invoiceSettled]);
+    }
+
+    public function test_le_filtre_paye_tient_compte_du_solde_net_apres_avoir(): void
+    {
+        $order = $this->makeOrderedPurchaseOrder();
+
+        // Avoir de 96 € -> net = 24 €. Paiement de 24 € == net -> payée.
+        $invoice = $this->makeSupplierInvoice($order, 120, '-net-paid');
+        SupplierCreditNote::recordFor($invoice, 'AV-NET', now()->toDateString(), 96, 0, 96);
+        SupplierInvoicePayment::recordFor($invoice->fresh(), 24, now()->toDateString());
+
+        $this->actingAs(User::factory()->create()->assignRole('manager'));
+
+        Livewire::test(ListSupplierInvoices::class)
+            ->filterTable('payment_status', SupplierInvoice::PAYMENT_STATUS_PAID)
+            ->assertCanSeeTableRecords([$invoice]);
+
+        // Jamais classée "payée" par erreur sur le total_ttc BRUT
+        // (120 €, que 24 € ne couvrirait pas) : seul le net (24 €) compte.
         Livewire::test(ListSupplierInvoices::class)
             ->filterTable('payment_status', SupplierInvoice::PAYMENT_STATUS_PARTIAL)
             ->assertCanNotSeeTableRecords([$invoice]);
