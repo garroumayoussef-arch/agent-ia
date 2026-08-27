@@ -4,6 +4,7 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 
 /**
  * Étape T24 — ligne d'avoir, snapshot figé d'une InvoiceLine créditée.
@@ -59,5 +60,17 @@ class CreditNoteLine extends Model
     public function productVariant(): BelongsTo
     {
         return $this->belongsTo(ProductVariant::class);
+    }
+
+    /**
+     * Chantier "retour physique" (Option 3b) — retours physiques
+     * déclarés contre cette ligne (0, 1, ou plusieurs si retournée en
+     * plusieurs fois). Relation additive en lecture seule : ne crée
+     * aucune nouvelle écriture sur CreditNoteLine, son immuabilité
+     * (T24) reste entièrement préservée.
+     */
+    public function returns(): HasMany
+    {
+        return $this->hasMany(CreditNoteLineReturn::class);
     }
 }

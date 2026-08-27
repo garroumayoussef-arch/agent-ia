@@ -701,4 +701,16 @@ class StockMovement extends Model
     {
         return $this->belongsTo(SalesOrder::class);
     }
+
+    /*
+     * =============================================================
+     * RELATION : RETOUR PHYSIQUE D'ORIGINE (chantier "retour physique",
+     * si généré par CreditNoteLineReturn::recordFor() — uniquement pour
+     * un retour 'vendable', jamais 'defectueux')
+     * =============================================================
+     */
+    public function creditNoteLineReturn(): BelongsTo
+    {
+        return $this->belongsTo(CreditNoteLineReturn::class);
+    }
 }

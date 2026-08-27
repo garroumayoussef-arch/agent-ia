@@ -82,6 +82,39 @@ class CreditNoteInfolist
                         TextEntry::make('tax_amount')->label('Total TVA créditée')->money('EUR')->placeholder('-'),
                         TextEntry::make('total_ttc')->label('Total TTC crédité')->money('EUR')->placeholder('-'),
                     ]),
+
+                // Chantier "retour physique" (Option 3b) — strictement en
+                // lecture, aucune action de mutation ici (cf.
+                // HasCreditNoteReturnAction sur ViewCreditNote). Passe par
+                // CreditNoteLine::returns() (relation additive) : aucune
+                // relation ajoutée sur CreditNote lui-même, qui reste
+                // intégralement inchangé (T24, chantier D1-D7).
+                Section::make('Retours physiques')
+                    ->schema([
+                        RepeatableEntry::make('lines')
+                            ->label('')
+                            ->schema([
+                                TextEntry::make('product_name')
+                                    ->label('Ligne')
+                                    ->columnSpanFull(),
+
+                                RepeatableEntry::make('returns')
+                                    ->label('')
+                                    ->columns(5)
+                                    ->schema([
+                                        TextEntry::make('returned_at')->label('Date')->date('d/m/Y'),
+                                        TextEntry::make('quantity')->label('Qté retournée'),
+                                        TextEntry::make('condition')
+                                            ->label('État')
+                                            ->badge()
+                                            ->formatStateUsing(fn (string $state): string => $state === 'vendable' ? 'Vendable' : 'Défectueux')
+                                            ->color(fn (string $state): string => $state === 'vendable' ? 'success' : 'danger'),
+                                        TextEntry::make('user.name')->label('Enregistré par')->placeholder('-'),
+                                        TextEntry::make('reference')->label('Référence')->placeholder('-'),
+                                    ])
+                                    ->placeholder('Aucun retour enregistré pour cette ligne.'),
+                            ]),
+                    ]),
             ]);
     }
 }

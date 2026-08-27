@@ -3,12 +3,15 @@
 namespace App\Filament\Resources\CreditNotes\Pages;
 
 use App\Filament\Resources\CreditNotes\CreditNoteResource;
+use App\Filament\Resources\CreditNotes\Pages\Concerns\HasCreditNoteReturnAction;
 use App\Models\CreditNote;
 use Filament\Actions\Action;
 use Filament\Resources\Pages\ViewRecord;
 
 class ViewCreditNote extends ViewRecord
 {
+    use HasCreditNoteReturnAction;
+
     protected static string $resource = CreditNoteResource::class;
 
     protected function getHeaderActions(): array
@@ -20,6 +23,10 @@ class ViewCreditNote extends ViewRecord
                 ->color('success')
                 ->url(fn (CreditNote $record): string => route('credit-notes.pdf', $record))
                 ->openUrlInNewTab(),
+
+            // Chantier "retour physique" (Option 3b) — action séparée,
+            // postérieure dans le temps à l'émission de l'avoir.
+            $this->recordReturnAction(),
         ];
     }
 }
