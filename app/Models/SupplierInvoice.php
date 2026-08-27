@@ -130,6 +130,20 @@ class SupplierInvoice extends Model
     }
 
     /**
+     * Chantier "avoir fournisseur" — avoirs reçus contre cette facture
+     * (0, 1, ou plusieurs si créditée par avoirs partiels successifs).
+     * Relation additive en lecture seule : ne crée aucune nouvelle
+     * écriture sur SupplierInvoice, son immuabilité (T28) reste
+     * entièrement préservée. La prise en compte de ces avoirs dans
+     * amountRemaining()/paymentStatus() ci-dessous est hors périmètre
+     * de ce commit (chantier de réconciliation séparé, à venir).
+     */
+    public function creditNotes(): HasMany
+    {
+        return $this->hasMany(SupplierCreditNote::class);
+    }
+
+    /**
      * Source de vérité unique du statut de paiement : jamais un champ
      * stocké, toujours recalculé depuis amountPaid() ci-dessus.
      */

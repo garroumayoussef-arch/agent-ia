@@ -2,6 +2,7 @@
 
 namespace App\Filament\Resources\SupplierInvoices\Pages;
 
+use App\Filament\Resources\SupplierInvoices\Pages\Concerns\HasSupplierCreditNoteAction;
 use App\Filament\Resources\SupplierInvoices\Pages\Concerns\HasSupplierInvoicePaymentAction;
 use App\Filament\Resources\SupplierInvoices\SupplierInvoiceResource;
 use Filament\Resources\Pages\ViewRecord;
@@ -9,6 +10,7 @@ use Filament\Resources\Pages\ViewRecord;
 class ViewSupplierInvoice extends ViewRecord
 {
     use HasSupplierInvoicePaymentAction;
+    use HasSupplierCreditNoteAction;
 
     protected static string $resource = SupplierInvoiceResource::class;
 
@@ -16,6 +18,7 @@ class ViewSupplierInvoice extends ViewRecord
     {
         return [
             $this->recordPaymentAction(),
+            $this->recordSupplierCreditNoteAction(),
         ];
     }
 }

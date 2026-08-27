@@ -3,6 +3,7 @@
 namespace App\Filament\Resources\SupplierInvoices\Schemas;
 
 use App\Filament\Resources\SupplierInvoices\Tables\SupplierInvoicesTable;
+use App\Models\SupplierCreditNote;
 use App\Models\SupplierInvoice;
 use Filament\Infolists\Components\RepeatableEntry;
 use Filament\Infolists\Components\TextEntry;
@@ -116,6 +117,49 @@ class SupplierInvoiceInfolist
                     // Toujours visible, y compris sans aucun paiement
                     // encore enregistré : c'est précisément là que le
                     // statut "non payée" doit apparaître.
+
+                /*
+                 * Chantier "avoir fournisseur" — historique des avoirs
+                 * reçus. Strictement en lecture, aucune action de
+                 * mutation ici (cf. HasSupplierCreditNoteAction sur
+                 * ViewSupplierInvoice). Le montant total crédité est
+                 * affiché à titre informatif uniquement : sa prise en
+                 * compte dans amountRemaining()/paymentStatus() ci-dessus
+                 * est hors périmètre de ce commit (réconciliation
+                 * séparée, à venir).
+                 */
+                Section::make('Avoirs fournisseurs')
+                    ->columns(2)
+                    ->schema([
+                        TextEntry::make('total_credited')
+                            ->label('Montant total crédité')
+                            ->state(fn (SupplierInvoice $record): string => number_format(SupplierCreditNote::totalCreditedFor($record), 2, ',', ' ').' €'),
+
+                        RepeatableEntry::make('creditNotes')
+                            ->label('Historique des avoirs')
+                            ->columnSpanFull()
+                            ->schema([
+                                TextEntry::make('supplier_credit_note_number')
+                                    ->label('Numéro'),
+
+                                TextEntry::make('credit_note_date')
+                                    ->label('Date')
+                                    ->date('d/m/Y'),
+
+                                TextEntry::make('total_ttc')
+                                    ->label('Montant TTC')
+                                    ->money('EUR'),
+
+                                TextEntry::make('reason')
+                                    ->label('Motif')
+                                    ->placeholder('-'),
+
+                                TextEntry::make('user.name')
+                                    ->label('Enregistré par')
+                                    ->placeholder('Système / import'),
+                            ])
+                            ->columns(5),
+                    ]),
             ]);
     }
 }
