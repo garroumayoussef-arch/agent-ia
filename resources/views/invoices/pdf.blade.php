@@ -46,7 +46,12 @@
             <h1>Facture {{ $invoice->number }}</h1>
             <div>Date d'émission : {{ $invoice->issued_at->format('d/m/Y') }}</div>
             <div>Date de vente/prestation : {{ $invoice->sale_completed_at->format('d/m/Y') }}</div>
-            <div class="muted">Commande : {{ $invoice->sales_order_reference }}</div>
+            {{-- Chantier "facturation légale VTC" (D4/D7, validés) —
+                 libellé calculé selon l'origine réelle de la facture
+                 (commande de vente OU course VTC, D1), jamais un texte
+                 "Commande" fixe qui n'aurait plus de sens pour une
+                 facture VTC. --}}
+            <div class="muted">{{ ucfirst($invoice->originLabel()) }}</div>
         </div>
     </header>
 

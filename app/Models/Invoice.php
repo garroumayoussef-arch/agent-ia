@@ -212,6 +212,217 @@ class Invoice extends Model
     }
 
     /**
+     * Chantier "facturation légale VTC" (D1/D3/D5/D6, validés) — génère
+     * une facture à partir d'une VtcRide confirmée. Miroir exact de
+     * generateFromSalesOrder() ci-dessus (mêmes garanties : immuabilité,
+     * numérotation verrouillée, SIREN B2B, régime TVA jamais supposé),
+     * jamais fusionnée avec elle : chaque origine garde son propre point
+     * d'entrée explicite, comme le reste de ce projet distingue déjà
+     * SalesOrder/PurchaseOrder plutôt que de les unifier artificiellement.
+     *
+     * D5 (validé) — statut confirmed strictement requis, garde
+     * anti-doublon à plusieurs niveaux :
+     * 1. pré-vérification applicative avant toute transaction (rejet
+     *    rapide, cas non concurrent très largement majoritaire) ;
+     * 2. re-vérification IDENTIQUE À L'INTÉRIEUR de la transaction,
+     *    avant toute écriture — ferme la fenêtre de course avec un
+     *    appel strictement concurrent sur la même course ;
+     * 3. contrainte UNIQUE en base sur invoices.vtc_ride_id (migration
+     *    dédiée), rempart final même en cas de contournement des deux
+     *    premiers niveaux — une violation (SQLSTATE 23000) est
+     *    interceptée et traduite dans le même message métier, jamais
+     *    laissée remonter brute à l'appelant.
+     *
+     * D2 (validé) — numérotation sur une série dédiée (préfixe
+     * vtc_invoice_number_prefix), strictement indépendante de la série
+     * vente (cf. InvoiceSequence, compteur désormais indexé par
+     * year+prefix).
+     *
+     * D3 (validé) — une InvoiceLine UNIQUE porte les montants de la
+     * course (product_id/product_variant_id null, quantity = 1) :
+     * c'est ce qui permet à CreditNote::generateFromInvoice() (T24) de
+     * fonctionner sur une facture VTC SANS AUCUNE MODIFICATION — aucune
+     * logique d'avoir dupliquée ici.
+     *
+     * D6 (validé) — client et SIREN B2B contrôlés ICI, au moment de la
+     * facturation, jamais à la confirmation de la course
+     * (VtcRide::markAsConfirmed() reste inchangée) — même principe que
+     * generateFromSalesOrder() ci-dessus.
+     */
+    public static function generateFromVtcRide(VtcRide $ride): self
+    {
+        if ($ride->status !== VtcRide::STATUS_CONFIRMED) {
+            throw new \Exception(
+                'Seule une course confirmée peut être facturée.'
+            );
+        }
+
+        if (static::where('vtc_ride_id', $ride->id)->exists()) {
+            throw new \Exception('Une facture a déjà été émise pour cette course.');
+        }
+
+        $customer = $ride->customer;
+
+        if (! $customer) {
+            throw new \Exception("Cette course n'a pas de client associé : impossible de générer une facture.");
+        }
+
+        $isBusiness = $customer->customer_type === Customer::TYPE_BUSINESS;
+
+        if ($isBusiness && blank($customer->siren)) {
+            throw new \Exception(
+                'Le SIREN du client professionnel doit être renseigné avant de générer la facture.'
+            );
+        }
+
+        $companySettings = CompanySettings::current();
+        $companySettings->assertReadyForInvoicing();
+
+        try {
+            return DB::transaction(function () use ($ride, $customer, $isBusiness, $companySettings) {
+                // Niveau 2 (D5, validé) — revérification IDENTIQUE au
+                // pré-contrôle ci-dessus, relue fraîchement À L'INTÉRIEUR
+                // de la transaction, avant toute écriture : ferme la
+                // fenêtre de course avec un appel strictement concurrent
+                // sur la même course (jamais confiance dans le résultat
+                // lu avant l'ouverture de la transaction).
+                if (static::where('vtc_ride_id', $ride->id)->exists()) {
+                    throw new \Exception('Une facture a déjà été émise pour cette course.');
+                }
+
+                $number = InvoiceSequence::nextNumber(
+                    (int) now()->format('Y'),
+                    $companySettings->vtc_invoice_number_prefix ?: 'FV',
+                );
+
+                // Date de vente/prestation : performed_at (date réelle où
+                // la course a eu lieu) en priorité — donnée plus fiable
+                // que confirmed_at (simple horodatage administratif de
+                // confirmation). Repli sur confirmed_at si performed_at
+                // n'a jamais été renseigné (champ nullable sur VtcRide),
+                // puis sur aujourd'hui dans le seul cas — normalement
+                // impossible pour une course confirmed — où aucune des
+                // deux ne serait disponible.
+                $saleCompletedAt = $ride->performed_at ?? $ride->confirmed_at ?? now();
+
+                $invoice = static::create([
+                    'vtc_ride_id' => $ride->id,
+                    'number' => $number,
+                    'issued_at' => now()->toDateString(),
+                    'sale_completed_at' => \Illuminate\Support\Carbon::parse($saleCompletedAt)->toDateString(),
+                    // Catégorie d'opération — 'prestation', jamais 'vente'
+                    // (valeur par défaut du champ, réservée à l'origine
+                    // SalesOrder) : ce champ existe précisément pour
+                    // distinguer les deux catégories (cf. sa
+                    // documentation sur la migration T23), jamais exploité
+                    // jusqu'ici faute d'une seconde origine.
+                    'operation_category' => 'prestation',
+                    'transaction_type' => static::resolveTransactionType($customer, $companySettings, $isBusiness),
+                    'vtc_ride_reference' => $ride->reference,
+
+                    'customer_id' => $customer->id,
+                    'customer_type' => $customer->customer_type,
+                    'customer_name' => $customer->name,
+                    'customer_company' => $customer->company,
+                    'customer_address' => $customer->address,
+                    'customer_postal_code' => $customer->postal_code,
+                    'customer_city' => $customer->city,
+                    'customer_country' => $customer->country,
+                    'customer_siren' => $customer->siren,
+                    'customer_vat_number' => $customer->vat_number,
+                    // Aucune adresse de livraison distincte n'existe pour
+                    // une course VTC (pas de notion de livraison) :
+                    // jamais une valeur inventée à la place de NULL.
+                    'delivery_address_snapshot' => null,
+
+                    'seller_legal_name' => $companySettings->legal_name,
+                    'seller_legal_form' => $companySettings->legal_form,
+                    'seller_share_capital' => $companySettings->share_capital,
+                    'seller_address' => $companySettings->address,
+                    'seller_postal_code' => $companySettings->postal_code,
+                    'seller_city' => $companySettings->city,
+                    'seller_country' => $companySettings->country,
+                    'seller_siren' => $companySettings->siren,
+                    'seller_siret' => $companySettings->siret,
+                    'seller_rcs_city' => $companySettings->rcs_city,
+                    'seller_vat_number' => $companySettings->vat_number,
+
+                    'vat_regime_snapshot' => $companySettings->vat_regime,
+                    'vat_exemption_mention_snapshot' => $companySettings->vat_exemption_mention,
+                    'vat_payment_option_snapshot' => $companySettings->vat_payment_option,
+
+                    'payment_terms_snapshot' => $companySettings->payment_terms_text,
+                    'discount_terms_snapshot' => $companySettings->discount_terms_text,
+                    'late_penalty_snapshot' => $companySettings->late_penalty_text,
+                    'recovery_indemnity_amount_snapshot' => $companySettings->recovery_indemnity_amount,
+
+                    'total_ht' => $ride->total_ht,
+                    'discount_amount' => $ride->discount_amount,
+                    'tax_amount' => $ride->tax_amount,
+                    'total_ttc' => $ride->total_ttc,
+
+                    'user_id' => auth()->id(),
+                    'status' => self::STATUS_ISSUED,
+                ]);
+
+                // D3 (validé) — ligne unique, product_id/product_variant_id
+                // null (aucun produit physique concerné), quantity = 1 :
+                // c'est cette ligne qui rend l'avoir (CreditNote, T24)
+                // possible sur une facture VTC sans aucune modification de
+                // CreditNote/CreditNoteLine.
+                InvoiceLine::create([
+                    'invoice_id' => $invoice->id,
+                    'product_id' => null,
+                    'product_variant_id' => null,
+                    'product_name' => "Course VTC — {$ride->reference}",
+                    'variant_description' => null,
+                    'quantity' => 1,
+                    'unit_price_ht' => $ride->total_ht,
+                    'subtotal_ht' => $ride->total_ht,
+                    'tax_rate' => $ride->tax_rate,
+                    'tax_amount' => $ride->tax_amount,
+                    'total_ttc' => $ride->total_ttc,
+                ]);
+
+                return $invoice;
+            });
+        } catch (\Illuminate\Database\QueryException $e) {
+            // Niveau 3 (D5, validé), dernier recours — la contrainte
+            // UNIQUE sur vtc_ride_id peut encore lever une QueryException
+            // ici (SQLSTATE 23000) si, malgré le niveau 2 ci-dessus, une
+            // autre transaction a committé une facture concurrente entre
+            // temps. Rejet métier DÉFINITIF (jamais retenté, aucune
+            // situation de contention transitoire légitime ici,
+            // contrairement à InvoiceSequence::nextNumber() qui gère sa
+            // propre contention séparément) — même message que les
+            // niveaux 1/2, jamais une exception technique brute
+            // remontée à l'appelant.
+            if ($e->getCode() === '23000') {
+                throw new \Exception('Une facture a déjà été émise pour cette course.');
+            }
+
+            throw $e;
+        }
+    }
+
+    /**
+     * Chantier "facturation légale VTC" (D4, validé) — libellé d'origine
+     * calculé, jamais un champ stocké : lit salesOrder_reference ou
+     * vtc_ride_reference selon celle des deux origines qui est
+     * renseignée (D1 : exactement une des deux, jamais les deux).
+     * Réutilisable partout où l'origine doit être affichée (table,
+     * infolist, PDF) — un seul endroit de vérité pour ce libellé.
+     */
+    public function originLabel(): string
+    {
+        if ($this->sales_order_id !== null) {
+            return "Commande {$this->sales_order_reference}";
+        }
+
+        return "Course VTC {$this->vtc_ride_reference}";
+    }
+
+    /**
      * Classification informative pour un futur e-reporting (préparation
      * facturation électronique, hors périmètre d'intégration V1) —
      * n'affecte AUCUNE mention légale affichée sur le PDF, celles-ci ne
@@ -243,6 +454,17 @@ class Invoice extends Model
     public function salesOrder(): BelongsTo
     {
         return $this->belongsTo(SalesOrder::class);
+    }
+
+    /**
+     * Chantier "facturation légale VTC" (D1, validé) — seconde origine
+     * possible d'une facture, mutuellement exclusive avec salesOrder()
+     * ci-dessus (exactement l'une des deux relations résout un
+     * enregistrement, jamais les deux, jamais aucune).
+     */
+    public function vtcRide(): BelongsTo
+    {
+        return $this->belongsTo(VtcRide::class);
     }
 
     public function customer(): BelongsTo

@@ -27,7 +27,11 @@ class InvoiceInfolist
                         TextEntry::make('number')->label('N° facture'),
                         TextEntry::make('issued_at')->label('Date d\'émission')->date('d/m/Y'),
                         TextEntry::make('sale_completed_at')->label('Date de vente/prestation')->date('d/m/Y'),
-                        TextEntry::make('salesOrder.reference')->label('Commande d\'origine')->placeholder('-'),
+                        // Chantier "facturation légale VTC" (D4, validé) —
+                        // libellé calculé (commande OU course VTC, D1).
+                        TextEntry::make('origin_label')
+                            ->label('Origine')
+                            ->state(fn (Invoice $record): string => $record->originLabel()),
                         TextEntry::make('transaction_type')->label('Type d\'opération'),
                         TextEntry::make('operation_category')->label('Catégorie'),
                     ]),

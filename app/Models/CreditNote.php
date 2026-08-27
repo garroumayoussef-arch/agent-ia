@@ -288,7 +288,12 @@ class CreditNote extends Model
 
                         'invoice_number_reference' => $invoice->number,
                         'invoice_issued_at_reference' => $invoice->issued_at,
+                        // Chantier "facturation légale VTC" (D1, validé) —
+                        // exactement l'une des deux est renseignée, jamais
+                        // les deux (même règle XOR que sur Invoice), selon
+                        // l'origine de LA FACTURE créditée.
                         'sales_order_reference' => $invoice->sales_order_reference,
+                        'vtc_ride_reference' => $invoice->vtc_ride_reference,
 
                         // Sommes des lignes créditées par CET avoir uniquement —
                         // jamais recalculées différemment, jamais de discount_amount
@@ -429,6 +434,21 @@ class CreditNote extends Model
                 'Une ou plusieurs lignes sélectionnées ont déjà été créditées par un avoir précédent.'
             );
         }
+    }
+
+    /**
+     * Chantier "facturation légale VTC" (D4, validé) — même principe que
+     * Invoice::originLabel() : libellé calculé, jamais un champ stocké,
+     * selon celle des deux références (dénormalisées depuis la facture
+     * créditée au moment de l'émission de l'avoir) qui est renseignée.
+     */
+    public function originLabel(): string
+    {
+        if ($this->sales_order_reference !== null) {
+            return "commande {$this->sales_order_reference}";
+        }
+
+        return "course VTC {$this->vtc_ride_reference}";
     }
 
     /*

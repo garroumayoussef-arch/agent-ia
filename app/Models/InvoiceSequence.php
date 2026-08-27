@@ -52,6 +52,21 @@ use Illuminate\Support\Facades\DB;
  *
  * Format des numéros retournés, signature de nextNumber() : strictement
  * inchangés — aucun impact sur le comportement déjà validé de T23.
+ *
+ * ============================================================
+ * Chantier "facturation légale VTC" (D2, validé)
+ * ============================================================
+ * Compteur désormais indexé par (year, prefix) et non plus year seul
+ * (cf. migration dédiée) : la facturation VTC introduit une seconde
+ * série (préfixe dédié, jamais 'FA') strictement indépendante de la
+ * série vente. $prefix était déjà un paramètre de nextNumber() depuis
+ * T23 (jamais utilisé jusqu'ici que pour construire la chaîne
+ * retournée) — il est maintenant AUSSI utilisé pour isoler le compteur
+ * lui-même, sans aucun changement de signature ni de format retourné.
+ * Comportement d'une série unique (le cas vente existant, préfixe
+ * 'FA' constant) strictement inchangé : filtrer en plus sur un prefix
+ * qui a toujours été le même pour toutes les factures de vente ne
+ * modifie rien à la suite de numéros déjà produite.
  */
 class InvoiceSequence extends Model
 {
@@ -71,6 +86,7 @@ class InvoiceSequence extends Model
                 return DB::transaction(function () use ($year, $prefix) {
                     static::query()->insertOrIgnore([
                         'year' => $year,
+                        'prefix' => $prefix,
                         'last_number' => 0,
                         'created_at' => now(),
                         'updated_at' => now(),
@@ -78,6 +94,7 @@ class InvoiceSequence extends Model
 
                     $sequence = static::query()
                         ->where('year', $year)
+                        ->where('prefix', $prefix)
                         ->lockForUpdate()
                         ->firstOrFail();
 
@@ -89,6 +106,7 @@ class InvoiceSequence extends Model
                     // $candidateNumber est réellement celui obtenu.
                     $affected = static::query()
                         ->where('year', $year)
+                        ->where('prefix', $prefix)
                         ->where('last_number', $sequence->last_number)
                         ->update([
                             'last_number' => $candidateNumber,

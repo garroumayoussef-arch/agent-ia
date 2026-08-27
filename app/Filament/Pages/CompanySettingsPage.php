@@ -114,11 +114,17 @@ class CompanySettingsPage extends Page
                         TextInput::make('bic')->label('BIC'),
                         TextInput::make('email')->label('Email')->email(),
                         TextInput::make('phone')->label('Téléphone')->tel(),
-                        TextInput::make('invoice_number_prefix')->label('Préfixe des numéros de facture')->required()->default('FA'),
+                        TextInput::make('invoice_number_prefix')->label('Préfixe des numéros de facture (vente)')->required()->default('FA'),
                         // Étape T24 (point 5) — préfixe des avoirs, séquence
                         // de numérotation strictement indépendante de celle
                         // des factures.
                         TextInput::make('credit_note_number_prefix')->label('Préfixe des numéros d\'avoir')->required()->default('AV'),
+                        // Chantier "facturation légale VTC" (D2, validé) —
+                        // préfixe de la série DÉDIÉE aux factures VTC,
+                        // strictement indépendante de la série vente
+                        // ci-dessus (cf. InvoiceSequence, compteur désormais
+                        // indexé par (year, prefix)).
+                        TextInput::make('vtc_invoice_number_prefix')->label('Préfixe des numéros de facture (VTC)')->required()->default('FV'),
                     ]),
             ]);
     }

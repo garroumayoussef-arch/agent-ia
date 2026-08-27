@@ -42,6 +42,26 @@ class InvoiceNumberSequenceTest extends TestCase
     }
 
     /**
+     * Chantier "facturation légale VTC" (D2, validé) — deux préfixes
+     * différents pour la MÊME année doivent avoir des compteurs
+     * strictement indépendants (série vente 'FA' vs série VTC 'FV') :
+     * jamais un numéro "brûlé" par l'une des deux séries au profit de
+     * l'autre. Preuve directe que le correctif (clé composite
+     * year+prefix) fonctionne, pas seulement que la valeur affichée
+     * diffère.
+     */
+    public function test_deux_prefixes_differents_ont_des_compteurs_independants_la_meme_annee(): void
+    {
+        $this->assertSame('FA-2026-000001', InvoiceSequence::nextNumber(2026, 'FA'));
+        $this->assertSame('FV-2026-000001', InvoiceSequence::nextNumber(2026, 'FV'));
+        $this->assertSame('FA-2026-000002', InvoiceSequence::nextNumber(2026, 'FA'));
+        $this->assertSame('FV-2026-000002', InvoiceSequence::nextNumber(2026, 'FV'));
+        $this->assertSame('FA-2026-000003', InvoiceSequence::nextNumber(2026, 'FA'));
+
+        $this->assertCount(2, InvoiceSequence::where('year', 2026)->get());
+    }
+
+    /**
      * insertOrIgnore() garantit qu'un second appel sur une année dont
      * la ligne existe déjà ne lève jamais d'exception (contrainte
      * unique sur `year`) — vérifie explicitement ce cas, pas seulement
@@ -117,7 +137,16 @@ class InvoiceNumberSequenceTest extends TestCase
         $envOverrides = ['DB_CONNECTION' => 'sqlite', 'DB_DATABASE' => $dbFile] + getenv();
 
         $migrateProcess = proc_open(
-            ['php', 'artisan', 'migrate', '--path=database/migrations/2026_08_25_150002_create_invoice_sequences_table.php', '--database=sqlite', '--force'],
+            [
+                'php', 'artisan', 'migrate',
+                '--path=database/migrations/2026_08_25_150002_create_invoice_sequences_table.php',
+                // Chantier "facturation légale VTC" (D2) — nextNumber()
+                // filtre désormais aussi sur `prefix`, colonne ajoutée par
+                // cette seconde migration : sans elle, la base isolée
+                // créée ci-dessous n'aurait pas cette colonne.
+                '--path=database/migrations/2026_08_28_100001_add_prefix_to_invoice_sequences_table.php',
+                '--database=sqlite', '--force',
+            ],
             [1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
             $migratePipes,
             $basePath,

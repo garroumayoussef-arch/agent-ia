@@ -32,6 +32,24 @@ use Illuminate\Support\Carbon;
  * ScopesToOwnWarehouses).
  *
  * ============================================================
+ * Chantier "facturation légale VTC" (D10, validé)
+ * ============================================================
+ * Depuis ce chantier, Invoice peut aussi avoir pour origine une VtcRide
+ * (D1) — jamais comptée ici : ce widget reste EXCLUSIVEMENT le
+ * reporting commercial de la vente marchandise, l'activité VTC ayant
+ * son propre widget dédié (VtcRideOverview, qui mesure les courses
+ * CONFIRMÉES, facturées ou non — une notion différente de "facturé").
+ * Fusionner les deux produirait un CA VTC différent entre les deux
+ * widgets (l'un compte les courses confirmées, l'autre compterait
+ * seulement celles facturées), source de confusion en lecture de
+ * dashboard — jamais fait ici, sciemment. Toutes les requêtes
+ * ci-dessous filtrent donc explicitement whereNotNull('sales_order_id')
+ * (ou l'équivalent via la relation invoice) : un oubli sur l'une
+ * d'elles ferait apparaître silencieusement du CA VTC ici sans qu'aucun
+ * test ne s'en aperçoive autrement qu'en le vérifiant explicitement
+ * (cf. CommercialOverviewTest).
+ *
+ * ============================================================
  * Chantier A — trésorerie (D1-D4 validés)
  * ============================================================
  * Deux indicateurs supplémentaires ajoutés aux 4 déjà existants
@@ -105,8 +123,14 @@ class CommercialOverview extends StatsOverviewWidget
      */
     private function periodStats(string $label, ?Carbon $start, ?Carbon $end): array
     {
-        $invoiceQuery = Invoice::query();
-        $creditNoteQuery = CreditNote::query();
+        // D10 (validé) — exclut explicitement les factures/avoirs
+        // d'origine VTC (cf. documentation de tête de classe) : ce
+        // widget reste exclusivement le CA vente marchandise.
+        $invoiceQuery = Invoice::query()->whereNotNull('sales_order_id');
+        $creditNoteQuery = CreditNote::query()->whereHas(
+            'invoice',
+            fn ($invoiceQuery) => $invoiceQuery->whereNotNull('sales_order_id'),
+        );
 
         if ($start !== null && $end !== null) {
             $invoiceQuery->whereBetween('issued_at', [$start, $end]);
@@ -120,8 +144,12 @@ class CommercialOverview extends StatsOverviewWidget
 
         // Chantier A (D1) — "Encaissé" : ancré sur paid_at (date réelle
         // d'encaissement), jamais sur issued_at de la facture (cf.
-        // documentation de tête de classe).
-        $paymentQuery = InvoicePayment::query();
+        // documentation de tête de classe). D10 (validé) — exclut les
+        // paiements sur une facture VTC, même principe que ci-dessus.
+        $paymentQuery = InvoicePayment::query()->whereHas(
+            'invoice',
+            fn ($invoiceQuery) => $invoiceQuery->whereNotNull('sales_order_id'),
+        );
 
         if ($start !== null && $end !== null) {
             $paymentQuery->whereBetween('paid_at', [$start, $end]);
@@ -135,6 +163,10 @@ class CommercialOverview extends StatsOverviewWidget
         // tête de classe).
         $paidOnPeriodInvoices = (float) InvoicePayment::query()
             ->whereHas('invoice', function ($invoiceQuery) use ($start, $end) {
+                // D10 (validé) — exclut les factures VTC, même principe
+                // que ci-dessus.
+                $invoiceQuery->whereNotNull('sales_order_id');
+
                 if ($start !== null && $end !== null) {
                     $invoiceQuery->whereBetween('issued_at', [$start, $end]);
                 }
@@ -149,6 +181,10 @@ class CommercialOverview extends StatsOverviewWidget
         // une facture de la période est donc bien compté ici.
         $creditedOnPeriodInvoicesTtc = (float) CreditNote::query()
             ->whereHas('invoice', function ($invoiceQuery) use ($start, $end) {
+                // D10 (validé) — exclut les avoirs sur facture VTC, même
+                // principe que ci-dessus.
+                $invoiceQuery->whereNotNull('sales_order_id');
+
                 if ($start !== null && $end !== null) {
                     $invoiceQuery->whereBetween('issued_at', [$start, $end]);
                 }

@@ -22,6 +22,9 @@ class EditVtcRide extends EditRecord
             $this->confirmRideAction(),
             $this->cancelRideAction(),
             $this->receiptAction(),
+            // Chantier "facturation légale VTC" (D5/D8, validés).
+            $this->generateInvoiceAction(),
+            $this->downloadInvoiceAction(),
             ViewAction::make(),
             DeleteAction::make()
                 // Le modèle refuse la suppression d'une course qui

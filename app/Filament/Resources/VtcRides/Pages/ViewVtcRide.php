@@ -19,6 +19,9 @@ class ViewVtcRide extends ViewRecord
             $this->confirmRideAction(),
             $this->cancelRideAction(),
             $this->receiptAction(),
+            // Chantier "facturation légale VTC" (D5/D8, validés).
+            $this->generateInvoiceAction(),
+            $this->downloadInvoiceAction(),
             EditAction::make(),
         ];
     }

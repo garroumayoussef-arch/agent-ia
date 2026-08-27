@@ -3,6 +3,7 @@
 namespace App\Filament\Resources\VtcRides\Pages\Concerns;
 
 use App\Filament\Resources\VtcRides\VtcRideResource;
+use App\Models\Invoice;
 use App\Models\VtcRide;
 use Filament\Actions\Action;
 use Filament\Notifications\Notification;
@@ -105,6 +106,14 @@ trait HasVtcRideWorkflowActions
      * (VtcRideReceiptController) plutôt qu'un ->action() : rien à
      * valider côté serveur au clic, la garde d'accès vit dans le
      * contrôleur (qui réutilise VtcRideResource::canView()).
+     *
+     * Chantier "facturation légale VTC" (D8, validé) — CONSERVÉ tel
+     * quel, sans aucune condition supplémentaire liée à l'existence
+     * d'une facture : la facturation n'est pas systématique (course
+     * comptant/B2C vs compte facturé), le reçu (non légal) reste donc
+     * toujours disponible pour toute course confirmée, en complément —
+     * jamais en remplacement — de generateInvoiceAction()/
+     * downloadInvoiceAction() ci-dessous.
      */
     protected function receiptAction(): Action
     {
@@ -114,6 +123,74 @@ trait HasVtcRideWorkflowActions
             ->color('gray')
             ->visible(fn (VtcRide $record): bool => $record->status === VtcRide::STATUS_CONFIRMED)
             ->url(fn (VtcRide $record): string => route('vtc-rides.receipt', $record))
+            ->openUrlInNewTab();
+    }
+
+    /**
+     * Chantier "facturation légale VTC" (D5, validé) — génération de la
+     * facture légale, miroir exact de
+     * HasSalesOrderWorkflowActions::generateInvoiceAction() (T23) :
+     * visible uniquement pour une course confirmée sans facture déjà
+     * émise (confort d'UI, jamais la seule protection — cf.
+     * Invoice::generateFromVtcRide(), qui revérifie tout côté serveur).
+     * Gardée explicitement par VtcRideResource::canEdit() : émettre un
+     * document légal immuable est jugé trop sensible pour reposer sur
+     * la seule protection indirecte de l'accès à la page — même
+     * principe que côté vente. Un chauffeur, qui peut éditer SES
+     * courses en brouillon (canEdit()), n'a jamais accès à cette action
+     * de toute façon : elle n'est visible que pour une course confirmée,
+     * jamais pour un brouillon.
+     */
+    protected function generateInvoiceAction(): Action
+    {
+        return Action::make('generateInvoice')
+            ->label('Générer la facture')
+            ->icon('heroicon-o-document-text')
+            ->color('success')
+            ->visible(fn (VtcRide $record): bool => VtcRideResource::canEdit($record)
+                && $record->status === VtcRide::STATUS_CONFIRMED
+                && ! Invoice::where('vtc_ride_id', $record->id)->exists())
+            ->authorize(fn (VtcRide $record): bool => VtcRideResource::canEdit($record))
+            ->authorizationNotification()
+            ->authorizationMessage("Cette action est réservée aux administrateurs et gestionnaires.")
+            ->requiresConfirmation()
+            ->action(function (VtcRide $record) {
+                try {
+                    $invoice = Invoice::generateFromVtcRide($record);
+
+                    Notification::make()
+                        ->title("Facture {$invoice->number} générée")
+                        ->success()
+                        ->send();
+                } catch (\Throwable $e) {
+                    Notification::make()
+                        ->title('Génération de facture impossible')
+                        ->body($e->getMessage())
+                        ->danger()
+                        ->send();
+                }
+            });
+    }
+
+    /**
+     * Chantier "facturation légale VTC" (D5/D7, validé) — miroir exact
+     * de HasSalesOrderWorkflowActions::downloadInvoiceAction() : visible
+     * dès qu'une facture existe pour cette course, ouvre le PDF
+     * (réutilisation stricte de la route et du contrôleur T23, agnostique
+     * de l'origine de la facture) dans un nouvel onglet.
+     */
+    protected function downloadInvoiceAction(): Action
+    {
+        return Action::make('downloadInvoice')
+            ->label('Télécharger la facture')
+            ->icon('heroicon-o-arrow-down-tray')
+            ->color('gray')
+            ->visible(fn (VtcRide $record): bool => Invoice::where('vtc_ride_id', $record->id)->exists())
+            ->url(function (VtcRide $record): ?string {
+                $invoice = Invoice::where('vtc_ride_id', $record->id)->first();
+
+                return $invoice ? route('invoices.pdf', $invoice) : null;
+            })
             ->openUrlInNewTab();
     }
 }

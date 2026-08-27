@@ -37,9 +37,20 @@ class InvoicesTable
                     ->formatStateUsing(fn (string $state): string => $state === 'business' ? 'Professionnel' : 'Particulier')
                     ->color(fn (string $state): string => $state === 'business' ? 'warning' : 'gray'),
 
-                TextColumn::make('salesOrder.reference')
-                    ->label('Commande')
-                    ->searchable(),
+                // Chantier "facturation légale VTC" (D4, validé) —
+                // colonne calculée : une facture a désormais deux
+                // origines possibles (D1), jamais affichées dans deux
+                // colonnes séparées. searchable() sur les deux colonnes
+                // brutes sous-jacentes (jamais sur le libellé calculé,
+                // introuvable par une recherche SQL directe).
+                TextColumn::make('origin_label')
+                    ->label('Origine')
+                    ->state(fn (Invoice $record): string => $record->originLabel())
+                    ->searchable(query: function (Builder $query, string $search): Builder {
+                        return $query
+                            ->whereHas('salesOrder', fn (Builder $q) => $q->where('reference', 'like', "%{$search}%"))
+                            ->orWhereHas('vtcRide', fn (Builder $q) => $q->where('reference', 'like', "%{$search}%"));
+                    }),
 
                 TextColumn::make('issued_at')
                     ->label('Émise le')

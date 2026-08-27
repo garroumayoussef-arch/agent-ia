@@ -54,7 +54,7 @@
     <div class="reference-box">
         <strong>Avoir établi sur la facture {{ $creditNote->invoice_number_reference }}</strong>
         du {{ $creditNote->invoice_issued_at_reference->format('d/m/Y') }}
-        (commande {{ $creditNote->sales_order_reference }})<br>
+        ({{ $creditNote->originLabel() }})<br>
         <strong>Motif :</strong> {{ $creditNote->reason }}<br>
         <strong>Mode de règlement :</strong> {{ $creditNote->settlement_type === 'refund' ? 'Remboursement' : 'Imputation sur facture future' }}
     </div>

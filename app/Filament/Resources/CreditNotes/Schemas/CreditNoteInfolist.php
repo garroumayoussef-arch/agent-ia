@@ -2,6 +2,7 @@
 
 namespace App\Filament\Resources\CreditNotes\Schemas;
 
+use App\Models\CreditNote;
 use App\Models\CreditNoteLineReturn;
 use Filament\Infolists\Components\RepeatableEntry;
 use Filament\Infolists\Components\TextEntry;
@@ -29,7 +30,13 @@ class CreditNoteInfolist
                             ->formatStateUsing(fn (string $state): string => $state === 'total' ? 'Total' : 'Partiel'),
                         TextEntry::make('invoice_number_reference')->label('Facture créditée'),
                         TextEntry::make('invoice_issued_at_reference')->label('Date de la facture')->date('d/m/Y'),
-                        TextEntry::make('sales_order_reference')->label('Commande d\'origine'),
+                        // Chantier "facturation légale VTC" (D4, validé) —
+                        // libellé calculé (commande OU course VTC), jamais
+                        // un champ unique désormais que la facture créditée
+                        // peut avoir deux origines (D1).
+                        TextEntry::make('origin_label')
+                            ->label('Origine')
+                            ->state(fn (CreditNote $record): string => ucfirst($record->originLabel())),
                         TextEntry::make('settlement_type')
                             ->label('Mode de règlement')
                             ->formatStateUsing(fn (string $state): string => $state === 'refund' ? 'Remboursement' : 'Imputation sur facture future'),

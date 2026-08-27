@@ -68,6 +68,10 @@ class CompanySettingsPageTest extends TestCase
                 // Étape T24 — nouveau champ requis, ajouté à la même
                 // page (préfixe de numérotation des avoirs).
                 'credit_note_number_prefix' => 'AV',
+                // Chantier "facturation légale VTC" — nouveau champ
+                // requis, ajouté à la même page (préfixe de la série
+                // dédiée aux factures VTC).
+                'vtc_invoice_number_prefix' => 'FV',
             ])
             ->call('save')
             ->assertHasNoFormErrors();

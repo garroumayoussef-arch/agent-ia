@@ -8,6 +8,7 @@ use App\Models\CompanySettings;
 use App\Models\CreditNote;
 use App\Models\Customer;
 use App\Models\Driver;
+use App\Models\FiscalSetting;
 use App\Models\Invoice;
 use App\Models\InvoicePayment;
 use App\Models\Product;
@@ -15,6 +16,8 @@ use App\Models\SalesOrder;
 use App\Models\SalesOrderItem;
 use App\Models\TaxRate;
 use App\Models\User;
+use App\Models\Vehicle;
+use App\Models\VtcRide;
 use App\Models\Warehouse;
 use Database\Seeders\RoleSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -99,6 +102,37 @@ class CommercialOverviewTest extends TestCase
         $order->fresh()->ship([$item->id => $quantity]);
 
         return Invoice::generateFromSalesOrder($order->fresh());
+    }
+
+    /**
+     * Chantier "facturation légale VTC" (D10, validé) — génère une
+     * facture VTC (TVA 10%, distincte de la TVA 20% vente configurée en
+     * setUp) pour prouver qu'elle n'est JAMAIS comptée par ce widget.
+     */
+    private function makeVtcInvoice(float $priceHt): Invoice
+    {
+        $rate = TaxRate::firstOrCreate(
+            ['label' => 'VTC 10%'],
+            ['type' => TaxRate::TYPE_PERCENTAGE, 'rate' => 10, 'is_active' => true],
+        );
+        FiscalSetting::updateOrCreate(['activity' => FiscalSetting::ACTIVITY_VTC], ['tax_rate_id' => $rate->id]);
+
+        $ride = VtcRide::create([
+            'reference' => 'VTC-'.uniqid(),
+            'customer_id' => Customer::create([
+                'name' => 'Client VTC Reporting',
+                'customer_type' => Customer::TYPE_INDIVIDUAL,
+                'address' => 'Adresse',
+                'city' => 'Lyon',
+                'country' => 'France',
+            ])->id,
+            'driver_id' => Driver::create(['name' => 'Chauffeur Reporting VTC', 'is_active' => true])->id,
+            'vehicle_id' => Vehicle::create(['plate_number' => 'AA-'.uniqid().'-ZZ', 'is_active' => true])->id,
+            'price_ht' => $priceHt,
+        ]);
+        $ride->markAsConfirmed();
+
+        return Invoice::generateFromVtcRide($ride->fresh());
     }
 
     /**
@@ -215,6 +249,34 @@ class CommercialOverviewTest extends TestCase
         Livewire::test(CommercialOverview::class)
             ->assertSee('180,00 €')
             ->assertSee('2');
+    }
+
+    /**
+     * Chantier "facturation légale VTC" (D10, validé) — LE test critique
+     * de ce chantier pour le reporting : une facture VTC ne doit JAMAIS
+     * apparaître dans ce widget, ni dans le CA facturé, ni dans le
+     * nombre de factures, ni dans l'encaissé (si un paiement est
+     * enregistré dessus). Sans le filtre whereNotNull('sales_order_id')
+     * ajouté par ce chantier, ce test échouerait silencieusement en
+     * additionnant les deux montants au lieu de n'en garder qu'un.
+     */
+    public function test_une_facture_vtc_napparait_jamais_dans_le_reporting_commercial(): void
+    {
+        // Facture vente : 100 HT + 20% = 120 TTC.
+        $salesInvoice = $this->makeInvoice(100, 1, '-VTC-ISOL');
+        // Facture VTC : 200 HT + 10% = 220 TTC — montant très différent,
+        // pour qu'une fuite soit immédiatement visible dans les totaux.
+        $vtcInvoice = $this->makeVtcInvoice(200);
+        InvoicePayment::recordFor($vtcInvoice, 220, now()->toDateString());
+
+        $this->actingAs(User::factory()->create()->assignRole('manager'));
+
+        Livewire::test(CommercialOverview::class)
+            // CA facturé total = 120 € (vente uniquement), jamais 340 €
+            // (120 + 220) si la facture VTC avait fuité.
+            ->assertSee('120,00 €')
+            ->assertDontSee('340,00 €')
+            ->assertDontSee('220,00 €');
     }
 
     public function test_le_montant_des_avoirs_est_correctement_additionne(): void
