@@ -264,4 +264,100 @@ class StockMovementResourceTest extends TestCase
             ->assertSee('🟢 Achat')
             ->assertSee('🟠 Ajustement');
     }
+
+    /*
+     * =================================================================
+     * Finition "retour physique fournisseur" — libellé dédié dans la
+     * table + option de filtre pour 'return_to_supplier' (périmètre
+     * strictement en lecture : aucune règle métier, aucun modèle, aucune
+     * migration modifiés — cf. StockMovement.php/PurchaseOrderItemReturnTest.php,
+     * inchangés).
+     * =================================================================
+     */
+
+    public function test_la_table_affiche_le_libelle_dedie_retour_fournisseur(): void
+    {
+        $user = User::factory()->create()->assignRole('manager');
+        $this->actingAs($user);
+
+        $warehouse = Warehouse::create(['name' => 'Entrepôt A', 'code' => 'a-retour-fournisseur']);
+        $user->warehouses()->attach($warehouse);
+        $product = $this->makeProduct(['stock' => 10]);
+
+        StockMovement::create([
+            'product_id' => $product->id,
+            'warehouse_id' => $warehouse->id,
+            'type' => 'return_to_supplier',
+            'quantity' => 4,
+        ]);
+
+        Livewire::test(ListStockMovements::class)
+            ->assertSee('Retour fournisseur')
+            // Le slug technique brut ne doit plus apparaître seul.
+            ->assertDontSeeText('return_to_supplier');
+    }
+
+    public function test_le_filtre_par_type_isole_les_retours_fournisseurs(): void
+    {
+        $user = User::factory()->create()->assignRole('manager');
+        $this->actingAs($user);
+
+        $warehouse = Warehouse::create(['name' => 'Entrepôt A', 'code' => 'a-retour-fournisseur-filtre']);
+        $user->warehouses()->attach($warehouse);
+        $product = $this->makeProduct(['stock' => 10]);
+
+        $returnMovement = StockMovement::create([
+            'product_id' => $product->id,
+            'warehouse_id' => $warehouse->id,
+            'type' => 'return_to_supplier',
+            'quantity' => 4,
+        ]);
+
+        $purchaseMovement = StockMovement::create([
+            'product_id' => $product->id,
+            'warehouse_id' => $warehouse->id,
+            'type' => 'purchase',
+            'quantity' => 5,
+        ]);
+
+        Livewire::test(ListStockMovements::class)
+            ->filterTable('type', 'return_to_supplier')
+            ->assertCanSeeTableRecords([$returnMovement])
+            ->assertCanNotSeeTableRecords([$purchaseMovement]);
+    }
+
+    /**
+     * Non-régression : les options de filtre déjà en place (purchase,
+     * sale, return, adjustment, inventory) continuent d'isoler
+     * correctement leurs mouvements après l'ajout de return_to_supplier/
+     * transfer_out/transfer_in à la liste des options.
+     */
+    public function test_le_filtre_par_type_continue_disoler_les_types_existants(): void
+    {
+        $user = User::factory()->create()->assignRole('manager');
+        $this->actingAs($user);
+
+        $warehouse = Warehouse::create(['name' => 'Entrepôt A', 'code' => 'a-filtre-existant']);
+        $user->warehouses()->attach($warehouse);
+        $product = $this->makeProduct(['stock' => 10]);
+
+        $purchaseMovement = StockMovement::create([
+            'product_id' => $product->id,
+            'warehouse_id' => $warehouse->id,
+            'type' => 'purchase',
+            'quantity' => 5,
+        ]);
+
+        $adjustmentMovement = StockMovement::create([
+            'product_id' => $product->id,
+            'warehouse_id' => $warehouse->id,
+            'type' => 'adjustment',
+            'quantity' => 3,
+        ]);
+
+        Livewire::test(ListStockMovements::class)
+            ->filterTable('type', 'purchase')
+            ->assertCanSeeTableRecords([$purchaseMovement])
+            ->assertCanNotSeeTableRecords([$adjustmentMovement]);
+    }
 }

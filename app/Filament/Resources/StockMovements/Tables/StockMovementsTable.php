@@ -47,6 +47,7 @@ class StockMovementsTable
                         'purchase' => '🟢 Achat',
                         'sale' => '🔴 Vente',
                         'return' => '🟡 Retour',
+                        'return_to_supplier' => '🔵 Retour fournisseur',
                         'adjustment' => '🟠 Ajustement',
                         'inventory' => '⚪ Inventaire',
                         'transfer_out' => '📤 Transfert sortant',
@@ -85,8 +86,11 @@ class StockMovementsTable
                         'purchase' => '🟢 Achat',
                         'sale' => '🔴 Vente',
                         'return' => '🟡 Retour',
+                        'return_to_supplier' => '🔵 Retour fournisseur',
                         'adjustment' => '🟠 Ajustement',
                         'inventory' => '⚪ Inventaire',
+                        'transfer_out' => '📤 Transfert sortant',
+                        'transfer_in' => '📥 Transfert entrant',
                     ]),
 
                 SelectFilter::make('product_id')
