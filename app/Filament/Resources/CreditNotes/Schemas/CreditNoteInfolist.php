@@ -2,6 +2,7 @@
 
 namespace App\Filament\Resources\CreditNotes\Schemas;
 
+use App\Models\CreditNoteLineReturn;
 use Filament\Infolists\Components\RepeatableEntry;
 use Filament\Infolists\Components\TextEntry;
 use Filament\Schemas\Components\Section;
@@ -100,7 +101,7 @@ class CreditNoteInfolist
 
                                 RepeatableEntry::make('returns')
                                     ->label('')
-                                    ->columns(5)
+                                    ->columns(6)
                                     ->schema([
                                         TextEntry::make('returned_at')->label('Date')->date('d/m/Y'),
                                         TextEntry::make('quantity')->label('Qté retournée'),
@@ -111,6 +112,18 @@ class CreditNoteInfolist
                                             ->color(fn (string $state): string => $state === 'vendable' ? 'success' : 'danger'),
                                         TextEntry::make('user.name')->label('Enregistré par')->placeholder('-'),
                                         TextEntry::make('reference')->label('Référence')->placeholder('-'),
+
+                                        // Chantier "bon de retour" (décisions 1 à 6,
+                                        // validées) — lien de téléchargement du PDF
+                                        // du retour, régénéré à chaque appel (cf.
+                                        // CreditNoteLineReturnPdfController).
+                                        TextEntry::make('id')
+                                            ->label('Bon de retour')
+                                            ->formatStateUsing(fn (): string => 'Télécharger le PDF')
+                                            ->color('primary')
+                                            ->icon('heroicon-o-arrow-down-tray')
+                                            ->url(fn (CreditNoteLineReturn $record): string => route('credit-note-line-returns.pdf', $record))
+                                            ->openUrlInNewTab(),
                                     ])
                                     ->placeholder('Aucun retour enregistré pour cette ligne.'),
                             ]),

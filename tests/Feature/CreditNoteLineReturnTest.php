@@ -732,4 +732,36 @@ class CreditNoteLineReturnTest extends TestCase
 
         $this->assertSame(0, CreditNoteLineReturn::where('credit_note_line_id', $lineA->id)->count());
     }
+
+    /*
+     * =================================================================
+     * Chantier "bon de retour" — lien de téléchargement PDF sur chaque
+     * retour affiché dans la section "Retours physiques".
+     * =================================================================
+     */
+
+    public function test_la_section_retours_physiques_affiche_le_lien_pdf_dun_retour_enregistre(): void
+    {
+        [$invoice, $productA] = $this->makeInvoiceWithTwoProducts();
+        $creditNote = CreditNote::generateFromInvoice($invoice, $invoice->lines->pluck('id')->all(), 'Retour', CreditNote::SETTLEMENT_REFUND);
+        $lineA = $creditNote->lines()->where('product_id', $productA->id)->firstOrFail();
+
+        $return = CreditNoteLineReturn::recordFor($lineA, 2, CreditNoteLineReturn::CONDITION_SELLABLE, now()->toDateString());
+
+        $this->actingAs(User::factory()->create()->assignRole('manager'));
+
+        Livewire::test(ViewCreditNote::class, ['record' => $creditNote->fresh()->getKey()])
+            ->assertSee(route('credit-note-line-returns.pdf', $return), escape: false);
+    }
+
+    public function test_la_section_retours_physiques_affiche_le_placeholder_si_aucun_retour(): void
+    {
+        [$invoice] = $this->makeInvoiceWithTwoProducts();
+        $creditNote = CreditNote::generateFromInvoice($invoice, $invoice->lines->pluck('id')->all(), 'Retour', CreditNote::SETTLEMENT_REFUND);
+
+        $this->actingAs(User::factory()->create()->assignRole('manager'));
+
+        Livewire::test(ViewCreditNote::class, ['record' => $creditNote->getKey()])
+            ->assertSee('Aucun retour enregistré pour cette ligne.');
+    }
 }

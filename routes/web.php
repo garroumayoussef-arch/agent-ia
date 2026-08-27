@@ -1,8 +1,10 @@
 <?php
 
+use App\Http\Controllers\CreditNoteLineReturnPdfController;
 use App\Http\Controllers\CreditNotePdfController;
 use App\Http\Controllers\InvoicePdfController;
 use App\Http\Controllers\ProfileController;
+use App\Http\Controllers\PurchaseOrderItemReturnPdfController;
 use App\Http\Controllers\VtcRideReceiptController;
 use Illuminate\Foundation\Application;
 use Illuminate\Support\Facades\Route;
@@ -47,6 +49,23 @@ Route::middleware('auth')->group(function () {
     // facture ci-dessus.
     Route::get('/credit-notes/{creditNote}/pdf', [CreditNotePdfController::class, 'show'])
         ->name('credit-notes.pdf');
+
+    // Chantier "bon de retour" (décisions 1 à 6, validées) — PDF d'un
+    // retour physique client, régénéré à chaque appel depuis les
+    // données figées de CreditNoteLineReturn (jamais depuis
+    // CreditNoteLine/Product). Même principe que les routes PDF
+    // ci-dessus : autorisation vérifiée dans le contrôleur (cf.
+    // CreditNoteLineReturnPdfController).
+    Route::get('/credit-note-line-returns/{creditNoteLineReturn}/pdf', [CreditNoteLineReturnPdfController::class, 'show'])
+        ->name('credit-note-line-returns.pdf');
+
+    // Chantier "bon de retour" — PDF d'un retour physique fournisseur,
+    // régénéré à chaque appel depuis les données figées de
+    // PurchaseOrderItemReturn (jamais depuis PurchaseOrderItem/Product/
+    // Supplier). Même principe que ci-dessus (cf.
+    // PurchaseOrderItemReturnPdfController).
+    Route::get('/purchase-order-item-returns/{purchaseOrderItemReturn}/pdf', [PurchaseOrderItemReturnPdfController::class, 'show'])
+        ->name('purchase-order-item-returns.pdf');
 });
 
 require __DIR__.'/auth.php';

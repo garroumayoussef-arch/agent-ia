@@ -577,4 +577,36 @@ class PurchaseOrderItemReturnTest extends TestCase
 
         $this->assertSame(0, PurchaseOrderItemReturn::where('purchase_order_item_id', $itemA->id)->count());
     }
+
+    /*
+     * =================================================================
+     * Chantier "bon de retour" (décision 4, validée) — section "Retours
+     * physiques" sur PurchaseOrderInfolist, symétrique de celle déjà
+     * existante sur CreditNoteInfolist.
+     * =================================================================
+     */
+
+    public function test_la_section_retours_physiques_affiche_un_retour_enregistre_avec_son_lien_pdf(): void
+    {
+        [$order, $itemA] = $this->makeReceivedOrderWithTwoProducts();
+        $defaultWarehouseId = Warehouse::where('is_default', true)->value('id');
+
+        $return = PurchaseOrderItemReturn::recordFor($itemA, 3, now()->toDateString(), $defaultWarehouseId);
+
+        $this->actingAs(User::factory()->create()->assignRole('manager'));
+
+        Livewire::test(ViewPurchaseOrder::class, ['record' => $order->fresh()->getKey()])
+            ->assertSee('Entrepôt par défaut')
+            ->assertSee(route('purchase-order-item-returns.pdf', $return), escape: false);
+    }
+
+    public function test_la_section_retours_physiques_affiche_le_placeholder_si_aucun_retour(): void
+    {
+        [$order] = $this->makeReceivedOrderWithTwoProducts();
+
+        $this->actingAs(User::factory()->create()->assignRole('manager'));
+
+        Livewire::test(ViewPurchaseOrder::class, ['record' => $order->getKey()])
+            ->assertSee('Aucun retour enregistré pour cette ligne.');
+    }
 }
