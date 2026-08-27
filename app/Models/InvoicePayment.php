@@ -52,12 +52,31 @@ use Illuminate\Support\Facades\DB;
  * creditedAmount() est lu APRÈS le verrouillage de l'Invoice
  * (lockForUpdate() ci-dessous), donc dans la même transaction que la
  * vérification du solde payé — même niveau de fraîcheur que
- * $totalPaid. Limite résiduelle assumée, non traitée dans ce chantier
- * (hors périmètre D1-D7) : CreditNote::generateFromInvoice() ne
- * verrouille pas la ligne Invoice de son côté, donc un avoir émis de
- * façon strictement concurrente à un recordFor() sur la même facture
- * n'est pas mutuellement exclu par un verrou commun — cas rare, déjà
- * identifié lors de l'analyse validée, non couvert par D1-D7.
+ * $totalPaid.
+ *
+ * Précision (étude du chantier "correctif de concurrence", validée) —
+ * CreditNote::generateFromInvoice() ne verrouille effectivement pas la
+ * ligne Invoice de son côté, et un avoir émis de façon strictement
+ * concurrente à un recordFor() sur la même facture n'est donc pas
+ * mutuellement exclu par un verrou commun. Analyse approfondie menée :
+ * ceci ne peut structurellement JAMAIS faire dépasser total_ttc à un
+ * paiement (netCeiling = total_ttc − creditedAmount() est toujours
+ * ≤ total_ttc, quelle que soit la fraîcheur de creditedAmount()), et
+ * le seul effet possible est qu'un paiement accepté avant qu'un avoir
+ * concurrent ne se committe produise un creditBalance() — mécanisme
+ * déjà conçu, testé et validé pour exactement ce cas (cf.
+ * Invoice::creditBalance(), y compris pour un avoir émis APRÈS un
+ * paiement déjà intégral, de façon séquentielle). Aucun état incohérent
+ * n'est atteignable dans aucun entrelacement : amountRemaining()/
+ * creditBalance()/paymentStatus() restent toujours recalculés à la
+ * volée depuis l'état réel de la base. Verrouiller l'Invoice dans
+ * generateFromInvoice() ne changerait que LE MOMENT où un
+ * creditBalance() apparaît, jamais son innocuité — et serait de toute
+ * façon sans le moindre effet sur SQLite (compileLock() y renvoie une
+ * chaîne vide, vérifié dans le grammar Laravel), le moteur par défaut
+ * de ce projet. Décision : non traité, sciemment, pour cette raison —
+ * distinct du chantier A (défaut réel : QueryException brute non
+ * gérée), traité de son côté sur CreditNote::generateFromInvoice().
  *
  * ============================================================
  * PRÉCISION DES MONTANTS — cohérent avec l'architecture existante

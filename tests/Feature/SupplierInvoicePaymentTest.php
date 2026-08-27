@@ -293,6 +293,77 @@ class SupplierInvoicePaymentTest extends TestCase
         $this->assertSame(SupplierInvoice::PAYMENT_STATUS_PAID, $invoice->fresh()->paymentStatus());
     }
 
+    /**
+     * Chantier "correctif de concurrence" (chantier C, validé) —
+     * concurrence avec avoir préexistant : facture 1000 €, avoir
+     * fournisseur déjà reçu de 300 € (net = 700 €). Deux paiements
+     * concurrents de 400 € chacun (800 € au total) : 800 ≤ 1000 € (brut)
+     * — les DEUX auraient été acceptés AVANT ce correctif ; 800 € >
+     * 700 € (net) — UN SEUL doit être accepté APRÈS. Symétrique exact
+     * de InvoicePaymentTest::test_deux_paiements_concurrents_avec_un_avoir_preexistant_respectent_le_plafond_net
+     * (D5, côté vente).
+     */
+    public function test_deux_paiements_concurrents_avec_un_avoir_preexistant_respectent_le_plafond_net(): void
+    {
+        [$scratchDir, $dbFile, $invoiceId] = $this->prepareIsolatedDatabaseWithInvoiceAndCreditNote(1000, 300);
+
+        $basePath = base_path();
+        $envOverrides = ['DB_CONNECTION' => 'sqlite', 'DB_DATABASE' => $dbFile] + getenv();
+        $resultsFile = $scratchDir.'/results.txt';
+        $probeFile = $scratchDir.'/probe.php';
+
+        file_put_contents($probeFile, <<<PHP
+            <?php
+            require '{$basePath}/vendor/autoload.php';
+            \$app = require '{$basePath}/bootstrap/app.php';
+            \$app->make(Illuminate\\Contracts\\Console\\Kernel::class)->bootstrap();
+
+            \$invoice = \\App\\Models\\SupplierInvoice::find({$invoiceId});
+            \$result = 'FAILED';
+            try {
+                \\App\\Models\\SupplierInvoicePayment::recordFor(\$invoice, 400, now()->toDateString());
+                \$result = 'ACCEPTED';
+            } catch (\\Throwable \$e) {
+                \$result = 'REJECTED';
+            }
+
+            \$fp = fopen(\$argv[1], 'a');
+            flock(\$fp, LOCK_EX);
+            fwrite(\$fp, \$result."\\n");
+            flock(\$fp, LOCK_UN);
+            fclose(\$fp);
+            PHP);
+
+        $handles = [];
+        $allPipes = [];
+        for ($i = 0; $i < 2; $i++) {
+            $handles[] = proc_open(
+                ['php', $probeFile, $resultsFile],
+                [1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
+                $pipes,
+                null,
+                $envOverrides,
+            );
+            $allPipes[$i] = $pipes;
+        }
+        foreach ($handles as $i => $handle) {
+            stream_get_contents($allPipes[$i][1]);
+            stream_get_contents($allPipes[$i][2]);
+            proc_close($handle);
+        }
+
+        $results = array_values(array_filter(explode("\n", file_get_contents($resultsFile))));
+        $accepted = count(array_filter($results, fn ($r) => $r === 'ACCEPTED'));
+        $rejected = count(array_filter($results, fn ($r) => $r === 'REJECTED'));
+
+        $this->assertSame(1, $accepted, 'Exactement un des deux paiements concurrents doit être accepté (plafond net = 700 €).');
+        $this->assertSame(1, $rejected, "L'autre doit être rejeté (dépassement du solde NET après avoir).");
+
+        $totalPaidInIsolatedDb = $this->sumPaymentsInIsolatedDatabase($dbFile, $invoiceId);
+        $this->assertSame(400.0, $totalPaidInIsolatedDb, 'Un seul paiement de 400 € doit avoir été persisté.');
+        $this->assertLessThanOrEqual(700.0, $totalPaidInIsolatedDb, 'Le total réellement persisté ne doit jamais dépasser le solde net (700 €).');
+    }
+
     /*
      * =================================================================
      * Concurrence / atomicité (exigence 1)
@@ -476,6 +547,52 @@ class SupplierInvoicePaymentTest extends TestCase
         $purchaseOrderId = (int) $pdo->lastInsertId();
         $pdo->exec("INSERT INTO supplier_invoices (supplier_id, purchase_order_id, supplier_invoice_number, invoice_date, total_ht, tax_amount, total_ttc, created_at, updated_at) VALUES ({$supplierId}, {$purchaseOrderId}, 'FF-CONC', date('now'), {$totalTtc}, 0, {$totalTtc}, datetime('now'), datetime('now'))");
         $invoiceId = (int) $pdo->lastInsertId();
+
+        return [$scratchDir, $dbFile, $invoiceId];
+    }
+
+    /**
+     * Chantier "correctif de concurrence" (chantier C, validé) — même
+     * principe que prepareIsolatedDatabaseWithInvoice() ci-dessus, mais
+     * avec un SupplierCreditNote déjà reçu, pour tester le plafond NET
+     * sous concurrence réelle. Symétrique exact de
+     * InvoicePaymentTest::prepareIsolatedDatabaseWithInvoiceAndCreditNote()
+     * (D5, côté vente) — SupplierCreditNote étant au MONTANT GLOBAL
+     * (décision validée du chantier "avoir fournisseur"), aucune ligne
+     * à insérer ici, contrairement à son équivalent CreditNote/InvoiceLine.
+     *
+     * @return array{0: string, 1: string, 2: int}
+     */
+    private function prepareIsolatedDatabaseWithInvoiceAndCreditNote(float $totalTtc, float $creditNoteAmount): array
+    {
+        $scratchDir = sys_get_temp_dir().'/t_c_payment_test_'.uniqid();
+        mkdir($scratchDir);
+        $dbFile = $scratchDir.'/concurrency.sqlite';
+        touch($dbFile);
+
+        $basePath = base_path();
+        $envOverrides = ['DB_CONNECTION' => 'sqlite', 'DB_DATABASE' => $dbFile] + getenv();
+
+        $migrateProcess = proc_open(
+            ['php', 'artisan', 'migrate', '--database=sqlite', '--force'],
+            [1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
+            $migratePipes,
+            $basePath,
+            $envOverrides,
+        );
+        $migrateOutput = stream_get_contents($migratePipes[1]).stream_get_contents($migratePipes[2]);
+        $migrateStatus = proc_close($migrateProcess);
+        $this->assertSame(0, $migrateStatus, 'La migration de la base isolée a échoué : '.$migrateOutput);
+
+        $pdo = new \PDO('sqlite:'.$dbFile);
+        $pdo->exec("INSERT INTO suppliers (name, created_at, updated_at) VALUES ('Fournisseur Concurrence C', datetime('now'), datetime('now'))");
+        $supplierId = (int) $pdo->lastInsertId();
+        $pdo->exec("INSERT INTO purchase_orders (reference, supplier_id, status, order_date, created_at, updated_at) VALUES ('BC-C-CONC', {$supplierId}, 'ordered', date('now'), datetime('now'), datetime('now'))");
+        $purchaseOrderId = (int) $pdo->lastInsertId();
+        $pdo->exec("INSERT INTO supplier_invoices (supplier_id, purchase_order_id, supplier_invoice_number, invoice_date, total_ht, tax_amount, total_ttc, created_at, updated_at) VALUES ({$supplierId}, {$purchaseOrderId}, 'FF-C-CONC', date('now'), {$totalTtc}, 0, {$totalTtc}, datetime('now'), datetime('now'))");
+        $invoiceId = (int) $pdo->lastInsertId();
+
+        $pdo->exec("INSERT INTO supplier_credit_notes (supplier_invoice_id, supplier_credit_note_number, credit_note_date, total_ht, tax_amount, total_ttc, created_at, updated_at) VALUES ({$invoiceId}, 'AV-C-CONC', date('now'), {$creditNoteAmount}, 0, {$creditNoteAmount}, datetime('now'), datetime('now'))");
 
         return [$scratchDir, $dbFile, $invoiceId];
     }

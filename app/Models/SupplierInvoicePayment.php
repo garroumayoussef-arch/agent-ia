@@ -61,6 +61,24 @@ use Illuminate\Support\Facades\DB;
  * qui se propage immédiatement, sans délai, message inchangé.
  *
  * ============================================================
+ * CORRECTIF (chantier C, validé) — plafond NET des avoirs
+ * ============================================================
+ * Le plafond était jusqu'ici total_ttc BRUT — incohérent avec
+ * InvoicePayment::recordFor() (D5, chantier "réconciliation avoirs"
+ * côté vente), qui plafonne au solde NET (total_ttc − avoirs) depuis
+ * l'introduction de CreditNote. Cette incohérence avait subsisté ici
+ * car SupplierCreditNote (T32) n'existait pas encore au moment de T30.
+ * Corrigé : le plafond est désormais total_ttc − SupplierInvoice::creditedAmount()
+ * (solde NET après avoirs fournisseur), symétrique exact de D5. Comme
+ * pour D5, creditedAmount() est lu APRÈS le verrouillage de la
+ * SupplierInvoice (lockForUpdate() ci-dessous), donc dans la même
+ * transaction que la vérification du montant payé — même niveau de
+ * fraîcheur que $totalPaid. Changement de comportement assumé (même
+ * décision que D5) : un paiement aujourd'hui accepté (≤ total_ttc brut)
+ * peut désormais être refusé si un avoir fournisseur existe déjà sur
+ * la facture.
+ *
+ * ============================================================
  * PRÉCISION DES MONTANTS
  * ============================================================
  * Cohérent avec l'architecture existante (PurchaseOrder::applyTaxAllocation(),
@@ -143,7 +161,16 @@ class SupplierInvoicePayment extends Model
 
                     $totalPaid = round((float) static::where('supplier_invoice_id', $lockedInvoice->id)->sum('amount'), 2);
 
-                    if ($totalPaid > round((float) $lockedInvoice->total_ttc, 2)) {
+                    // Chantier C (validé) — plafond NET (total_ttc −
+                    // avoirs), jamais total_ttc brut : cf. documentation
+                    // de tête de classe. $lockedInvoice->creditedAmount()
+                    // est lu ici, une fois la SupplierInvoice verrouillée,
+                    // pour rester au même niveau de fraîcheur que
+                    // $totalPaid ci-dessus (symétrique exact de D5 sur
+                    // InvoicePayment::recordFor()).
+                    $netCeiling = round((float) $lockedInvoice->total_ttc - $lockedInvoice->creditedAmount(), 2);
+
+                    if ($totalPaid > $netCeiling) {
                         // Rejet métier définitif : jamais retenté, message
                         // inchangé (distinct d'une QueryException technique
                         // ci-dessous).
