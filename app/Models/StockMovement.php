@@ -396,6 +396,22 @@ class StockMovement extends Model
             return $stockBefore + $quantity;
         }
 
+        /*
+         * Chantier "retour physique fournisseur" — même sémantique que
+         * 'sale'/'transfer_out' (décrément, refus si insuffisant) : un
+         * retour fournisseur est par définition une expédition physique
+         * vers l'extérieur, jamais un simple ajustement interne.
+         */
+        if ($type === 'return_to_supplier') {
+            if ($stockBefore < $quantity) {
+                throw new \Exception(
+                    'Stock insuffisant pour effectuer ce retour fournisseur.'
+                );
+            }
+
+            return $stockBefore - $quantity;
+        }
+
         if (in_array($type, ['adjustment', 'inventory'], true)) {
             // Ici quantity = nouveau stock total.
             return $quantity;
@@ -712,5 +728,18 @@ class StockMovement extends Model
     public function creditNoteLineReturn(): BelongsTo
     {
         return $this->belongsTo(CreditNoteLineReturn::class);
+    }
+
+    /*
+     * =============================================================
+     * RELATION : RETOUR PHYSIQUE FOURNISSEUR D'ORIGINE (chantier "retour
+     * physique fournisseur", si généré par
+     * PurchaseOrderItemReturn::recordFor() — TOUJOURS, décision 3
+     * validée, contrairement à creditNoteLineReturn ci-dessus)
+     * =============================================================
+     */
+    public function purchaseOrderItemReturn(): BelongsTo
+    {
+        return $this->belongsTo(PurchaseOrderItemReturn::class);
     }
 }

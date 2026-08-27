@@ -5,6 +5,7 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 
 class PurchaseOrderItem extends Model
 {
@@ -203,6 +204,18 @@ class PurchaseOrderItem extends Model
     public function taxRate(): BelongsTo
     {
         return $this->belongsTo(TaxRate::class);
+    }
+
+    /**
+     * Chantier "retour physique fournisseur" — retours physiques
+     * enregistrés contre cette ligne (0, 1, ou plusieurs si retournée en
+     * plusieurs fois). Relation additive en lecture seule : ne crée
+     * aucune nouvelle écriture sur PurchaseOrderItem, son cycle de
+     * réception (quantity_received) reste entièrement inchangé.
+     */
+    public function returns(): HasMany
+    {
+        return $this->hasMany(PurchaseOrderItemReturn::class);
     }
 
     /**
