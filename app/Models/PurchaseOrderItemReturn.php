@@ -171,7 +171,7 @@ class PurchaseOrderItemReturn extends Model
 
         for ($attempt = 1; $attempt <= self::MAX_ATTEMPTS; $attempt++) {
             try {
-                return DB::transaction(function () use ($item, $quantity, $returnedAt, $warehouseId, $reason, $reference, $notes) {
+                $return = DB::transaction(function () use ($item, $quantity, $returnedAt, $warehouseId, $reason, $reference, $notes) {
                     $lockedItem = PurchaseOrderItem::query()
                         ->whereKey($item->id)
                         ->lockForUpdate()
@@ -220,6 +220,30 @@ class PurchaseOrderItemReturn extends Model
 
                     return $return;
                 });
+
+                // Chantier "Notifications & communication" V1
+                // (D1/D5/D8/D12, validés) — atteint UNIQUEMENT sur le
+                // chemin de succès de CETTE tentative. Requêtes FRAÎCHES
+                // via l'appel de méthode de relation (jamais l'accesseur
+                // de propriété $return->purchaseOrderItem) : ne met
+                // jamais en cache une relation sur $return, pour ne
+                // jamais polluer un éventuel ->toArray() ultérieur de
+                // l'appelant (même précaution que CreditNoteLineReturn
+                // ci-dessus).
+                $purchaseOrderItem = $return->purchaseOrderItem()->first();
+                $purchaseOrder = $purchaseOrderItem?->purchaseOrder()->first();
+                $supplierEmail = $purchaseOrder?->supplier_id
+                    ? $purchaseOrder->supplier()->first()?->email
+                    : null;
+
+                $log = NotificationLog::reserve($return, 'supplier_return_issued', 'email', $supplierEmail);
+
+                if ($log !== null && $log->status === NotificationLog::STATUS_QUEUED) {
+                    \Illuminate\Support\Facades\Mail::to($supplierEmail)
+                        ->queue(new \App\Mail\SupplierReturnIssuedMail($return, $log->id));
+                }
+
+                return $return;
             } catch (\Illuminate\Database\QueryException $e) {
                 // Contention transitoire uniquement (ex. "database is
                 // locked" sous forte concurrence SQLite) — jamais un

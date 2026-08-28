@@ -38,6 +38,14 @@ class AdminPanelProvider extends PanelProvider
             // Rail latéral réductible sur desktop : logo complet ouvert,
             // symbole M seul en mode réduit (voir le hook ci-dessous).
             ->sidebarCollapsibleOnDesktop()
+            // Chantier "Notifications & communication" V1 (D3, validé) —
+            // cloche de notifications internes (canal `database` natif
+            // Laravel, table déjà migrée) : alimente les digests de
+            // stock bas admin/manager (cf. SendLowStockAlerts). Aucune
+            // interaction avec HasRoleBasedAuthorization/
+            // BlocksChauffeurReadAccess/ScopesToOwnWarehouses — purement
+            // une fonctionnalité d'affichage.
+            ->databaseNotifications()
             ->renderHook(
                 PanelsRenderHook::SIDEBAR_LOGO_AFTER,
                 fn (): View => view('filament.branding.collapsed-sidebar-logo'),

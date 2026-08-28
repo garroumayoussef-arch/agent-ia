@@ -115,7 +115,7 @@ class Invoice extends Model
         $companySettings = CompanySettings::current();
         $companySettings->assertReadyForInvoicing();
 
-        return DB::transaction(function () use ($order, $customer, $isBusiness, $companySettings) {
+        $invoice = DB::transaction(function () use ($order, $customer, $isBusiness, $companySettings) {
             $number = InvoiceSequence::nextNumber(
                 (int) now()->format('Y'),
                 $companySettings->invoice_number_prefix ?: 'FA',
@@ -209,6 +209,38 @@ class Invoice extends Model
 
             return $invoice;
         });
+
+        // Chantier "Notifications & communication" V1 (D1/D5/D8/D12,
+        // validés) — dispatché ICI, jamais à l'intérieur de la fermeture
+        // ci-dessus : DB::transaction() a déjà retourné, donc déjà
+        // committée, à ce point d'exécution (défense en profondeur
+        // supplémentaire : InvoiceIssuedMail implémente aussi
+        // ShouldQueueAfterCommit). NotificationLog::reserve() ne peut
+        // jamais faire échouer generateFromSalesOrder() elle-même : un
+        // événement déjà notifié retourne null, jamais une exception.
+        static::dispatchInvoiceIssuedNotification($invoice, $customer);
+
+        return $invoice;
+    }
+
+    /**
+     * Chantier "Notifications & communication" V1 (D1/D2/D4, validés) —
+     * réutilisée par generateFromSalesOrder() ci-dessus ET
+     * generateFromVtcRide() ci-dessous : un seul point d'émission de cet
+     * événement, jamais deux définitions susceptibles de diverger.
+     * $customer est déjà chargé (jamais une seconde requête) — email
+     * lu depuis la relation CURRENTE (jamais un snapshot, contrairement
+     * aux champs légaux de la facture elle-même) : la notification doit
+     * atteindre l'adresse à jour du client, pas une adresse historique.
+     */
+    private static function dispatchInvoiceIssuedNotification(self $invoice, Customer $customer): void
+    {
+        $log = NotificationLog::reserve($invoice, 'invoice_issued', 'email', $customer->email);
+
+        if ($log !== null && $log->status === NotificationLog::STATUS_QUEUED) {
+            \Illuminate\Support\Facades\Mail::to($customer->email)
+                ->queue(new \App\Mail\InvoiceIssuedMail($invoice, $log->id));
+        }
     }
 
     /**
@@ -279,7 +311,7 @@ class Invoice extends Model
         $companySettings->assertReadyForInvoicing();
 
         try {
-            return DB::transaction(function () use ($ride, $customer, $isBusiness, $companySettings) {
+            $invoice = DB::transaction(function () use ($ride, $customer, $isBusiness, $companySettings) {
                 // Niveau 2 (D5, validé) — revérification IDENTIQUE au
                 // pré-contrôle ci-dessus, relue fraîchement À L'INTÉRIEUR
                 // de la transaction, avant toute écriture : ferme la
@@ -403,6 +435,16 @@ class Invoice extends Model
 
             throw $e;
         }
+
+        // Chantier "Notifications & communication" V1 (D1/D5/D8/D12,
+        // validés) — même point d'émission unique que
+        // generateFromSalesOrder() (cf. dispatchInvoiceIssuedNotification()
+        // ci-dessus), atteint UNIQUEMENT sur le chemin de succès (jamais
+        // depuis le catch()) : une facture VTC rejetée (doublon, SIREN...)
+        // ne déclenche jamais de notification.
+        static::dispatchInvoiceIssuedNotification($invoice, $customer);
+
+        return $invoice;
     }
 
     /**

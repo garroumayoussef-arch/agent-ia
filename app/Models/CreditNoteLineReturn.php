@@ -152,7 +152,7 @@ class CreditNoteLineReturn extends Model
 
         for ($attempt = 1; $attempt <= self::MAX_ATTEMPTS; $attempt++) {
             try {
-                return DB::transaction(function () use ($line, $quantity, $condition, $returnedAt, $reference, $notes) {
+                $return = DB::transaction(function () use ($line, $quantity, $condition, $returnedAt, $reference, $notes) {
                     $lockedLine = CreditNoteLine::query()
                         ->whereKey($line->id)
                         ->lockForUpdate()
@@ -200,6 +200,31 @@ class CreditNoteLineReturn extends Model
 
                     return $return;
                 });
+
+                // Chantier "Notifications & communication" V1
+                // (D1/D5/D8/D12, validés) — atteint UNIQUEMENT sur le
+                // chemin de succès de CETTE tentative. Requêtes FRAÎCHES
+                // via l'appel de méthode de relation (jamais l'accesseur
+                // de propriété $return->creditNoteLine) : ne met jamais
+                // en cache une relation sur $return, pour ne jamais
+                // polluer un éventuel ->toArray() ultérieur de l'appelant
+                // (même précaution que Invoice::generateFromInvoice()
+                // ci-dessus, découverte empiriquement pendant ce
+                // chantier).
+                $creditNoteLine = $return->creditNoteLine()->first();
+                $creditNote = $creditNoteLine?->creditNote()->first();
+                $customerEmail = $creditNote?->customer_id
+                    ? $creditNote->customer()->first()?->email
+                    : null;
+
+                $log = NotificationLog::reserve($return, 'customer_return_issued', 'email', $customerEmail);
+
+                if ($log !== null && $log->status === NotificationLog::STATUS_QUEUED) {
+                    \Illuminate\Support\Facades\Mail::to($customerEmail)
+                        ->queue(new \App\Mail\CustomerReturnIssuedMail($return, $log->id));
+                }
+
+                return $return;
             } catch (\Illuminate\Database\QueryException $e) {
                 // Contention transitoire uniquement (ex. "database is
                 // locked" sous forte concurrence SQLite) — jamais un

@@ -229,7 +229,7 @@ class CreditNote extends Model
 
         for ($attempt = 1; $attempt <= self::MAX_ATTEMPTS; $attempt++) {
             try {
-                return DB::transaction(function () use ($invoice, $invoiceLineIds, $allLines, $reason, $settlementType, $scope) {
+                $creditNote = DB::transaction(function () use ($invoice, $invoiceLineIds, $allLines, $reason, $settlementType, $scope) {
                     // Niveau 3 (chantier A, validé) — revérification
                     // IDENTIQUE au niveau 2, mais relue fraîchement À
                     // L'INTÉRIEUR de la transaction, avant toute
@@ -333,6 +333,36 @@ class CreditNote extends Model
 
                     return $creditNote;
                 });
+
+                // Chantier "Notifications & communication" V1
+                // (D1/D5/D8/D12, validés) — atteint UNIQUEMENT sur le
+                // chemin de succès de CETTE tentative (jamais depuis un
+                // catch() ci-dessous) : dispatché après que
+                // DB::transaction() a déjà retourné, donc déjà committée.
+                // customer_id peut être null (facture B2C sans compte
+                // client) : NotificationLog::reserve() gère nativement
+                // une adresse nulle (statut 'failed', aucun envoi).
+                //
+                // Customer::query()->find(...) — requête FRAÎCHE, jamais
+                // l'accesseur de relation $creditNote->customer : ce
+                // dernier mettrait la relation en cache sur l'instance
+                // retournée par cette méthode, ce qui polluerait tout
+                // ->toArray() ultérieur sur ce même $creditNote (un champ
+                // "customer" apparaîtrait alors dans le tableau, cassant
+                // tout code qui réutilise ->toArray() pour construire un
+                // nouvel enregistrement — même précaution déjà appliquée
+                // ailleurs dans ce projet, ex. VtcRide::markAsConfirmed()).
+                $customerEmail = $creditNote->customer_id
+                    ? Customer::query()->find($creditNote->customer_id)?->email
+                    : null;
+                $log = NotificationLog::reserve($creditNote, 'credit_note_issued', 'email', $customerEmail);
+
+                if ($log !== null && $log->status === NotificationLog::STATUS_QUEUED) {
+                    \Illuminate\Support\Facades\Mail::to($customerEmail)
+                        ->queue(new \App\Mail\CreditNoteIssuedMail($creditNote, $log->id));
+                }
+
+                return $creditNote;
             } catch (\Illuminate\Database\DeadlockException $e) {
                 // Découvert empiriquement lors de la mise au point de ce
                 // correctif (démonstration à processus réels) : CETTE
