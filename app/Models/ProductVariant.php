@@ -128,4 +128,19 @@ class ProductVariant extends Model
             'product_variant_id'
         );
     }
+
+    /**
+     * Valeurs d'attributs génériques de niveau variante (Tier 1, étape
+     * 6/6) — table `product_variant_attribute_values` créée à l'étape
+     * 5/6. Purement additif : Sport continue de fonctionner
+     * exclusivement via ses colonnes dédiées (size, color, version),
+     * inchangées.
+     */
+    public function attributeValues(): HasMany
+    {
+        return $this->hasMany(
+            ProductVariantAttributeValue::class,
+            'product_variant_id'
+        );
+    }
 }

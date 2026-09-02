@@ -256,4 +256,16 @@ class Product extends Model
     {
         return $this->hasMany(SalesOrderItem::class);
     }
+
+    /**
+     * Valeurs d'attributs génériques de niveau produit (Tier 1, étape
+     * 6/6) — table `product_attribute_values` créée à l'étape 4/6.
+     * Purement additif : Sport continue de fonctionner exclusivement
+     * via ses colonnes dédiées (club_id, competition_id, equipe,
+     * taille, season, version), inchangées.
+     */
+    public function attributeValues(): HasMany
+    {
+        return $this->hasMany(ProductAttributeValue::class);
+    }
 }
