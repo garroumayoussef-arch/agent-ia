@@ -1,0 +1,17 @@
+{
+  "_comment": "Modele de manifeste d'etape. Copier vers checkpoints/steps/<id>.json et adapter. Le champ 'locked' ne doit JAMAIS etre passe a false par un agent : ce basculement appartient exclusivement a l'operateur humain (voir checkpoints/README.md, section autorisation).",
+  "step": "<id, ex: 2.6.2>",
+  "substep": null,
+  "tier": null,
+  "description": "<resume court de ce que fait cette etape>",
+  "depends_on": "<id de l'etape precedente ou null>",
+  "locked": true,
+  "unlocked_by": null,
+  "unlocked_at": null,
+  "allowed_paths": [
+    "chemin/relatif/exact/fichier.php",
+    "dossier/avec/wildcard/*.php"
+  ],
+  "test_command": "php artisan test --filter=NomDuFiltre",
+  "requires_db_backup": false
+}

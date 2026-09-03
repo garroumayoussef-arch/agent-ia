@@ -1,0 +1,9 @@
+{
+  "status": "idle",
+  "pending_step": null,
+  "last_committed_step": null,
+  "last_commit_sha": null,
+  "authorized_by": null,
+  "authorized_at": null,
+  "last_validation_log": null
+}

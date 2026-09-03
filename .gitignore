@@ -32,3 +32,7 @@ bootstrap/compiled.php
 Homestead.json
 Homestead.yaml
 Thumbs.db
+
+# Systeme de checkpoint : ne jamais versionner les sauvegardes DB (donnees reelles).
+# Le registre checkpoints/backups/manifest.json (metadonnees seules) reste suivi.
+/checkpoints/backups/*.sqlite*

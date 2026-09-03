@@ -1,0 +1,15 @@
+{
+  "step": "checkpoint-selftest",
+  "substep": null,
+  "tier": 0,
+  "description": "Manifeste factice reserve exclusivement aux tests automatiques du systeme de checkpoint lui-meme (checkpoints/tests/Run-SystemTests.ps1). Ne correspond a aucune etape reelle du projet et n'est jamais utilise pour valider du code metier.",
+  "depends_on": null,
+  "locked": false,
+  "unlocked_by": "system-selftest",
+  "unlocked_at": null,
+  "allowed_paths": [
+    "SELFTEST_DUMMY_FILE.txt"
+  ],
+  "test_command": null,
+  "requires_db_backup": false
+}

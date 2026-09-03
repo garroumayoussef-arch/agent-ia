@@ -1,0 +1,88 @@
+name: checkpoint-validate
+
+# Backstop CI du systeme de checkpoint : rejoue, pour chaque commit pousse
+# dont le message suit le format "checkpoint(step-<id>): ...", le controle
+# d'allowlist et les tests declares dans le manifeste de cette etape tel
+# qu'il existait AU MOMENT de ce commit. Contrairement aux hooks locaux
+# (checkpoints/hooks/), ce job ne peut pas etre contourne par
+# 'git commit --no-verify' : il s'execute cote depot, hors de portee de
+# l'agent qui a produit les commits.
+#
+# Les commits "WIP: ..." (travail en cours, hors checkpoint) sont ignores
+# par ce job - ils ne pretendent pas etre un checkpoint valide.
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: ["**"]
+
+jobs:
+  validate-checkpoints:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.4"
+          extensions: pdo_sqlite, sqlite3
+
+      - name: Install Composer dependencies
+        run: composer install --no-interaction --prefer-dist
+
+      - name: Rejouer la validation checkpoint sur les commits pousses
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          . ./checkpoints/lib/Common.ps1
+          . ./checkpoints/lib/Validate.ps1
+
+          $base = $env:GITHUB_EVENT_BEFORE
+          if (-not $base -or $base -match '^0+$') {
+            $base = (git rev-list --max-parents=0 HEAD | Select-Object -Last 1)
+          }
+          $head = $env:GITHUB_SHA
+
+          $shas = @(git rev-list "$base..$head" --reverse)
+          $failures = @()
+
+          foreach ($sha in $shas) {
+            $message = (git log -1 --format=%B $sha).Trim()
+            $firstLine = ($message -split "`n")[0]
+            if ($firstLine -notmatch '^checkpoint\(step-(?<step>[^)]+)\):\s+.+') { continue }
+            $step = $Matches['step']
+            Write-Host "== Verification du commit $sha (etape $step) =="
+
+            $manifestRaw = git show "${sha}:checkpoints/steps/$step.json" 2>$null
+            if (-not $manifestRaw) {
+              $failures += "commit $sha : manifeste checkpoints/steps/$step.json introuvable a cet etat du depot"
+              continue
+            }
+            $manifest = $manifestRaw | ConvertFrom-Json
+
+            $changed = @(git diff-tree --no-commit-id --name-only -r $sha)
+            $disallowed = @($changed | Where-Object { -not (Test-PathAllowed -Path $_ -AllowedPatterns @($manifest.allowed_paths)) })
+            if ($disallowed.Count -gt 0) {
+              $failures += "commit $sha (etape $step) : fichiers hors allowlist -> $($disallowed -join ', ')"
+              continue
+            }
+
+            git checkout --quiet $sha
+            if ($manifest.test_command) {
+              Invoke-Expression $manifest.test_command
+              if ($LASTEXITCODE -ne 0) {
+                $failures += "commit $sha (etape $step) : test_command en echec ($($manifest.test_command))"
+              }
+            }
+          }
+
+          if ($failures.Count -gt 0) {
+            Write-Host "::error::Validation checkpoint en echec :"
+            $failures | ForEach-Object { Write-Host "::error::$_" }
+            exit 1
+          }
+          Write-Host "Tous les commits checkpoint(step-...) de cette plage sont conformes."

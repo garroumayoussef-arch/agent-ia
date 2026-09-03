@@ -1,0 +1,333 @@
+# Systeme de checkpoint - tests du systeme lui-meme.
+#
+# Ce script NE TOUCHE JAMAIS au depot reel ni a database/database.sqlite :
+# - les scenarios Git/allowlist/hooks s'executent dans un depot Git jetable
+#   cree sous $env:TEMP (copie de checkpoints/lib, checkpoints/hooks,
+#   checkpoint.ps1 et du manifeste checkpoint-selftest.json) ;
+# - le scenario DB backup/verify/restore utilise la vraie commande Artisan
+#   'checkpoint:db' du depot reel, mais exclusivement avec --file/--target
+#   pointant vers des fichiers SQLite jetables sous $env:TEMP.
+#
+# Limite assumee et documentee : 'authorize' exige une session interactive
+# reelle par construction (voir checkpoints/lib/Authorize.ps1). Ce script
+# teste donc separement (a) qu'un appel non-interactif est bien rejete, et
+# (b) que 'commit' se comporte correctement une fois un etat
+# 'ready_to_commit' atteint - cet etat etant, pour ce test uniquement,
+# positionne directement via Set-CheckpointState pour simuler exactement
+# ce qu'une autorisation humaine reussie aurait produit. Un run automatise
+# ne peut pas, par definition, simuler une interaction humaine reelle.
+
+# 'Continue' (et non 'Stop') est deliberement choisi ici : plusieurs
+# scenarios ci-dessous invoquent des commandes natives (git, powershell.exe)
+# dont l'ECHEC EST LE COMPORTEMENT ATTENDU (allowlist violee, hook qui
+# rejette, etc.). Sous PowerShell 5.1, une sortie sur le flux d'erreur d'un
+# processus natif combinee a 'Stop' est promue en exception terminante
+# meme avec une simple redirection vers $null - ce qui interromprait le
+# harnais de test sur un echec pourtant normal. Les conditions reellement
+# fatales (echec de mise en place du sandbox) sont verifiees explicitement
+# via $LASTEXITCODE puis un 'throw' manuel.
+$ErrorActionPreference = 'Continue'
+
+$RepoRoot = (& git rev-parse --show-toplevel).Trim() -replace '/', '\'
+$CheckpointsSrc = Join-Path $RepoRoot 'checkpoints'
+
+$Results = New-Object System.Collections.Generic.List[object]
+
+function Add-Result {
+    param([string]$Name, [bool]$Passed, [string]$Detail = '')
+    $Results.Add([pscustomobject]@{ Name = $Name; Passed = $Passed; Detail = $Detail })
+    $status = 'FAIL'
+    $color = 'Red'
+    if ($Passed) { $status = 'PASS'; $color = 'Green' }
+    Write-Host "[$status] $Name" -ForegroundColor $color
+    if ($Detail) { Write-Host "       $Detail" }
+}
+
+# ==================================================================
+# Sandbox Git jetable
+# ==================================================================
+$sandbox = Join-Path $env:TEMP ("checkpoint-selftest-" + [guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path $sandbox -Force | Out-Null
+Write-Host "Sandbox Git jetable: $sandbox"
+Write-Host ""
+
+Push-Location $sandbox
+try {
+    & git init --quiet .
+    & git config user.email "selftest@local"
+    & git config user.name "Checkpoint Selftest"
+    & git config commit.gpgsign false
+
+    New-Item -ItemType Directory -Path (Join-Path $sandbox 'checkpoints\steps') -Force | Out-Null
+    New-Item -ItemType Directory -Path (Join-Path $sandbox 'checkpoints\log') -Force | Out-Null
+    New-Item -ItemType Directory -Path (Join-Path $sandbox 'checkpoints\backups') -Force | Out-Null
+    Copy-Item -Recurse -Path (Join-Path $CheckpointsSrc 'lib') -Destination (Join-Path $sandbox 'checkpoints\lib')
+    Copy-Item -Recurse -Path (Join-Path $CheckpointsSrc 'hooks') -Destination (Join-Path $sandbox 'checkpoints\hooks')
+    Copy-Item -Path (Join-Path $CheckpointsSrc 'checkpoint.ps1') -Destination (Join-Path $sandbox 'checkpoints\checkpoint.ps1')
+    Copy-Item -Path (Join-Path $CheckpointsSrc 'steps\checkpoint-selftest.json') -Destination (Join-Path $sandbox 'checkpoints\steps\checkpoint-selftest.json')
+
+    '{"backups": []}' | Set-Content -LiteralPath (Join-Path $sandbox 'checkpoints\backups\manifest.json') -Encoding UTF8
+    '{"status":"idle","pending_step":null,"last_committed_step":null,"last_commit_sha":null,"authorized_by":null,"authorized_at":null,"last_validation_log":null}' |
+        Set-Content -LiteralPath (Join-Path $sandbox 'checkpoints\state.json') -Encoding UTF8
+
+    "hello" | Set-Content -LiteralPath (Join-Path $sandbox 'SELFTEST_DUMMY_FILE.txt') -Encoding UTF8
+    & git add -A
+    & git commit --quiet -m "WIP: init sandbox"
+    if ($LASTEXITCODE -ne 0) { throw "Echec du commit initial du sandbox." }
+
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $sandbox 'checkpoints\hooks\install-hooks.ps1') | Out-Null
+
+    $ckpt = Join-Path $sandbox 'checkpoints\checkpoint.ps1'
+    $manifestPath = Join-Path $sandbox 'checkpoints\steps\checkpoint-selftest.json'
+    $statePath = Join-Path $sandbox 'checkpoints\state.json'
+    $dummyFile = Join-Path $sandbox 'SELFTEST_DUMMY_FILE.txt'
+
+    . (Join-Path $sandbox 'checkpoints\lib\Common.ps1')
+    . (Join-Path $sandbox 'checkpoints\lib\State.ps1')
+
+    function Reset-SandboxState {
+        '{"status":"idle","pending_step":null,"last_committed_step":null,"last_commit_sha":null,"authorized_by":null,"authorized_at":null,"last_validation_log":null}' |
+            Set-Content -LiteralPath $statePath -Encoding UTF8
+        Push-Location $sandbox
+        try {
+            & git checkout --quiet -- . 2>$null
+            & git clean -fdq -- . 2>$null
+        } finally { Pop-Location }
+    }
+
+    function Set-ManifestTestCommand {
+        param($Value)
+        $m = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+        $m.test_command = $Value
+        ($m | ConvertTo-Json -Depth 10) | Set-Content -LiteralPath $manifestPath -Encoding UTF8
+        Push-Location $sandbox
+        try { & git add -- checkpoints/steps/checkpoint-selftest.json; & git commit --quiet -m "WIP: adjust selftest manifest" } finally { Pop-Location }
+    }
+
+    # ==============================================================
+    # Scenario 1 : violation d'allowlist -> validate doit echouer
+    # ==============================================================
+    Reset-SandboxState
+    "modif autorisee" | Set-Content -LiteralPath $dummyFile
+    "contenu interdit" | Set-Content -LiteralPath (Join-Path $sandbox 'NOT_ALLOWED.txt')
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $ckpt validate -Step checkpoint-selftest *> $null
+    $stateAfter = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json
+    Add-Result -Name "1. Violation d'allowlist detectee (validate echoue)" -Passed ($stateAfter.status -eq 'validation_failed') -Detail "state.status=$($stateAfter.status)"
+    Remove-Item -LiteralPath (Join-Path $sandbox 'NOT_ALLOWED.txt') -ErrorAction SilentlyContinue
+
+    # ==============================================================
+    # Scenario 2 : test_command en echec -> validate doit echouer
+    # ==============================================================
+    Reset-SandboxState
+    Set-ManifestTestCommand -Value 'powershell -NoProfile -Command "exit 1"'
+    "modif autorisee 2" | Set-Content -LiteralPath $dummyFile
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $ckpt validate -Step checkpoint-selftest *> $null
+    $stateAfter = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json
+    Add-Result -Name "2. Test d'etape en echec bloque validate" -Passed ($stateAfter.status -eq 'validation_failed') -Detail "state.status=$($stateAfter.status)"
+
+    # ==============================================================
+    # Scenario 3 : validate reussit quand tout est conforme
+    # ==============================================================
+    Reset-SandboxState
+    Set-ManifestTestCommand -Value 'powershell -NoProfile -Command "exit 0"'
+    "modif autorisee 3" | Set-Content -LiteralPath $dummyFile
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $ckpt validate -Step checkpoint-selftest *> $null
+    $stateAfter = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json
+    Add-Result -Name "3. Validate reussit quand allowlist+diff+tests sont conformes" -Passed ($stateAfter.status -eq 'validated' -and $stateAfter.pending_step -eq 'checkpoint-selftest') -Detail "state.status=$($stateAfter.status)"
+
+    # ==============================================================
+    # Scenario 4 : commit refuse sans authorize prealable
+    # ==============================================================
+    $commitOutput = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $ckpt commit -Step checkpoint-selftest
+    $commitExit = $LASTEXITCODE
+    $stateAfter = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json
+    Add-Result -Name "4. Commit refuse tant que authorize n'a pas ete execute" -Passed ($commitExit -ne 0 -and $stateAfter.status -ne 'committed') -Detail "exit=$commitExit state.status=$($stateAfter.status)"
+
+    # ==============================================================
+    # Scenario 5 : authorize refuse un appel non-interactif
+    # ==============================================================
+    $authOutput = "" | & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $ckpt authorize -Step checkpoint-selftest
+    $authExit = $LASTEXITCODE
+    $stateAfter = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json
+    Add-Result -Name "5. Authorize rejette un appel non-interactif (entree redirigee)" -Passed ($authExit -ne 0 -and $stateAfter.status -ne 'ready_to_commit') -Detail "exit=$authExit state.status=$($stateAfter.status)"
+
+    # ==============================================================
+    # Scenario 6 : commit reussit une fois un etat ready_to_commit atteint
+    # (etat positionne directement pour simuler une autorisation humaine
+    # reussie - voir note en tete de fichier)
+    # ==============================================================
+    $state = Get-CheckpointState
+    $state.status = 'ready_to_commit'
+    $state.pending_step = 'checkpoint-selftest'
+    $state.authorized_by = 'selftest-harness (simule)'
+    $state.authorized_at = (New-Timestamp)
+    Set-CheckpointState -State $state
+
+    $commitResult = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $ckpt commit -Step checkpoint-selftest
+    $commitExit = $LASTEXITCODE
+    $stateAfter = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json
+    Push-Location $sandbox
+    try {
+        $tagExists = @(& git tag -l 'checkpoint/checkpoint-selftest')
+        $lastMsg = (& git log -1 --pretty=%B).Trim()
+    } finally { Pop-Location }
+    $passed6 = ($commitExit -eq 0) -and ($stateAfter.status -eq 'committed') -and ($tagExists.Count -gt 0) -and ($lastMsg -match '^checkpoint\(step-checkpoint-selftest\):')
+    Add-Result -Name "6. Commit reussit apres autorisation valide (tag + message standardises)" -Passed $passed6 -Detail "exit=$commitExit state.status=$($stateAfter.status) tag=$($tagExists -join ',') message=$lastMsg"
+
+    # ==============================================================
+    # Scenario 7 : --no-verify contourne pre-commit/commit-msg MAIS
+    # post-commit journalise quand meme le contournement
+    # ==============================================================
+    "modif hors procedure" | Set-Content -LiteralPath $dummyFile
+    Push-Location $sandbox
+    try {
+        & git add -- SELFTEST_DUMMY_FILE.txt
+        & git commit --no-verify --quiet -m "message non conforme sans --no-verify"
+        $noVerifyExit = $LASTEXITCODE
+        $noVerifySha = (& git rev-parse HEAD).Trim()
+    } finally { Pop-Location }
+    $auditFile = Join-Path $sandbox 'checkpoints\log\bypass-audit.jsonl'
+    $auditContainsSha = $false
+    if (Test-Path -LiteralPath $auditFile) {
+        $auditContainsSha = (Select-String -LiteralPath $auditFile -Pattern $noVerifySha -Quiet)
+    }
+    Add-Result -Name "7. --no-verify reussit mais post-commit journalise le contournement" -Passed ($noVerifyExit -eq 0 -and $auditContainsSha) -Detail "commit_exit=$noVerifyExit sha=$noVerifySha audit_trouve=$auditContainsSha"
+
+    # ==============================================================
+    # Scenario 8 : sans --no-verify, un message non conforme est rejete
+    # ==============================================================
+    "modif hors procedure 2" | Set-Content -LiteralPath $dummyFile
+    Push-Location $sandbox
+    try {
+        & git add -- SELFTEST_DUMMY_FILE.txt
+        & git commit --quiet -m "message non conforme avec hooks actifs" 2>$null
+        $rejectedExit = $LASTEXITCODE
+    } finally { Pop-Location }
+    Add-Result -Name "8. Sans --no-verify, un message non conforme est rejete par commit-msg" -Passed ($rejectedExit -ne 0) -Detail "exit=$rejectedExit"
+    Push-Location $sandbox
+    try { & git reset --quiet HEAD -- SELFTEST_DUMMY_FILE.txt; & git checkout --quiet -- SELFTEST_DUMMY_FILE.txt } finally { Pop-Location }
+
+    # ==============================================================
+    # Scenario 9 : historique complet sur les logs produits (etape 3 et 6)
+    # ==============================================================
+    $logDir = Join-Path $sandbox 'checkpoints\log'
+    $validateLogs = @(Get-ChildItem -LiteralPath $logDir -Filter 'checkpoint-selftest-*.json' | Sort-Object LastWriteTime)
+    $requiredValidateFields = @('step', 'substep', 'timestamp', 'files_changed', 'checks', 'verdict')
+    $requiredCommitFields = @('step', 'substep', 'commit', 'tag', 'files', 'db_backup', 'timestamp', 'status')
+    $validateOk = $false
+    $commitOk = $false
+    foreach ($f in $validateLogs) {
+        $obj = Get-Content -LiteralPath $f.FullName -Raw | ConvertFrom-Json
+        $props = @($obj.PSObject.Properties.Name)
+        if ($obj.verdict -and (@($requiredValidateFields | Where-Object { $props -notcontains $_ })).Count -eq 0) { $validateOk = $true }
+        if ($obj.status -eq 'committed' -and (@($requiredCommitFields | Where-Object { $props -notcontains $_ })).Count -eq 0) { $commitOk = $true }
+    }
+    Add-Result -Name "9. Historique log contient tous les champs requis (etape/sous-etape/commit/tests/resultat/fichiers/backup/date/statut)" -Passed ($validateOk -and $commitOk) -Detail "validate_log_ok=$validateOk commit_log_ok=$commitOk (fichiers: $($validateLogs.Count))"
+
+    # ==============================================================
+    # Scenario 10 : format officiel "<type>(checkpoint): ..." accepte
+    # quand tous les fichiers stages appartiennent au systeme
+    # ==============================================================
+    $m = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+    $m.unlocked_at = "scenario-10-marker"
+    ($m | ConvertTo-Json -Depth 10) | Set-Content -LiteralPath $manifestPath -Encoding UTF8
+    Push-Location $sandbox
+    try {
+        & git add -- checkpoints/steps/checkpoint-selftest.json
+        & git commit --quiet -m "feat(checkpoint): update selftest manifest marker"
+        $officialExit = $LASTEXITCODE
+    } finally { Pop-Location }
+    Add-Result -Name "10. Format officiel <type>(checkpoint): accepte pour des fichiers du systeme" -Passed ($officialExit -eq 0) -Detail "exit=$officialExit"
+
+    # ==============================================================
+    # Scenario 11 : format officiel refuse si un fichier hors systeme
+    # est stage en meme temps (protection anti-detournement du format)
+    # ==============================================================
+    "modif hors perimetre" | Set-Content -LiteralPath $dummyFile
+    $m2 = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+    $m2.unlocked_at = "scenario-11-marker"
+    ($m2 | ConvertTo-Json -Depth 10) | Set-Content -LiteralPath $manifestPath -Encoding UTF8
+    Push-Location $sandbox
+    try {
+        & git add -- checkpoints/steps/checkpoint-selftest.json SELFTEST_DUMMY_FILE.txt
+        & git commit --quiet -m "feat(checkpoint): should be rejected due to out-of-scope file" 2>$null
+        $mixedExit = $LASTEXITCODE
+    } finally { Pop-Location }
+    Add-Result -Name "11. Format officiel refuse si un fichier hors systeme est mele au commit" -Passed ($mixedExit -ne 0) -Detail "exit=$mixedExit"
+    Push-Location $sandbox
+    try { & git reset --quiet HEAD -- SELFTEST_DUMMY_FILE.txt; & git checkout --quiet -- SELFTEST_DUMMY_FILE.txt } finally { Pop-Location }
+
+} finally {
+    Pop-Location
+}
+
+# ==================================================================
+# Scenario 12 : cycle DB reel backup -> verify -> corruption -> verify -> restore -> verify
+# Utilise la vraie commande 'php artisan checkpoint:db' du depot REEL,
+# exclusivement avec --file/--target pointant vers des fichiers jetables.
+# ==================================================================
+$dbSandbox = Join-Path $env:TEMP ("checkpoint-dbtest-" + [guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path $dbSandbox -Force | Out-Null
+$sourceDb = Join-Path $dbSandbox 'source.sqlite'
+$backupDb = Join-Path $dbSandbox 'backup.sqlite'
+$corruptDb = Join-Path $dbSandbox 'backup-corrupt.sqlite'
+$initPhp = Join-Path $dbSandbox 'init-db.php'
+
+@"
+<?php
+`$pdo = new PDO('sqlite:' . `$argv[1]);
+`$pdo->exec('CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT)');
+`$pdo->exec("INSERT INTO t (v) VALUES ('a'), ('b'), ('c')");
+"@ | Set-Content -LiteralPath $initPhp -Encoding UTF8
+
+& php $initPhp $sourceDb
+
+Push-Location $RepoRoot
+try {
+    $backupOut = & php artisan checkpoint:db backup --file=$sourceDb --target=$backupDb
+    $backupExit = $LASTEXITCODE
+
+    $verify1Out = & php artisan checkpoint:db verify --file=$backupDb
+    $verify1Exit = $LASTEXITCODE
+
+    Copy-Item -LiteralPath $backupDb -Destination $corruptDb -Force
+    $bytes = [System.IO.File]::ReadAllBytes($corruptDb)
+    $truncated = $bytes[0..([Math]::Min(50, $bytes.Length - 1))]
+    [System.IO.File]::WriteAllBytes($corruptDb, $truncated)
+
+    $verify2Out = & php artisan checkpoint:db verify --file=$corruptDb
+    $verify2Exit = $LASTEXITCODE
+
+    $restoreOut = & php artisan checkpoint:db restore --file=$backupDb --target=$sourceDb
+    $restoreExit = $LASTEXITCODE
+
+    $verify3Out = & php artisan checkpoint:db verify --file=$sourceDb
+    $verify3Exit = $LASTEXITCODE
+} finally {
+    Pop-Location
+}
+
+$passed10 = ($backupExit -eq 0) -and ($verify1Exit -eq 0) -and ($verify2Exit -ne 0) -and ($restoreExit -eq 0) -and ($verify3Exit -eq 0)
+Add-Result -Name "12. Cycle DB complet: backup -> verify(ok) -> corruption -> verify(echec detecte) -> restore -> verify(ok)" -Passed $passed10 -Detail "backup=$backupExit verify_bon=$verify1Exit verify_corrompu=$verify2Exit restore=$restoreExit verify_final=$verify3Exit"
+
+Remove-Item -LiteralPath $dbSandbox -Recurse -Force -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath $sandbox -Recurse -Force -ErrorAction SilentlyContinue
+
+# ==================================================================
+# Resume
+# ==================================================================
+Write-Host ""
+Write-Host "==================== RESUME ====================" -ForegroundColor Cyan
+$total = $Results.Count
+$passedCount = @($Results | Where-Object { $_.Passed }).Count
+foreach ($r in $Results) {
+    $status = 'FAIL'
+    if ($r.Passed) { $status = 'PASS' }
+    Write-Host ("{0,-6} {1}" -f $status, $r.Name)
+}
+Write-Host ""
+Write-Host "$passedCount / $total scenarios reussis"
+if ($passedCount -ne $total) {
+    exit 1
+}
+exit 0
