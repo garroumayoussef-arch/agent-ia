@@ -1,62 +1,130 @@
-<<<<<<< HEAD
-<p align="center"><a href="https://laravel.com" target="_blank"><img src="https://raw.githubusercontent.com/laravel/art/master/logo-lockup/5%20SVG/2%20CMYK/1%20Full%20Color/laravel-logolockup-cmyk-red.svg" width="400" alt="Laravel Logo"></a></p>
+# Magarrou ERP
 
-<p align="center">
-<a href="https://github.com/laravel/framework/actions"><img src="https://github.com/laravel/framework/workflows/tests/badge.svg" alt="Build Status"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/dt/laravel/framework" alt="Total Downloads"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/v/laravel/framework" alt="Latest Stable Version"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/l/laravel/framework" alt="License"></a>
-</p>
+ERP interne du groupe Magarrou : une fondation technique commune (« Core
+ERP ») partagée par plusieurs activités indépendantes du groupe, complétée
+par une couche transversale d'intelligence artificielle (« Magarrou AI »)
+appliquée à l'ensemble du système.
 
-## About Laravel
+## Architecture
 
-Laravel is a web application framework with expressive, elegant syntax. We believe development must be an enjoyable and creative experience to be truly fulfilling. Laravel takes the pain out of development by easing common tasks used in many web projects, such as:
+### Core ERP — fondation transversale et neutre
 
-- [Simple, fast routing engine](https://laravel.com/docs/routing).
-- [Powerful dependency injection container](https://laravel.com/docs/container).
-- Multiple back-ends for [session](https://laravel.com/docs/session) and [cache](https://laravel.com/docs/cache) storage.
-- Expressive, intuitive [database ORM](https://laravel.com/docs/eloquent).
-- Database agnostic [schema migrations](https://laravel.com/docs/migrations).
-- [Robust background job processing](https://laravel.com/docs/queues).
-- [Real-time event broadcasting](https://laravel.com/docs/broadcasting).
+Le Core ERP n'appartient à aucune activité en particulier : il fournit les
+briques génériques utilisées par toutes les activités du groupe —
+catalogue produits (avec un système d'attributs génériques), stock
+multi-entrepôts, achats, ventes, facturation, reporting, notifications,
+rôles et permissions.
 
-Laravel is accessible, powerful, and provides tools required for large, robust applications.
+### Les 5 activités du groupe
 
-## Learning Laravel
+Toutes les activités s'appuient sur le même Core ERP et sont au même
+niveau hiérarchique — **aucune d'entre elles ne constitue le cœur ou le
+centre de l'ERP** :
 
-Laravel has the most extensive and thorough [documentation](https://laravel.com/docs) and video tutorial library of all modern web application frameworks, making it a breeze to get started with the framework.
+- **Magarrou Sport**
+- **Magarrou VTC**
+- **Magarrou Bébé**
+- **Magarrou Moto**
+- **Magarrou Artisanats du Maroc**
 
-In addition, [Laracasts](https://laracasts.com) contains thousands of video tutorials on a range of topics including Laravel, modern PHP, unit testing, and JavaScript. Boost your skills by digging into our comprehensive video library.
+### Magarrou AI — couche transversale
 
-You can also watch bite-sized lessons with real-world projects on [Laravel Learn](https://laravel.com/learn), where you will be guided through building a Laravel application from scratch while learning PHP fundamentals.
+Magarrou AI n'est pas une activité du groupe : c'est une couche transversale
+d'assistance et d'automatisation destinée à s'appliquer à l'ensemble du
+système et de ses activités, au même titre que le Core ERP.
 
-## Agentic Development
+## Stack technique
 
-Laravel's predictable structure and conventions make it ideal for AI coding agents like Claude Code, Cursor, and GitHub Copilot. Install [Laravel Boost](https://laravel.com/docs/ai) to supercharge your AI workflow:
+- **Backend** : Laravel 13, PHP 8.4+
+- **Interface d'administration** : Filament 5
+- **Frontend applicatif** : Inertia.js + React 18, Tailwind CSS
+- **Authentification & autorisations** : Laravel Sanctum, rôles/permissions
+  via `spatie/laravel-permission`
+- **Documents PDF** : `barryvdh/laravel-dompdf` (factures, avoirs, bons de
+  retour, reçus VTC)
+- **Base de données** : SQLite en développement (par défaut, voir
+  `DB_CONNECTION` dans `.env`) ; MySQL/PostgreSQL supportés en production
+- **Tests** : PHPUnit, exécutés via `php artisan test`
+
+## Ce qui est effectivement implémenté aujourd'hui dans ce dépôt
+
+Le Core ERP générique est le plus avancé et sert de socle commun :
+
+- **Catalogue produits** — produits, variantes, marques, catégories, et un
+  système d'attributs génériques en cours de généralisation (voir
+  « État du projet » ci-dessous). Le modèle générique inclut des attributs
+  orientés vêtement (saison, taille, équipe, couleur) utilisés notamment
+  par l'activité Sport, mais reste un module du Core ERP, pas un module
+  Sport dédié.
+- **Stock** — mouvements, gestion multi-entrepôts, alertes de stock bas,
+  permissions d'accès par entrepôt.
+- **Achats** — commandes fournisseurs, retours physiques, avoirs
+  fournisseurs, rapprochement des paiements.
+- **Ventes** — commandes clients, factures, avoirs, suivi des paiements.
+- **Reporting** — tableaux de bord commercial/financier, achats et stock.
+- **Notifications & communication** (V1).
+- **Rôles & permissions** — restriction d'accès par rôle (ex. chauffeur)
+  sur les ressources sensibles du back-office.
+
+Une seule activité dispose à ce jour de modules métier qui lui sont
+propres, en plus du Core ERP :
+
+- **Magarrou VTC** — courses, chauffeurs, véhicules, facturation légale
+  des courses, workflow d'annulation.
+
+Les activités **Magarrou Bébé**, **Magarrou Moto** et **Magarrou
+Artisanats du Maroc** ne disposent pas encore, dans ce dépôt, de modules
+métier qui leur soient spécifiques : elles s'appuient pour l'instant sur
+les modules génériques du Core ERP décrits ci-dessus.
+
+**Magarrou AI** ne dispose pas encore, dans ce dépôt, d'implémentation
+métier dédiée identifiable ; sa place dans l'architecture est décrite ici
+à titre de couche transversale prévue, distincte des 5 activités.
+
+## État du projet (Core ERP)
+
+Le développement du système d'attributs génériques du Core ERP avance par
+paliers (« Tier ») documentés dans l'historique Git :
+
+- **Tier 1** — fondations du système d'attributs génériques produits :
+  terminé.
+- **Tier 2** — migration progressive du catalogue vers ces attributs
+  génériques (écriture miroir, peuplement rétroactif, vérification
+  croisée) : en cours.
+
+Un système de checkpoint indépendant de tout agent de développement
+encadre la validation et le commit des étapes sensibles — voir
+[`checkpoints/README.md`](checkpoints/README.md).
+
+## Installation locale
 
 ```bash
-composer require laravel/boost --dev
-
-php artisan boost:install
+composer install
+cp .env.example .env
+php artisan key:generate
+touch database/database.sqlite
+php artisan migrate
+npm install
+npm run build
 ```
 
-Boost provides your agent 15+ tools and skills that help agents build Laravel applications while following best practices.
+## Développement
 
-## Contributing
+```bash
+composer dev
+```
 
-Thank you for considering contributing to the Laravel framework! The contribution guide can be found in the [Laravel documentation](https://laravel.com/docs/contributions).
+Lance en parallèle le serveur Artisan, le worker de queue, les logs
+(`pail`) et Vite.
 
-## Code of Conduct
+## Tests
 
-In order to ensure that the Laravel community is welcoming to all, please review and abide by the [Code of Conduct](https://laravel.com/docs/contributions#code-of-conduct).
+```bash
+composer test
+# equivalent a :
+php artisan test
+```
 
-## Security Vulnerabilities
+## Licence
 
-If you discover a security vulnerability within Laravel, please send an e-mail to Taylor Otwell via [taylor@laravel.com](mailto:taylor@laravel.com). All security vulnerabilities will be promptly addressed.
-
-## License
-
-The Laravel framework is open-sourced software licensed under the [MIT license](https://opensource.org/licenses/MIT).
-=======
-# agent-ia
->>>>>>> 1678bc6cc04faca8f3b5983d8f9ab9280d566c49
+Projet privé — usage interne Magarrou Group.
