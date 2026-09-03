@@ -257,6 +257,110 @@ try {
     Push-Location $sandbox
     try { & git reset --quiet HEAD -- SELFTEST_DUMMY_FILE.txt; & git checkout --quiet -- SELFTEST_DUMMY_FILE.txt } finally { Pop-Location }
 
+    # ==============================================================
+    # Scenario 13 : baseline_dirty_paths exclut un fichier deja sale
+    # AVANT le debut de l'etape, y compris a travers plusieurs 'validate'
+    # successifs (accumulation de checkpoints/log/*), sans qu'aucun
+    # chemin auto-gere (state.json/log/*) n'ait besoin d'y etre liste
+    # ==============================================================
+    Reset-SandboxState
+    "bruit preexistant" | Set-Content -LiteralPath (Join-Path $sandbox 'PREEXISTING_NOISE.txt')
+    $m13 = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+    $m13 | Add-Member -NotePropertyName baseline_dirty_paths -NotePropertyValue @('PREEXISTING_NOISE.txt') -Force
+    ($m13 | ConvertTo-Json -Depth 10) | Set-Content -LiteralPath $manifestPath -Encoding UTF8
+    Push-Location $sandbox
+    try { & git add -- checkpoints/steps/checkpoint-selftest.json; & git commit --quiet -m "WIP: add baseline_dirty_paths to selftest manifest" } finally { Pop-Location }
+    "modif autorisee 13" | Set-Content -LiteralPath $dummyFile
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $ckpt validate -Step checkpoint-selftest *> $null
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $ckpt validate -Step checkpoint-selftest *> $null
+    $stateAfter = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json
+    $passed13 = ($stateAfter.status -eq 'validated') -and (Test-Path -LiteralPath (Join-Path $sandbox 'PREEXISTING_NOISE.txt'))
+    Add-Result -Name "13. baseline_dirty_paths exclut un fichier preexistant meme apres plusieurs validate successifs (state.json/log/* auto-geres)" -Passed $passed13 -Detail "state.status=$($stateAfter.status)"
+    Remove-Item -LiteralPath (Join-Path $sandbox 'PREEXISTING_NOISE.txt') -ErrorAction SilentlyContinue
+
+    # ==============================================================
+    # Scenario 14 : un nouveau fichier non declare (ni allowed_paths, ni
+    # baseline_dirty_paths) apparu PENDANT l'etape reste detecte - la
+    # correction ne doit jamais elargir le filtrage au-dela des chemins
+    # auto-geres et du manifeste propre a l'etape
+    # ==============================================================
+    Reset-SandboxState
+    "modif autorisee 14" | Set-Content -LiteralPath $dummyFile
+    "fichier metier non declare" | Set-Content -LiteralPath (Join-Path $sandbox 'UNDECLARED_BUSINESS_FILE.txt')
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $ckpt validate -Step checkpoint-selftest *> $null
+    $stateAfter = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json
+    $lastLog14 = Get-ChildItem -LiteralPath (Join-Path $sandbox 'checkpoints\log') -Filter 'checkpoint-selftest-*.json' | Sort-Object LastWriteTime | Select-Object -Last 1
+    $logObj14 = Get-Content -LiteralPath $lastLog14.FullName -Raw | ConvertFrom-Json
+    $flagged14 = @($logObj14.checks.allowlist.disallowed) -contains 'UNDECLARED_BUSINESS_FILE.txt'
+    Add-Result -Name "14. Un nouveau fichier non declare pendant l'etape reste detecte (non masque par la correction)" -Passed ($stateAfter.status -eq 'validation_failed' -and $flagged14) -Detail "state.status=$($stateAfter.status) flagged=$flagged14"
+    Remove-Item -LiteralPath (Join-Path $sandbox 'UNDECLARED_BUSINESS_FILE.txt') -ErrorAction SilentlyContinue
+
+    # ==============================================================
+    # Scenario 15 : un fichier du systeme de checkpoint modifie APRES le
+    # debut de l'etape (ex. lib/Validate.ps1 lui-meme), qui n'est PAS dans
+    # Get-CheckpointSelfManagedPathPatterns, reste detecte - la correction
+    # ne doit jamais s'etendre a checkpoints/* en bloc
+    # ==============================================================
+    Reset-SandboxState
+    "modif autorisee 15" | Set-Content -LiteralPath $dummyFile
+    Add-Content -LiteralPath (Join-Path $sandbox 'checkpoints\lib\Validate.ps1') -Value "`n# modif de test scenario 15"
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $ckpt validate -Step checkpoint-selftest *> $null
+    $stateAfter = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json
+    $lastLog15 = Get-ChildItem -LiteralPath (Join-Path $sandbox 'checkpoints\log') -Filter 'checkpoint-selftest-*.json' | Sort-Object LastWriteTime | Select-Object -Last 1
+    $logObj15 = Get-Content -LiteralPath $lastLog15.FullName -Raw | ConvertFrom-Json
+    $flagged15 = @($logObj15.checks.allowlist.disallowed) -contains 'checkpoints/lib/Validate.ps1'
+    Add-Result -Name "15. Un fichier checkpoint modifie pendant l'etape (hors chemins auto-geres) reste detecte" -Passed ($stateAfter.status -eq 'validation_failed' -and $flagged15) -Detail "state.status=$($stateAfter.status) flagged=$flagged15"
+    Push-Location $sandbox
+    try { & git checkout --quiet -- checkpoints/lib/Validate.ps1 } finally { Pop-Location }
+
+    # ==============================================================
+    # Scenario 16 : le manifeste d'une AUTRE etape ne peut pas masquer une
+    # modification faite pendant l'etape courante - l'exclusion du
+    # "manifeste propre" est limitee au chemin exact de l'etape validee.
+    # Verifie au passage le fonctionnement avec deux etapes successives.
+    # ==============================================================
+    Reset-SandboxState
+    $manifest2Path = Join-Path $sandbox 'checkpoints\steps\checkpoint-selftest-2.json'
+    $manifest2 = [ordered]@{
+        step                = 'checkpoint-selftest-2'
+        substep             = $null
+        tier                = 0
+        description         = 'Second manifeste factice pour le scenario 16 (deux etapes successives).'
+        depends_on          = 'checkpoint-selftest'
+        locked              = $false
+        unlocked_by         = 'system-selftest'
+        unlocked_at         = $null
+        allowed_paths       = @('SELFTEST_DUMMY_FILE_2.txt')
+        test_command        = 'powershell -NoProfile -Command "exit 0"'
+        requires_db_backup  = $false
+    }
+    ($manifest2 | ConvertTo-Json -Depth 10) | Set-Content -LiteralPath $manifest2Path -Encoding UTF8
+    "contenu initial" | Set-Content -LiteralPath (Join-Path $sandbox 'SELFTEST_DUMMY_FILE_2.txt')
+    Push-Location $sandbox
+    try {
+        & git add -- checkpoints/steps/checkpoint-selftest-2.json SELFTEST_DUMMY_FILE_2.txt
+        & git commit --quiet -m "WIP: add second selftest manifest for scenario 16"
+    } finally { Pop-Location }
+
+    # Modifie le manifeste de l'ETAPE A (checkpoint-selftest) pendant que
+    # l'on valide l'ETAPE B (checkpoint-selftest-2) - ne doit jamais etre
+    # exclu par l'exclusion "manifeste propre" de B.
+    $mA = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+    $mA.unlocked_at = "scenario-16-cross-step-marker"
+    ($mA | ConvertTo-Json -Depth 10) | Set-Content -LiteralPath $manifestPath -Encoding UTF8
+
+    "modif autorisee etape B" | Set-Content -LiteralPath (Join-Path $sandbox 'SELFTEST_DUMMY_FILE_2.txt')
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $ckpt validate -Step checkpoint-selftest-2 *> $null
+    $stateAfter = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json
+    $lastLog16 = Get-ChildItem -LiteralPath (Join-Path $sandbox 'checkpoints\log') -Filter 'checkpoint-selftest-2-*.json' | Sort-Object LastWriteTime | Select-Object -Last 1
+    $logObj16 = Get-Content -LiteralPath $lastLog16.FullName -Raw | ConvertFrom-Json
+    $flagged16 = @($logObj16.checks.allowlist.disallowed) -contains 'checkpoints/steps/checkpoint-selftest.json'
+    Add-Result -Name "16. Le manifeste d'une autre etape (A) reste detecte pendant la validation de l'etape courante (B) - deux etapes successives" -Passed ($stateAfter.status -eq 'validation_failed' -and $flagged16) -Detail "state.status=$($stateAfter.status) flagged=$flagged16"
+    Push-Location $sandbox
+    try { & git checkout --quiet -- checkpoints/steps/checkpoint-selftest.json } finally { Pop-Location }
+    Remove-Item -LiteralPath $manifest2Path -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath (Join-Path $sandbox 'SELFTEST_DUMMY_FILE_2.txt') -ErrorAction SilentlyContinue
+
 } finally {
     Pop-Location
 }
@@ -308,7 +412,7 @@ try {
 }
 
 $passed10 = ($backupExit -eq 0) -and ($verify1Exit -eq 0) -and ($verify2Exit -ne 0) -and ($restoreExit -eq 0) -and ($verify3Exit -eq 0)
-Add-Result -Name "12. Cycle DB complet: backup -> verify(ok) -> corruption -> verify(echec detecte) -> restore -> verify(ok)" -Passed $passed10 -Detail "backup=$backupExit verify_bon=$verify1Exit verify_corrompu=$verify2Exit restore=$restoreExit verify_final=$verify3Exit"
+Add-Result -Name "17. Cycle DB complet: backup -> verify(ok) -> corruption -> verify(echec detecte) -> restore -> verify(ok)" -Passed $passed10 -Detail "backup=$backupExit verify_bon=$verify1Exit verify_corrompu=$verify2Exit restore=$restoreExit verify_final=$verify3Exit"
 
 Remove-Item -LiteralPath $dbSandbox -Recurse -Force -ErrorAction SilentlyContinue
 Remove-Item -LiteralPath $sandbox -Recurse -Force -ErrorAction SilentlyContinue

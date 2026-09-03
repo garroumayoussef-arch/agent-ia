@@ -61,3 +61,27 @@ function Get-CheckpointSystemPathPatterns {
         '.gitignore'
     )
 }
+
+function Get-CheckpointSelfManagedPathPatterns {
+    # Chemins ecrits EXCLUSIVEMENT par le systeme de checkpoint lui-meme
+    # (State.ps1::Set-CheckpointState -> checkpoints/state.json,
+    # State.ps1::Write-CheckpointLog -> checkpoints/log/*,
+    # checkpoint.ps1 'db backup' -> checkpoints/backups/manifest.json) -
+    # jamais par un agent ni par un operateur humain. Etre "sale" y est un
+    # effet de bord mecanique et inevitable de l'execution de
+    # validate/commit/db, pas un changement metier ou systeme a auditer.
+    # Utilise par Validate.ps1 pour exclure ces chemins de l'allowlist,
+    # de maniere fixe et generique, INDEPENDAMMENT de tout manifeste
+    # d'etape (jamais a declarer dans baseline_dirty_paths). Sous-ensemble
+    # volontairement etroit de Get-CheckpointSystemPathPatterns ci-dessus :
+    # tout le reste de checkpoints/ (lib/*.ps1, hooks/*.ps1, README.md,
+    # steps/_template.json, ...) reste soumis au controle normal - une
+    # modification de ces fichiers pendant une etape doit rester visible.
+    # A tenir a jour manuellement si un nouveau fichier auto-ecrit par
+    # l'outil est ajoute ailleurs dans checkpoints/.
+    return @(
+        'checkpoints/state.json',
+        'checkpoints/log/*',
+        'checkpoints/backups/manifest.json'
+    )
+}

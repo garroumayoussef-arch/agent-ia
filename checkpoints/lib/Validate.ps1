@@ -53,9 +53,54 @@ function Invoke-CheckpointValidate {
     $allPass = $true
 
     # 1. Allowlist (fichiers modifies/non commites vs allowed_paths du manifeste)
+    #
+    # Trois sources d'exclusion, de nature differente :
+    #
+    # - `baseline_dirty_paths` (optionnel, dans le manifeste) : chemins deja
+    #   modifies/non suivis AVANT le debut du travail de cette etape (autre
+    #   travail non commite, sans rapport). Champ STATIQUE, ecrit une fois
+    #   par l'operateur humain, jamais recalcule automatiquement ici : un
+    #   recalcul dynamique absorberait silencieusement n'importe quel
+    #   nouveau fichier non autorise des le premier validate, annulant la
+    #   protection. Jamais ajoute par 'commit' (qui ne git-add que
+    #   allowed_paths - voir Commit.ps1).
+    #
+    # - Chemins auto-geres du systeme de checkpoint
+    #   (Get-CheckpointSelfManagedPathPatterns dans Common.ps1) : ecrits
+    #   EXCLUSIVEMENT par l'outil lui-meme (state.json, log/*,
+    #   backups/manifest.json), jamais par un agent ou un operateur. Etre
+    #   "sale" y est un effet de bord mecanique et inevitable de
+    #   l'execution de validate/commit, pas un changement a auditer -
+    #   liste fixe et generique, INDEPENDANTE du manifeste et de l'etape,
+    #   donc jamais a declarer dans baseline_dirty_paths.
+    #
+    # - Le manifeste de L'ETAPE COURANTE (checkpoints/steps/<Step>.json,
+    #   chemin exact derive de $Step) : configuration operateur, jamais un
+    #   livrable de code de l'etape. Le manifeste d'une AUTRE etape n'est
+    #   volontairement PAS couvert par cette exclusion : le modifier
+    #   pendant la validation de l'etape courante doit rester detecte.
     $changed = @(Get-ChangedPaths -RepoRoot $repoRoot)
     $allowedPatterns = @($manifest.allowed_paths)
-    $disallowed = @($changed | Where-Object { -not (Test-PathAllowed -Path $_ -AllowedPatterns $allowedPatterns) })
+    $baselinePatterns = @($manifest.baseline_dirty_paths)
+    $selfManagedPatterns = @(Get-CheckpointSelfManagedPathPatterns)
+    $ownManifestPatterns = @(("checkpoints/steps/{0}.json" -f $Step))
+
+    # Garde-fou : un meme chemin litteral ne doit jamais etre reclame a la
+    # fois comme sortie de cette etape (allowed_paths) et comme bruit
+    # preexistant/auto-gere/manifeste propre - configuration ambigue du
+    # manifeste, a corriger manuellement plutot qu'a interpreter.
+    $exclusionPatterns = @($baselinePatterns) + @($selfManagedPatterns) + @($ownManifestPatterns)
+    $overlap = @($allowedPatterns | Where-Object { $exclusionPatterns -contains $_ })
+    if ($overlap.Count -gt 0) {
+        throw "Le manifeste de l'etape '$Step' liste le(s) meme(s) chemin(s) dans allowed_paths ET dans une source d'exclusion (baseline_dirty_paths, ou un chemin auto-gere/manifeste propre a l'etape) ($($overlap -join ', ')) - configuration ambigue a corriger manuellement avant validation."
+    }
+
+    $disallowed = @($changed | Where-Object {
+        (-not (Test-PathAllowed -Path $_ -AllowedPatterns $allowedPatterns)) -and
+        (-not (Test-PathAllowed -Path $_ -AllowedPatterns $baselinePatterns)) -and
+        (-not (Test-PathAllowed -Path $_ -AllowedPatterns $selfManagedPatterns)) -and
+        (-not (Test-PathAllowed -Path $_ -AllowedPatterns $ownManifestPatterns))
+    })
     if ($disallowed.Count -eq 0) {
         $checks.allowlist = @{ status = 'pass' }
     } else {
