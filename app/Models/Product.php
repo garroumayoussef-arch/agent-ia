@@ -62,9 +62,49 @@ class Product extends Model
              */
             $product->equipe ??= $product->club()->value('name') ?? 'N/A';
 
+            /*
+             * Tier 2, étape 2.6.1 — la dérivation depuis une variante ne
+             * s'applique que si `attribute_definitions` déclare "taille"
+             * comme un attribut de niveau produit APPLICABLE à l'activité
+             * de CE produit (transverse `activity=null`, ou scopé à cette
+             * activité précise) : aucune activité n'est nommée en dur
+             * ici, contrairement au comportement d'origine qui dérivait
+             * inconditionnellement `taille` pour n'importe quelle
+             * activité. Sans définition applicable, `products.taille`
+             * (colonne NOT NULL, migration d'origine) reçoit directement
+             * 'N/A' — même repli qu'avant, sans consulter les variantes
+             * d'un produit pour lequel ce concept n'a aucun sens.
+             */
             if (empty($product->taille)) {
-                $product->taille = $product->variants()->value('size') ?? 'N/A';
+                $product->taille = static::productAttributeDefinitionApplies($product, 'taille')
+                    ? ($product->variants()->value('size') ?? 'N/A')
+                    : 'N/A';
             }
+        });
+
+        /*
+         * Tier 2 (préparation), étape 2.2 — dual-write (miroir) vers le
+         * système d'attributs génériques créé au Tier 1. Les colonnes
+         * dédiées `season`, `taille`, `equipe` restent l'UNIQUE source
+         * de vérité (jamais lues depuis la table miroir, jamais
+         * écrasées ici) : on se contente de recopier leur valeur telle
+         * quelle dans `product_attribute_values` à chaque sauvegarde,
+         * afin que l'étape 2.3 (backfill du catalogue existant) puis
+         * 2.4 (vérification croisée) aient une base à jour pour les
+         * produits créés/modifiés entre-temps.
+         *
+         * `version` est volontairement ABSENTE de cette liste : audit
+         * dédié (résolution du conflit "version") ayant établi que
+         * `products.version` n'est exposée dans aucun formulaire
+         * Filament, lue par aucun code applicatif, et peuplée
+         * uniquement par ProductFactory à des fins de test — la migrer
+         * n'aurait aucune valeur et perpétuerait l'ambiguïté avec
+         * `product_variants.version` (seule réellement utilisée).
+         */
+        static::saved(function (self $product): void {
+            static::syncAttributeMirror($product, 'season', $product->season);
+            static::syncAttributeMirror($product, 'taille', $product->taille);
+            static::syncAttributeMirror($product, 'equipe', $product->equipe);
         });
 
         /*
@@ -164,6 +204,89 @@ class Product extends Model
 
         // Aucune relation n'a jamais été définie : valeur legacy conservée.
         $product->{$field} ??= 'N/A';
+    }
+
+    /**
+     * Tier 2, étape 2.6.1 — vérifie si un attribut de niveau produit
+     * (`code`) est APPLICABLE à l'activité de ce produit, d'après
+     * `attribute_definitions` (Tier 1). Ne code en dur aucun nom
+     * d'activité : une définition `activity=null` s'applique à toute
+     * activité (transverse), une définition `activity='<x>'` ne
+     * s'applique qu'aux produits de cette activité précise. Si aucune
+     * définition `level='product'` portant ce `code` n'existe encore
+     * (ex. seed non exécuté dans cet environnement), l'attribut est
+     * considéré non applicable — même garantie best-effort que
+     * `syncAttributeMirror()` ci-dessous, dont ce contrôle reprend
+     * exactement le même principe de portée par activité.
+     */
+    private static function productAttributeDefinitionApplies(self $product, string $code): bool
+    {
+        $definition = AttributeDefinition::where('code', $code)
+            ->where('level', 'product')
+            ->first();
+
+        if (! $definition) {
+            return false;
+        }
+
+        if ($definition->activity === null) {
+            return true;
+        }
+
+        return $definition->activity === $product->activity;
+    }
+
+    /**
+     * Tier 2 (préparation), étape 2.2 — recopie la valeur BRUTE d'une
+     * colonne dédiée dans `product_attribute_values`, sans aucune
+     * transformation. Ignore silencieusement (aucune exception) si :
+     * - la valeur est NULL (rien à recopier) ;
+     * - la définition d'attribut correspondant à ce `code` n'existe pas
+     *   encore (ex. seed de l'étape 2.1 non exécuté dans cet
+     *   environnement) ;
+     * - la définition est scopée à une autre activité que celle de ce
+     *   produit.
+     * Dans tous ces cas, la sauvegarde du produit continue normalement :
+     * ce miroir est un effet secondaire best-effort, jamais une
+     * condition bloquante pour l'écriture des colonnes existantes.
+     */
+    private static function syncAttributeMirror(self $product, string $code, ?string $value): void
+    {
+        if ($value === null) {
+            return;
+        }
+
+        $definition = AttributeDefinition::where('code', $code)->first();
+
+        if (! $definition) {
+            return;
+        }
+
+        /*
+         * `products.activity` n'est jamais NULL en base (colonne NOT
+         * NULL, défaut SQL posé au Tier 1, étape 1/6) : aucune activité
+         * — Sport, Bébé, Moto, VTC, Artisanat — n'a de statut par
+         * défaut privilégié dans ce code, ce défaut SQL est une donnée
+         * de schéma, pas une préférence applicative. Si l'attribut est
+         * NULL ici, c'est uniquement qu'Eloquent n'a pas encore
+         * resynchronisé l'objet en mémoire avec la ligne insérée (le
+         * défaut SQL n'est jamais rejoué côté PHP après un create()).
+         * On relit alors la valeur RÉELLEMENT persistée pour CE produit
+         * précis — jamais une valeur supposée ou codée en dur.
+         */
+        $productActivity = $product->activity ?? self::whereKey($product->id)->value('activity');
+
+        if ($definition->activity !== null && $definition->activity !== $productActivity) {
+            return;
+        }
+
+        ProductAttributeValue::updateOrCreate(
+            [
+                'product_id' => $product->id,
+                'attribute_definition_id' => $definition->id,
+            ],
+            ['value' => $value]
+        );
     }
 
     /**
@@ -267,5 +390,22 @@ class Product extends Model
     public function attributeValues(): HasMany
     {
         return $this->hasMany(ProductAttributeValue::class);
+    }
+
+    /**
+     * Tier 2 (préparation), étape 2.4 — lecture PARALLÈLE depuis le
+     * système d'attributs génériques, pour un `code` donné (ex.
+     * 'season'). N'est jamais lue par aucun autre code de
+     * l'application : sert uniquement à comparer, dans les tests, la
+     * valeur miroir à la colonne dédiée correspondante — aucune
+     * bascule, aucun remplacement. Retourne `null` si aucune ligne
+     * miroir n'existe pour ce produit et ce `code` (attribut jamais
+     * écrit, ou définition inexistante).
+     */
+    public function attributeMirrorValue(string $code): ?string
+    {
+        return $this->attributeValues()
+            ->whereHas('attributeDefinition', fn ($query) => $query->where('code', $code))
+            ->value('value');
     }
 }
