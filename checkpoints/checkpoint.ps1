@@ -10,7 +10,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Position = 0, Mandatory = $true)]
-    [ValidateSet('status', 'validate', 'authorize', 'commit', 'rollback', 'db')]
+    [ValidateSet('status', 'validate', 'authorize', 'unlock', 'commit', 'rollback', 'db')]
     [string]$Command,
 
     [Parameter(Position = 1)]
@@ -31,6 +31,7 @@ $ScriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 . (Join-Path $ScriptRoot 'lib\State.ps1')
 . (Join-Path $ScriptRoot 'lib\Validate.ps1')
 . (Join-Path $ScriptRoot 'lib\Authorize.ps1')
+. (Join-Path $ScriptRoot 'lib\Unlock.ps1')
 . (Join-Path $ScriptRoot 'lib\Commit.ps1')
 . (Join-Path $ScriptRoot 'lib\Rollback.ps1')
 
@@ -51,6 +52,11 @@ switch ($Command) {
     'authorize' {
         if (-not $Step) { throw "authorize requiert -Step <id>" }
         Invoke-CheckpointAuthorize -Step $Step | Out-Null
+    }
+
+    'unlock' {
+        if (-not $Step) { throw "unlock requiert -Step <id>" }
+        Invoke-CheckpointUnlock -Step $Step | Out-Null
     }
 
     'commit' {
