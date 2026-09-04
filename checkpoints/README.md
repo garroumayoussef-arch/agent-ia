@@ -118,8 +118,40 @@ suivante = numero + 1 » calculee automatiquement dans le code.
 Voir `checkpoints/steps/_template.json` pour le modele complet. Champs :
 `step`, `substep`, `tier`, `description`, `depends_on`, `locked`,
 `unlocked_by`, `unlocked_at`, `allowed_paths` (patterns `-like`
-PowerShell : `*`/`?` simples, pas de glob `**`), `test_command`,
-`requires_db_backup`.
+PowerShell : `*`/`?` simples, pas de glob `**`), `baseline_dirty_paths`
+(voir ci-dessous), `test_command`, `requires_db_backup`.
+
+### `baseline_dirty_paths` - isoler une etape des travaux preexistants
+
+Le controle d'allowlist de `validate` compare `allowed_paths` a **tous**
+les fichiers actuellement modifies/non suivis (`git status`), sans notion
+de "depuis quand". Si un autre travail non commite (une etape precedente,
+non liee) traine deja dans le repertoire de travail, `validate` le
+signalerait a tort comme une violation de l'etape en cours.
+
+`baseline_dirty_paths` (optionnel, tableau de chemins **exacts**, pas de
+wildcard large) liste les fichiers deja sales **avant** que le travail de
+cette etape ne commence. Un fichier y figurant est exclu du controle de
+fichiers interdits, exactement comme `allowed_paths`, mais avec une
+difference cruciale : `commit` ne `git add` jamais que `allowed_paths` -
+un chemin de `baseline_dirty_paths` ne peut donc jamais se retrouver dans
+le commit de l'etape, meme excuse par `validate`.
+
+Ce champ est **statique** : ecrit une fois par l'operateur humain dans le
+manifeste, jamais recalcule automatiquement par `validate`. Un recalcul
+dynamique ("tout ce qui est sale maintenant et hors `allowed_paths`
+devient baseline") annulerait la protection - un agent pourrait alors
+faire passer n'importe quel fichier non autorise en le laissant simplement
+trainer avant le premier `validate`.
+
+Garde-fou : `validate` refuse (avec une erreur explicite) si un meme
+chemin litteral apparait a la fois dans `allowed_paths` et
+`baseline_dirty_paths` - un chemin ne peut pas etre a la fois "produit par
+cette etape" et "bruit preexistant sans rapport".
+
+Limite assumee : un fichier de `baseline_dirty_paths` encore davantage
+modifie pendant le travail de l'etape reste excuse (aucune verification de
+contenu/hash) - un raffinement possible mais non implemente ici.
 
 ## Format de l'etat (`checkpoints/state.json`)
 

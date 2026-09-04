@@ -12,6 +12,8 @@
     "chemin/relatif/exact/fichier.php",
     "dossier/avec/wildcard/*.php"
   ],
+  "_comment_baseline_dirty_paths": "Optionnel. Chemins DEJA modifies/non suivis AVANT le debut de cette etape (autre travail non commite, sans rapport). Exclus du controle de fichiers interdits par 'validate', mais jamais ajoutes par 'commit' (qui ne git-add que allowed_paths). A lister avec des chemins EXACTS, pas de wildcard large, pour ne jamais absorber par erreur un vrai nouveau fichier de cette etape. Ne doit partager aucun chemin avec allowed_paths (validate refuse sinon).",
+  "baseline_dirty_paths": [],
   "test_command": "php artisan test --filter=NomDuFiltre",
   "requires_db_backup": false
 }
