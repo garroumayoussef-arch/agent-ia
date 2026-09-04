@@ -1,9 +1,9 @@
 {
-  "status": "idle",
-  "pending_step": null,
-  "last_committed_step": null,
-  "last_commit_sha": null,
-  "authorized_by": null,
-  "authorized_at": null,
-  "last_validation_log": null
+    "status":  "committed",
+    "pending_step":  null,
+    "last_committed_step":  "2.6.1",
+    "last_commit_sha":  "fec90868ff24bbe27512e229208bd959f1428e86",
+    "authorized_by":  "pc",
+    "authorized_at":  "2026-09-04T03:12:28+02:00",
+    "last_validation_log":  "2.6.1-20260904-025107.json"
 }
