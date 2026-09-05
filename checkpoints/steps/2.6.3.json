@@ -1,0 +1,16 @@
+{
+    "_comment":  "Etape 2.6.3 - audit exhaustif et preparation securisee du retrait des anciennes colonnes d\u0027attributs specifiques (products.season/taille/equipe/version, product_variants.size/color/version), APRES validation du systeme generique d\u0027attributs au Tier 2 (2.6.2). Etape strictement non destructive : aucune suppression de colonne, aucune migration, aucune modification du comportement metier existant, aucune nouvelle logique metier. Le seul livrable est un rapport ecrit (inventaire des references, fichiers concernes, risques, preconditions de suppression future, mecanisme de sauvegarde/restauration, decoupage propose des sous-etapes suivantes) permettant de preparer 2.6.4+ de maniere sure et independante de l\u0027agent utilise. products.version est traite separement et n\u0027est PAS candidat a une suppression automatique dans cette etape ni implicitement dans les suivantes. club_id et competition_id restent des relations Eloquent, jamais traites comme des attributs generiques. Aucune activite (Sport, VTC, Bebe, Moto, Artisanats du Maroc) n\u0027est privilegiee ou supposee par defaut. Aucun test_command : cette etape ne modifie aucun fichier app/**, database/** ou tests/** (voir allowed_paths), donc aucune suite PHPUnit ne peut verifier son unique livrable (un rapport Markdown) ; \u0027validate\u0027 marquera ce controle \u0027skipped\u0027, ce qui reflete honnetement la nature de l\u0027etape plutot que de faire executer une suite sans rapport avec ce qui est commis.",
+    "step":  "2.6.3",
+    "description":  "Audit et rapport de preparation (lecture seule vis-a-vis du code metier) pour le retrait futur des anciennes colonnes d\u0027attributs specifiques Produit/Variante, sans aucune suppression ni migration",
+    "depends_on":  "2.6.2",
+    "locked":  false,
+    "unlocked_by":  "pc",
+    "unlocked_at":  "2026-09-05T03:57:57+02:00",
+    "allowed_paths":  [
+                          "checkpoints/steps/2.6.3-report.md"
+                      ],
+    "baseline_dirty_paths":  [
+
+                             ],
+    "requires_db_backup":  false
+}
