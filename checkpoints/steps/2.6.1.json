@@ -1,0 +1,19 @@
+{
+  "step": "2.6.1",
+  "description": "Guard activity-driven pour le calcul de taille (Product::saving)",
+  "locked": false,
+  "allowed_paths": [
+    "app/Models/Product.php",
+    "tests/Feature/ProductTailleActivityGuardTest.php"
+  ],
+  "baseline_dirty_paths": [
+    "app/Models/ProductVariant.php",
+    "app/Console/Commands/BackfillAttributeValues.php",
+    "database/seeders/AttributeDefinitionSeeder.php",
+    "tests/Feature/AttributeBackfillTest.php",
+    "tests/Feature/AttributeCrossCheckTest.php",
+    "tests/Feature/AttributeDefinitionSeederTest.php",
+    "tests/Feature/AttributeDualWriteTest.php"
+  ],
+  "test_command": "php artisan test --filter=\"ProductTailleActivityGuardTest|AttributeDualWriteTest|AttributeCrossCheckTest|AttributeBackfillTest|AttributeDefinitionSeederTest|StockMovementTest\""
+}

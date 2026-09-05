@@ -1,9 +1,9 @@
 {
     "status":  "committed",
     "pending_step":  null,
-    "last_committed_step":  "2.6.1",
-    "last_commit_sha":  "fec90868ff24bbe27512e229208bd959f1428e86",
+    "last_committed_step":  "2.6.2",
+    "last_commit_sha":  "e1bfa89e6a4c777972b9842aaa052987ecb4e9c0",
     "authorized_by":  "pc",
-    "authorized_at":  "2026-09-04T03:12:28+02:00",
-    "last_validation_log":  "2.6.1-20260904-025107.json"
+    "authorized_at":  "2026-09-05T02:19:29+02:00",
+    "last_validation_log":  "2.6.2-20260905-021857.json"
 }

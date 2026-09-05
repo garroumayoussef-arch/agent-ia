@@ -1,0 +1,23 @@
+{
+    "_comment":  "Etape 2.6.2 - formalise via le systeme de checkpoint le travail Tier 2 (etapes 2.1 a 2.4) deja realise et present dans le working tree : seeder des definitions d\u0027attributs (2.1), dual-write ProductVariant (2.2), commande de backfill (2.3), lecture parallele ProductVariant (2.4). Aucune nouvelle logique metier : ce commit ne fait que transferer du code deja ecrit et deja teste vers l\u0027historique Git via \u0027checkpoint.ps1 commit\u0027 (git add + git commit uniquement, aucune execution de code metier). Aucune migration, aucune operation destructive : aucun fichier de migration dans allowed_paths, test_command ne fait qu\u0027executer \u0027php artisan test\u0027 (lecture/verification, aucune commande de suppression ou d\u0027alteration de donnees).",
+    "step":  "2.6.2",
+    "description":  "Formaliser et valider via checkpoint le chantier Tier 2 (2.1-2.4) deja realise : seeder, dual-write ProductVariant, backfill, lecture parallele",
+    "depends_on":  "2.6.1",
+    "locked":  false,
+    "unlocked_by":  "pc",
+    "unlocked_at":  "2026-09-05T02:15:10+02:00",
+    "allowed_paths":  [
+                          "app/Models/ProductVariant.php",
+                          "app/Console/Commands/BackfillAttributeValues.php",
+                          "database/seeders/AttributeDefinitionSeeder.php",
+                          "tests/Feature/AttributeBackfillTest.php",
+                          "tests/Feature/AttributeCrossCheckTest.php",
+                          "tests/Feature/AttributeDefinitionSeederTest.php",
+                          "tests/Feature/AttributeDualWriteTest.php"
+                      ],
+    "baseline_dirty_paths":  [
+                                 "checkpoints/steps/2.6.1.json"
+                             ],
+    "test_command":  "php artisan test --filter=\"AttributeDualWriteTest|AttributeCrossCheckTest|AttributeBackfillTest|AttributeDefinitionSeederTest|StockMovementTest\"",
+    "requires_db_backup":  false
+}

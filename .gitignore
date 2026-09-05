@@ -36,3 +36,9 @@ Thumbs.db
 # Systeme de checkpoint : ne jamais versionner les sauvegardes DB (donnees reelles).
 # Le registre checkpoints/backups/manifest.json (metadonnees seules) reste suivi.
 /checkpoints/backups/*.sqlite*
+
+# Journaux locaux du systeme de checkpoint (historique de validate/commit),
+# regeneres a chaque execution : non necessaires a la tracabilite inter-poste,
+# qui repose sur state.json + checkpoints/steps/*.json (voir ces fichiers).
+/checkpoints/log/*.json
+/checkpoints/log/bypass-audit.jsonl
