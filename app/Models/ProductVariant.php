@@ -35,6 +35,17 @@ class ProductVariant extends Model
             if ($variant->wasRecentlyCreated || $variant->wasChanged('stock')) {
                 $variant->syncProductStock();
             }
+
+            /*
+             * Tier 2 (préparation), étape 2.2 — dual-write (miroir) vers
+             * le système d'attributs génériques créé au Tier 1. Mêmes
+             * garanties que le miroir équivalent sur Product::saved() :
+             * `size`, `color`, `version` restent l'UNIQUE source de
+             * vérité, jamais réécrites depuis la table miroir.
+             */
+            static::syncAttributeMirror($variant, 'size', $variant->size);
+            static::syncAttributeMirror($variant, 'color', $variant->color);
+            static::syncAttributeMirror($variant, 'version', $variant->version);
         });
 
         /*
@@ -84,6 +95,42 @@ class ProductVariant extends Model
         $total = static::where('product_id', $this->product_id)->sum('stock');
 
         Product::whereKey($this->product_id)->update(['stock' => $total]);
+    }
+
+    /**
+     * Tier 2 (préparation), étape 2.2 — recopie la valeur BRUTE d'une
+     * colonne dédiée dans `product_variant_attribute_values`, sans
+     * aucune transformation. Ignore silencieusement (aucune exception)
+     * si la valeur est NULL, si la définition d'attribut n'existe pas
+     * encore, ou si elle est scopée à une autre activité que celle du
+     * produit parent — mêmes garanties best-effort que
+     * Product::syncAttributeMirror().
+     */
+    private static function syncAttributeMirror(self $variant, string $code, ?string $value): void
+    {
+        if ($value === null) {
+            return;
+        }
+
+        $definition = AttributeDefinition::where('code', $code)->first();
+
+        if (! $definition) {
+            return;
+        }
+
+        $productActivity = $variant->product?->activity;
+
+        if ($definition->activity !== null && $definition->activity !== $productActivity) {
+            return;
+        }
+
+        ProductVariantAttributeValue::updateOrCreate(
+            [
+                'product_variant_id' => $variant->id,
+                'attribute_definition_id' => $definition->id,
+            ],
+            ['value' => $value]
+        );
     }
 
     /**
@@ -142,5 +189,20 @@ class ProductVariant extends Model
             ProductVariantAttributeValue::class,
             'product_variant_id'
         );
+    }
+
+    /**
+     * Tier 2 (préparation), étape 2.4 — lecture PARALLÈLE depuis le
+     * système d'attributs génériques, pour un `code` donné (ex.
+     * 'size'). Même garantie que Product::attributeMirrorValue() :
+     * jamais lue par aucun autre code de l'application, aucune
+     * bascule, aucun remplacement — sert uniquement à la comparaison
+     * de non-régression dans les tests.
+     */
+    public function attributeMirrorValue(string $code): ?string
+    {
+        return $this->attributeValues()
+            ->whereHas('attributeDefinition', fn ($query) => $query->where('code', $code))
+            ->value('value');
     }
 }
