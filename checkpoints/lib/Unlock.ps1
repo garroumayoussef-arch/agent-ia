@@ -11,9 +11,9 @@
 # l'operateur partagent le meme compte/shell, ceci reste un frein, pas une
 # garantie cryptographique.
 #
-# N'est PAS appelee par checkpoint.ps1 pour l'instant : ce fichier est une
-# bibliotheque autonome, non encore cablee dans le dispatcher CLI. Elle n'a
-# donc aucun effet tant qu'aucun autre fichier n'est modifie pour l'invoquer.
+# Cablee dans checkpoint.ps1 (sous-commande 'unlock', voir checkpoint.ps1
+# lignes 13/34/57-59) depuis le commit 8c59394 (fix(checkpoint): integrate
+# unlock command). Invoquee via 'checkpoint.ps1 unlock -Step <id>'.
 
 function Invoke-CheckpointUnlock {
     param([Parameter(Mandatory = $true)][string]$Step)
