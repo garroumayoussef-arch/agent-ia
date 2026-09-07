@@ -81,6 +81,11 @@ try {
     $manifestPath = Join-Path $sandbox 'checkpoints\steps\checkpoint-selftest.json'
     $statePath = Join-Path $sandbox 'checkpoints\state.json'
     $dummyFile = Join-Path $sandbox 'SELFTEST_DUMMY_FILE.txt'
+    # Defini ici (et non dans le scenario 7) pour que les scenarios 18-25
+    # ne dependent pas de l'execution prealable du scenario 7 : l'isolation
+    # du sandbox exige que chaque scenario puisse s'executer independamment
+    # de l'etat/des variables laisses par les scenarios precedents.
+    $auditFile = Join-Path $sandbox 'checkpoints\log\bypass-audit.jsonl'
 
     . (Join-Path $sandbox 'checkpoints\lib\Common.ps1')
     . (Join-Path $sandbox 'checkpoints\lib\State.ps1')
@@ -90,6 +95,15 @@ try {
             Set-Content -LiteralPath $statePath -Encoding UTF8
         Push-Location $sandbox
         try {
+            # git checkout -- . restaure le working tree DEPUIS L'INDEX, pas depuis
+            # HEAD : un fichier deja stage mais jamais commite (ex. residu d'un
+            # commit volontairement rejete par un hook dans un scenario precedent,
+            # comme le scenario 11) resterait sinon stage indefiniment, jamais
+            # reinitialise par les appels suivants. 'git reset --quiet HEAD -- .'
+            # reinitialise d'abord l'INDEX sur HEAD pour tous les chemins, avant
+            # que 'git checkout -- .' ne resynchronise le working tree sur cet
+            # index desormais propre.
+            & git reset --quiet HEAD -- . 2>$null
             & git checkout --quiet -- . 2>$null
             & git clean -fdq -- . 2>$null
         } finally { Pop-Location }
@@ -186,7 +200,6 @@ try {
         $noVerifyExit = $LASTEXITCODE
         $noVerifySha = (& git rev-parse HEAD).Trim()
     } finally { Pop-Location }
-    $auditFile = Join-Path $sandbox 'checkpoints\log\bypass-audit.jsonl'
     $auditContainsSha = $false
     if (Test-Path -LiteralPath $auditFile) {
         $auditContainsSha = (Select-String -LiteralPath $auditFile -Pattern $noVerifySha -Quiet)
