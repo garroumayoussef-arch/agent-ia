@@ -71,16 +71,16 @@ class StockMovementForm
                             ->mapWithKeys(function (ProductVariant $variant) {
                                 $parts = [];
 
-                                if ($variant->size) {
-                                    $parts[] = 'Taille : ' . $variant->size;
+                                if ($variant->attributeMirrorValue('size')) {
+                                    $parts[] = 'Taille : ' . $variant->attributeMirrorValue('size');
                                 }
 
-                                if ($variant->color) {
-                                    $parts[] = 'Couleur : ' . $variant->color;
+                                if ($variant->attributeMirrorValue('color')) {
+                                    $parts[] = 'Couleur : ' . $variant->attributeMirrorValue('color');
                                 }
 
-                                if ($variant->version) {
-                                    $parts[] = 'Version : ' . $variant->version;
+                                if ($variant->attributeMirrorValue('version')) {
+                                    $parts[] = 'Version : ' . $variant->attributeMirrorValue('version');
                                 }
 
                                 $label = implode(' / ', $parts);
