@@ -63,8 +63,8 @@ class SalesOrderInfolist
                                         }
 
                                         return implode(' / ', array_filter([
-                                            $variant->size,
-                                            $variant->color,
+                                            $variant->attributeMirrorValue('size'),
+                                            $variant->attributeMirrorValue('color'),
                                         ])) ?: ($variant->sku ?? '-');
                                     }),
 

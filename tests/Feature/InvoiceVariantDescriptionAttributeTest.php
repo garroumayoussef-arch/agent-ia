@@ -11,6 +11,7 @@ use App\Models\SalesOrder;
 use App\Models\SalesOrderItem;
 use App\Models\TaxRate;
 use App\Models\Warehouse;
+use Database\Seeders\AttributeDefinitionSeeder;
 use Database\Seeders\RoleSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
@@ -50,6 +51,15 @@ class InvoiceVariantDescriptionAttributeTest extends TestCase
         parent::setUp();
 
         $this->seed(RoleSeeder::class);
+
+        // Requis par ProductVariant::attributeMirrorValue() depuis la
+        // migration de Invoice.php vers le système d'attributs génériques
+        // (étape 2.6.4) : sans AttributeDefinition pour 'size'/'color',
+        // le miroir écrit par ProductVariant::booted() n'a aucune
+        // définition à laquelle se rattacher et attributeMirrorValue()
+        // renvoie systématiquement null — même seeder que celui déjà
+        // utilisé par AttributeMirrorTransverseDisplayTest.
+        $this->seed(AttributeDefinitionSeeder::class);
 
         Warehouse::create(['name' => 'Entrepôt par défaut', 'code' => 'defaut', 'is_default' => true]);
 

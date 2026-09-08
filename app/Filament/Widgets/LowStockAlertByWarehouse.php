@@ -96,8 +96,8 @@ class LowStockAlertByWarehouse extends TableWidget
                         }
 
                         $parts = array_filter([
-                            $record->productVariant->size,
-                            $record->productVariant->color,
+                            $record->productVariant->attributeMirrorValue('size'),
+                            $record->productVariant->attributeMirrorValue('color'),
                         ]);
 
                         $label = implode(' / ', $parts);

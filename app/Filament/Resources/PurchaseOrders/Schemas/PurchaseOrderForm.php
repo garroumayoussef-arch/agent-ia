@@ -72,8 +72,8 @@ class PurchaseOrderForm
                                     ->get()
                                     ->mapWithKeys(fn (ProductVariant $variant) => [
                                         $variant->id => implode(' / ', array_filter([
-                                            $variant->size ? 'Taille : '.$variant->size : null,
-                                            $variant->color ? 'Couleur : '.$variant->color : null,
+                                            $variant->attributeMirrorValue('size') ? 'Taille : '.$variant->attributeMirrorValue('size') : null,
+                                            $variant->attributeMirrorValue('color') ? 'Couleur : '.$variant->attributeMirrorValue('color') : null,
                                             $variant->sku ? 'SKU : '.$variant->sku : null,
                                         ])) ?: $variant->sku,
                                     ])

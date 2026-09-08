@@ -183,8 +183,8 @@ trait HasPurchaseOrderReturnAction
 
         if ($item->productVariant) {
             $details = implode(' / ', array_filter([
-                $item->productVariant->size,
-                $item->productVariant->color,
+                $item->productVariant->attributeMirrorValue('size'),
+                $item->productVariant->attributeMirrorValue('color'),
             ]));
 
             if ($details !== '') {
