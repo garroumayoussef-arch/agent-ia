@@ -271,6 +271,213 @@ try {
     try { & git reset --quiet HEAD -- SELFTEST_DUMMY_FILE.txt; & git checkout --quiet -- SELFTEST_DUMMY_FILE.txt } finally { Pop-Location }
 
     # ==============================================================
+    # Scenarios 18-25 : correction de la course Commit.ps1/git commit/
+    # post-commit sur checkpoints/state.json (marqueur d'intention ecrit
+    # AVANT 'git commit', lu par le hook au lieu de l'etat 'committed'
+    # ecrit APRES). $auditFile est defini des l'initialisation du sandbox.
+    # ==============================================================
+
+    # ==============================================================
+    # Scenario 18 : commit legitime via checkpoint.ps1 commit -> AUCUNE
+    # nouvelle entree dans bypass-audit.jsonl (c'est le test de
+    # non-regression qui manquait : le scenario 6 ne verifiait jamais ce
+    # fichier, laissant passer le faux positif d'origine).
+    # ==============================================================
+    Reset-SandboxState
+    $auditLinesBefore18 = 0
+    if (Test-Path -LiteralPath $auditFile) { $auditLinesBefore18 = @(Get-Content -LiteralPath $auditFile).Count }
+    $state = Get-CheckpointState
+    $state.status = 'ready_to_commit'
+    $state.pending_step = 'checkpoint-selftest'
+    $state.authorized_by = 'selftest-harness (simule)'
+    $state.authorized_at = (New-Timestamp)
+    Set-CheckpointState -State $state
+    "modif autorisee 18" | Set-Content -LiteralPath $dummyFile
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $ckpt commit -Step checkpoint-selftest *> $null
+    $commitExit18 = $LASTEXITCODE
+    $stateAfter18 = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json
+    $auditLinesAfter18 = 0
+    if (Test-Path -LiteralPath $auditFile) { $auditLinesAfter18 = @(Get-Content -LiteralPath $auditFile).Count }
+    $markerPath18 = Join-Path $sandbox 'checkpoints\log\pending-checkpoint.json'
+    Add-Result -Name "18. Commit legitime via checkpoint.ps1 : aucune entree bypass-audit ajoutee, marqueur nettoye" -Passed ($commitExit18 -eq 0 -and $stateAfter18.status -eq 'committed' -and $auditLinesAfter18 -eq $auditLinesBefore18 -and -not (Test-Path -LiteralPath $markerPath18)) -Detail "exit=$commitExit18 state.status=$($stateAfter18.status) audit_avant=$auditLinesBefore18 audit_apres=$auditLinesAfter18 marker_present=$(Test-Path -LiteralPath $markerPath18)"
+
+    # ==============================================================
+    # Scenario 19 : state.json en ready_to_commit (autorisation simulee)
+    # mais le commit est passe DIRECTEMENT par 'git commit', jamais via
+    # checkpoint.ps1 commit -> aucun marqueur ecrit -> doit rester
+    # detecte comme hors-procedure malgre un message au format valide.
+    # ==============================================================
+    Reset-SandboxState
+    $state = Get-CheckpointState
+    $state.status = 'ready_to_commit'
+    $state.pending_step = 'checkpoint-selftest'
+    $state.authorized_by = 'selftest-harness (simule)'
+    $state.authorized_at = (New-Timestamp)
+    Set-CheckpointState -State $state
+    "modif hors procedure 19" | Set-Content -LiteralPath $dummyFile
+    Push-Location $sandbox
+    try {
+        & git add -- SELFTEST_DUMMY_FILE.txt
+        & git commit --quiet -m "checkpoint(step-checkpoint-selftest): commit direct sans passer par checkpoint.ps1"
+        $directExit19 = $LASTEXITCODE
+        $directSha19 = (& git rev-parse HEAD).Trim()
+    } finally { Pop-Location }
+    $auditFound19 = $false
+    if (Test-Path -LiteralPath $auditFile) { $auditFound19 = (Select-String -LiteralPath $auditFile -Pattern $directSha19 -Quiet) }
+    Add-Result -Name "19. Etat ready_to_commit mais commit passe directement (sans checkpoint.ps1 commit) reste detecte" -Passed ($directExit19 -eq 0 -and $auditFound19) -Detail "commit_exit=$directExit19 sha=$directSha19 audit_trouve=$auditFound19"
+
+    # ==============================================================
+    # Scenario 20 : marqueur present mais pour une AUTRE etape que celle
+    # du commit reel ("mauvais checkpoint") -> doit rester detecte malgre
+    # la presence d'un marqueur.
+    # ==============================================================
+    Reset-SandboxState
+    $state = Get-CheckpointState
+    $state.status = 'ready_to_commit'
+    $state.pending_step = 'checkpoint-selftest'
+    $state.authorized_by = 'selftest-harness (simule)'
+    $state.authorized_at = (New-Timestamp)
+    Set-CheckpointState -State $state
+    "modif hors procedure 20" | Set-Content -LiteralPath $dummyFile
+    Write-PendingCheckpointMarker -Step 'une-autre-etape' -ExpectedTree 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef'
+    Push-Location $sandbox
+    try {
+        & git add -- SELFTEST_DUMMY_FILE.txt
+        & git commit --quiet -m "checkpoint(step-checkpoint-selftest): marqueur pour une etape differente"
+        $mismatchExit20 = $LASTEXITCODE
+        $mismatchSha20 = (& git rev-parse HEAD).Trim()
+    } finally { Pop-Location }
+    $auditFound20 = $false
+    if (Test-Path -LiteralPath $auditFile) { $auditFound20 = (Select-String -LiteralPath $auditFile -Pattern $mismatchSha20 -Quiet) }
+    Add-Result -Name "20. Marqueur present pour une autre etape que le commit reel reste detecte (mauvais checkpoint)" -Passed ($mismatchExit20 -eq 0 -and $auditFound20) -Detail "commit_exit=$mismatchExit20 sha=$mismatchSha20 audit_trouve=$auditFound20"
+    Remove-PendingCheckpointMarker
+
+    # ==============================================================
+    # Scenario 21 : 'git commit' echoue reellement APRES l'ecriture du
+    # marqueur (signature GPG forcee vers un binaire inexistant - moyen
+    # deterministe, independant de toute config git globale de l'hote) ->
+    # aucun marqueur orphelin, state.json reste 'ready_to_commit'.
+    # ==============================================================
+    Reset-SandboxState
+    $state = Get-CheckpointState
+    $state.status = 'ready_to_commit'
+    $state.pending_step = 'checkpoint-selftest'
+    $state.authorized_by = 'selftest-harness (simule)'
+    $state.authorized_at = (New-Timestamp)
+    Set-CheckpointState -State $state
+    "modif autorisee 21" | Set-Content -LiteralPath $dummyFile
+    Push-Location $sandbox
+    try {
+        & git config commit.gpgsign true
+        & git config gpg.program 'C:\selftest-inexistant-gpg.exe'
+    } finally { Pop-Location }
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $ckpt commit -Step checkpoint-selftest *> $null
+    $commitExit21 = $LASTEXITCODE
+    Push-Location $sandbox
+    try { & git config commit.gpgsign false } finally { Pop-Location }
+    $stateAfter21 = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json
+    $markerPath21 = Join-Path $sandbox 'checkpoints\log\pending-checkpoint.json'
+    Add-Result -Name "21. git commit en echec apres ecriture du marqueur (signature forcee a echouer) : aucun marqueur orphelin, state.json reste ready_to_commit" -Passed ($commitExit21 -ne 0 -and $stateAfter21.status -eq 'ready_to_commit' -and -not (Test-Path -LiteralPath $markerPath21)) -Detail "exit=$commitExit21 state.status=$($stateAfter21.status) marker_present=$(Test-Path -LiteralPath $markerPath21)"
+
+    # ==============================================================
+    # Scenario 22 : hook post-commit absent (desinstalle) -> le commit
+    # reussit quand meme, Commit.ps1 reconcilie state.json lui-meme et
+    # journalise un avertissement non bloquant dans bypass-audit.jsonl.
+    # ==============================================================
+    Reset-SandboxState
+    $postCommitHookPath = Join-Path $sandbox '.git\hooks\post-commit'
+    $postCommitHookBackup = "$postCommitHookPath.selftest-backup"
+    Move-Item -LiteralPath $postCommitHookPath -Destination $postCommitHookBackup -Force
+    $state = Get-CheckpointState
+    $state.status = 'ready_to_commit'
+    $state.pending_step = 'checkpoint-selftest'
+    $state.authorized_by = 'selftest-harness (simule)'
+    $state.authorized_at = (New-Timestamp)
+    Set-CheckpointState -State $state
+    "modif autorisee 22" | Set-Content -LiteralPath $dummyFile
+    $auditLinesBefore22 = 0
+    if (Test-Path -LiteralPath $auditFile) { $auditLinesBefore22 = @(Get-Content -LiteralPath $auditFile).Count }
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $ckpt commit -Step checkpoint-selftest *> $null
+    $commitExit22 = $LASTEXITCODE
+    Move-Item -LiteralPath $postCommitHookBackup -Destination $postCommitHookPath -Force
+    $stateAfter22 = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json
+    $auditLinesAfter22 = 0
+    if (Test-Path -LiteralPath $auditFile) { $auditLinesAfter22 = @(Get-Content -LiteralPath $auditFile).Count }
+    Add-Result -Name "22. Hook post-commit absent : commit reussit quand meme, state.json reconcilie par Commit.ps1, avertissement journalise" -Passed ($commitExit22 -eq 0 -and $stateAfter22.status -eq 'committed' -and $auditLinesAfter22 -gt $auditLinesBefore22) -Detail "exit=$commitExit22 state.status=$($stateAfter22.status) audit_avant=$auditLinesBefore22 audit_apres=$auditLinesAfter22"
+
+    # ==============================================================
+    # Scenario 23 : marqueur present, BONNE etape, mais expectedTree
+    # falsifie (ne correspond pas au contenu reellement commite) -> doit
+    # rester detecte - preuve que la comparaison d'arbre est reellement
+    # discriminante, pas seulement la regex du message.
+    # ==============================================================
+    Reset-SandboxState
+    $state = Get-CheckpointState
+    $state.status = 'ready_to_commit'
+    $state.pending_step = 'checkpoint-selftest'
+    $state.authorized_by = 'selftest-harness (simule)'
+    $state.authorized_at = (New-Timestamp)
+    Set-CheckpointState -State $state
+    "modif hors procedure 23" | Set-Content -LiteralPath $dummyFile
+    Write-PendingCheckpointMarker -Step 'checkpoint-selftest' -ExpectedTree 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef'
+    Push-Location $sandbox
+    try {
+        & git add -- SELFTEST_DUMMY_FILE.txt
+        & git commit --quiet -m "checkpoint(step-checkpoint-selftest): tree du marqueur falsifie"
+        $treeMismatchExit23 = $LASTEXITCODE
+        $treeMismatchSha23 = (& git rev-parse HEAD).Trim()
+    } finally { Pop-Location }
+    $auditFound23 = $false
+    if (Test-Path -LiteralPath $auditFile) { $auditFound23 = (Select-String -LiteralPath $auditFile -Pattern $treeMismatchSha23 -Quiet) }
+    Add-Result -Name "23. Marqueur avec expectedTree falsifie (bonne etape) reste detecte" -Passed ($treeMismatchExit23 -eq 0 -and $auditFound23) -Detail "commit_exit=$treeMismatchExit23 sha=$treeMismatchSha23 audit_trouve=$auditFound23"
+    Remove-PendingCheckpointMarker
+
+    # ==============================================================
+    # Scenario 24 : revue structurelle - aucune dependance a un agent
+    # precis (Claude Code, Codex, ou autre) dans les fichiers corriges.
+    # ==============================================================
+    $filesToScan24 = @(
+        (Join-Path $CheckpointsSrc 'lib\Common.ps1'),
+        (Join-Path $CheckpointsSrc 'lib\Commit.ps1'),
+        (Join-Path $CheckpointsSrc 'hooks\post-commit.ps1')
+    )
+    $agentSpecificPattern24 = '(?i)claude|codex|anthropic|openai|copilot'
+    $offendingMatches24 = @()
+    foreach ($f in $filesToScan24) {
+        $found = Select-String -LiteralPath $f -Pattern $agentSpecificPattern24
+        if ($found) { $offendingMatches24 += $found }
+    }
+    Add-Result -Name "24. Aucune reference a un agent precis dans les fichiers corriges (mecanisme agent-agnostique)" -Passed ($offendingMatches24.Count -eq 0) -Detail "occurrences_trouvees=$($offendingMatches24.Count)"
+
+    # ==============================================================
+    # Scenario 25 : reprise propre apres un echec de commit - un premier
+    # commit est force a echouer (meme technique que le scenario 21),
+    # puis une nouvelle tentative immediate doit reussir sans etat
+    # residuel.
+    # ==============================================================
+    Reset-SandboxState
+    $state = Get-CheckpointState
+    $state.status = 'ready_to_commit'
+    $state.pending_step = 'checkpoint-selftest'
+    $state.authorized_by = 'selftest-harness (simule)'
+    $state.authorized_at = (New-Timestamp)
+    Set-CheckpointState -State $state
+    "modif autorisee 25" | Set-Content -LiteralPath $dummyFile
+    Push-Location $sandbox
+    try {
+        & git config commit.gpgsign true
+        & git config gpg.program 'C:\selftest-inexistant-gpg.exe'
+    } finally { Pop-Location }
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $ckpt commit -Step checkpoint-selftest *> $null
+    $firstAttemptExit25 = $LASTEXITCODE
+    Push-Location $sandbox
+    try { & git config commit.gpgsign false } finally { Pop-Location }
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $ckpt commit -Step checkpoint-selftest *> $null
+    $retryExit25 = $LASTEXITCODE
+    $stateAfter25 = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json
+    Add-Result -Name "25. Reprise propre apres un echec de commit : nouvelle tentative immediate reussit" -Passed ($firstAttemptExit25 -ne 0 -and $retryExit25 -eq 0 -and $stateAfter25.status -eq 'committed') -Detail "premiere_tentative_exit=$firstAttemptExit25 reprise_exit=$retryExit25 state.status=$($stateAfter25.status)"
+
+    # ==============================================================
     # Scenario 13 : baseline_dirty_paths exclut un fichier deja sale
     # AVANT le debut de l'etape, y compris a travers plusieurs 'validate'
     # successifs (accumulation de checkpoints/log/*), sans qu'aucun

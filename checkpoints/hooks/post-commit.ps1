@@ -5,6 +5,16 @@
 # Reconnait les 3 formats legitimes (voir commit-msg.ps1) : checkpoint(step-...),
 # WIP:, et <type>(checkpoint): ... (ce dernier revalide que le commit reel ne
 # contient que des fichiers du systeme, par symetrie avec commit-msg.ps1).
+#
+# Format "checkpoint(step-...)" : la legitimite se verifie via le marqueur
+# d'intention ecrit par Commit.ps1 AVANT 'git commit' (voir
+# Get-PendingCheckpointMarkerPath dans lib/Common.ps1), jamais via
+# checkpoints/state.json - ce fichier n'est mis a jour par Commit.ps1
+# qu'APRES 'git commit', donc APRES l'execution de ce hook (synchrone,
+# declenche par 'git commit' lui-meme) : le comparer aurait toujours ete
+# faux, quelle que soit la legitimite reelle du commit. Ce hook devient
+# l'ecrivain principal de state.json pour ce format ; Commit.ps1 ne
+# reconcilie qu'en filet de securite si ce hook n'a pas pu s'executer.
 
 $ErrorActionPreference = 'Stop'
 $hookDir = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -17,6 +27,7 @@ try {
     Push-Location $repoRoot
     try {
         $sha = (& git rev-parse HEAD).Trim()
+        $actualTree = (& git rev-parse 'HEAD^{tree}').Trim()
         $message = (& git log -1 --pretty=%B).Trim()
         $filesInCommit = @(& git diff-tree --no-commit-id --name-only -r $sha)
     } finally { Pop-Location }
@@ -27,8 +38,17 @@ try {
     $legitimate = $false
     if ($firstLine -match '^checkpoint\(step-(?<step>[^)]+)\):\s+.+') {
         $step = $Matches['step']
-        if ($state -and $state.status -eq 'committed' -and $state.last_committed_step -eq $step -and $state.last_commit_sha -eq $sha) {
+        $marker = Read-PendingCheckpointMarker
+        if ($marker -and $marker.step -eq $step -and $marker.expectedTree -eq $actualTree) {
             $legitimate = $true
+            if ($state) {
+                $state.status = 'committed'
+                $state.last_committed_step = $step
+                $state.last_commit_sha = $sha
+                $state.pending_step = $null
+                Set-CheckpointState -State $state
+            }
+            Remove-PendingCheckpointMarker
         }
     } elseif ($firstLine -match '^WIP:\s+.+') {
         $legitimate = $true

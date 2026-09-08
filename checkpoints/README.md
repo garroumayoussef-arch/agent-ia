@@ -77,15 +77,29 @@ Aucune de ces commandes n'execute `git push`.
 4. **L'operateur humain**, en session interactive, lance
    `authorize -Step <id>` : retape l'identifiant de l'etape pour confirmer.
    Refuse tout appel dont l'entree standard est redirigee.
-5. `commit -Step <id>` : `git add` restreint a l'allowlist, message
-   `checkpoint(step-<id>): <description>`, tag `checkpoint/<id>`. Refuse si
-   l'etat n'est pas exactement `ready_to_commit` pour cette etape.
+5. `commit -Step <id>` : `git add` restreint a l'allowlist, puis ecrit un
+   marqueur d'intention (`checkpoints/log/pending-checkpoint.json` :
+   etape + hash d'arbre `git write-tree` de l'index deja stage) **avant**
+   d'appeler `git commit` (message `checkpoint(step-<id>): <description>`,
+   tag `checkpoint/<id>`). Refuse si l'etat n'est pas exactement
+   `ready_to_commit` pour cette etape. Le marqueur est systematiquement
+   supprime apres l'appel a `git commit`, que celui-ci reussisse ou non.
 6. Le hook `pre-commit` revalide independamment l'allowlist ; `commit-msg`
    revalide le format du message et la coherence avec `state.json`.
-7. `post-commit` journalise tout commit qui ne correspond a aucun flux
-   reconnu (`checkpoint(step-...)` confirme par `state.json`, ou
-   `WIP: ...`) dans `checkpoints/log/bypass-audit.jsonl`.
-8. La CI rejoue independamment ce controle au push.
+7. `post-commit` (execute par `git commit` lui-meme, donc **avant** que
+   `commit.ps1` ne reprenne la main) confirme la legitimite d'un commit
+   `checkpoint(step-...)` en comparant le commit reellement produit
+   (etape du message + `HEAD^{tree}`) au marqueur d'intention ecrit a
+   l'etape 5 - jamais a `state.json`, qui n'est pas encore a jour a ce
+   moment precis. Si legitime, ce hook ecrit lui-meme `state.json` a
+   `committed` et supprime le marqueur. Sinon (aucun marqueur, ou
+   marqueur ne correspondant pas), le commit est journalise dans
+   `checkpoints/log/bypass-audit.jsonl`. `commit.ps1` ne reconcilie
+   `state.json` que si ce hook n'a pas pu s'executer (absent/en erreur),
+   avec un avertissement non bloquant dans le meme fichier.
+8. La CI rejoue independamment le controle d'allowlist et de tests au
+   push (mecanisme separe, sans rapport avec le marqueur ci-dessus qui
+   n'existe que localement, jamais versionne).
 
 ## Mecanisme d'autorisation d'une etape
 

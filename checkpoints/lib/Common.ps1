@@ -85,3 +85,43 @@ function Get-CheckpointSelfManagedPathPatterns {
         'checkpoints/backups/manifest.json'
     )
 }
+
+function Get-PendingCheckpointMarkerPath {
+    # Marqueur d'INTENTION de commit, ecrit par Commit.ps1 juste avant
+    # 'git commit' et lu par le hook post-commit au moment ou celui-ci
+    # s'execute reellement (hook Git natif, synchrone, execute PENDANT
+    # 'git commit' - donc AVANT que Commit.ps1 ne reprenne la main et ne
+    # mette a jour checkpoints/state.json). Corrige la course precedente
+    # ou post-commit lisait un state.json pas encore a jour et journalisait
+    # a tort tout commit legitime comme "hors-procedure".
+    # Volontairement sous checkpoints/log/ : deja couvert par
+    # Get-CheckpointSelfManagedPathPatterns ci-dessus et par
+    # /checkpoints/log/*.json dans .gitignore, sans rien y ajouter.
+    return (Join-Path (Get-CheckpointsDir) 'log\pending-checkpoint.json')
+}
+
+function Write-PendingCheckpointMarker {
+    param(
+        [Parameter(Mandatory = $true)][string]$Step,
+        [Parameter(Mandatory = $true)][string]$ExpectedTree
+    )
+    $marker = [ordered]@{
+        step         = $Step
+        expectedTree = $ExpectedTree
+        startedAt    = (New-Timestamp)
+    }
+    Write-JsonFile -Path (Get-PendingCheckpointMarkerPath) -Object $marker
+}
+
+function Read-PendingCheckpointMarker {
+    $path = Get-PendingCheckpointMarkerPath
+    if (-not (Test-Path -LiteralPath $path)) { return $null }
+    return Read-JsonFile -Path $path
+}
+
+function Remove-PendingCheckpointMarker {
+    $path = Get-PendingCheckpointMarkerPath
+    if (Test-Path -LiteralPath $path) {
+        Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
+    }
+}
