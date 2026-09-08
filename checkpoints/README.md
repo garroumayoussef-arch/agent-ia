@@ -254,3 +254,13 @@ depot reel ni `database/database.sqlite`) :
    niveau local s'applique, avec la limite du point 1.
 6. Les patterns `allowed_paths` utilisent l'operateur PowerShell `-like`
    (wildcards simples `*`/`?`), pas un glob complet (`**` non supporte).
+7. `checkpoints/state.json` et `checkpoints/steps/<id>.json` sont de
+   simples fichiers JSON versionnés, sans protection cryptographique ni
+   permission OS différenciée entre opérateur et agent : `status`,
+   `authorized_by`, `authorized_at`, `locked` sont des marqueurs de
+   workflow et d'audit, pas une preuve qu'une action humaine interactive
+   a réellement eu lieu. Un accès en écriture au système de fichiers
+   suffit techniquement à forger ces valeurs sans passer par
+   `authorize`/`unlock`. Contournement rendu visible à la revue
+   (`git log -p -- checkpoints/state.json checkpoints/steps/`), pas
+   rendu impossible.

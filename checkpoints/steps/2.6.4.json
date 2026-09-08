@@ -1,0 +1,33 @@
+{
+    "_comment":  "Etape 2.6.4 - migration des LECTURES d\u0027affichage (Stock, Achats, Ventes, Facturation) depuis les colonnes dediees product_variants.size/color/version vers le systeme generique d\u0027attributs (ProductVariant::attributeMirrorValue()), sans aucune suppression ni migration de colonne. Les colonnes dediees size/color/version restent l\u0027UNIQUE source d\u0027ecriture et de tri : les 4 requetes -\u003eorderBy(\u0027size\u0027)-\u003eorderBy(\u0027color\u0027) recensees dans les Select de variante (StockMovementForm, HasStockTransferAction, SalesOrderForm, PurchaseOrderForm) sont CONSERVEES A L\u0027IDENTIQUE - seule la construction du LABEL affiche est migree vers attributeMirrorValue(). Correction apportee lors de la preparation de ce manifeste : l\u0027analyse anterieure (rapport de clarification) n\u0027avait identifie que 3 occurrences de orderBy(); une 4e occurrence, structurellement identique, existe dans HasStockTransferAction.php:92-93 et est incluse ici au meme titre que les 3 autres. Invoice.php est traite comme un groupe SEPARE et isole (allowed_paths distinct implicite via test dedie) car il ecrit une valeur PERSISTEE (InvoiceLine.variant_description) au moment de l\u0027emission d\u0027une facture, jamais recalculee ensuite - contrairement aux 12 fichiers Filament qui ne font que du rendu a la volee. Seule sa construction de variant_description est modifiee (migration vers attributeMirrorValue(\u0027size\u0027)/(\u0027color\u0027)), sku reste inchange, avec exigence de non-regression texte-a-texte stricte (le texte produit apres modification doit etre identique a celui produit avant, pour un jeu de variantes representatif) et garantie qu\u0027aucune facture deja emise n\u0027est reecrite retroactivement. products.version reste explicitement hors perimetre (aucune reference, aucun traitement, conformement a l\u0027audit 2.6.3). Aucune migration de schema, aucune suppression de colonne, aucune alteration de donnees existantes dans cette etape : allowed_paths ne contient aucun fichier database/migrations/**. Cette etape doit rester strictement INDEPENDANTE de 2.6.5 (qui traitera separement ProductForm.php, ProductsTable.php, ProductVariantForm.php, ProductVariantsTable.php) : aucun de ces 4 fichiers ne figure dans allowed_paths ci-dessous, et aucune modification de 2.6.4 ne doit presupposer ou anticiper le contenu de 2.6.5.",
+    "step":  "2.6.4",
+    "description":  "Migrer l\u0027affichage des attributs size/color/version (Stock, Achats, Ventes) vers attributeMirrorValue() en conservant les colonnes dediees et leur tri SQL inchange ; traiter separement et avec non-regression texte-a-texte la construction persistee de InvoiceLine.variant_description",
+    "depends_on":  "2.6.3",
+    "locked":  false,
+    "unlocked_by":  "pc",
+    "unlocked_at":  "2026-09-06T03:28:53+02:00",
+    "allowed_paths":  [
+                          "app/Filament/Resources/StockMovements/Schemas/StockMovementForm.php",
+                          "app/Filament/Resources/StockMovements/Schemas/StockMovementInfolist.php",
+                          "app/Filament/Resources/StockMovements/Pages/Concerns/HasStockTransferAction.php",
+                          "app/Filament/Resources/SalesOrders/Schemas/SalesOrderForm.php",
+                          "app/Filament/Resources/SalesOrders/Schemas/SalesOrderInfolist.php",
+                          "app/Filament/Resources/SalesOrders/Pages/Concerns/HasSalesOrderWorkflowActions.php",
+                          "app/Filament/Resources/PurchaseOrders/Schemas/PurchaseOrderForm.php",
+                          "app/Filament/Resources/PurchaseOrders/Schemas/PurchaseOrderInfolist.php",
+                          "app/Filament/Resources/PurchaseOrders/Pages/Concerns/HasPurchaseOrderWorkflowActions.php",
+                          "app/Filament/Resources/PurchaseOrders/Pages/Concerns/HasPurchaseOrderReturnAction.php",
+                          "app/Filament/Resources/WarehouseStocks/Tables/WarehouseStocksTable.php",
+                          "app/Filament/Widgets/LowStockAlertByWarehouse.php",
+                          "app/Models/Invoice.php",
+                          "tests/Feature/AttributeMirrorTransverseDisplayTest.php",
+                          "tests/Feature/InvoiceVariantDescriptionAttributeTest.php"
+                      ],
+    "_comment_baseline_dirty_paths":  "Aucun fichier deja modifie/non suivi au moment de la preparation de ce manifeste (working tree propre, HEAD synchronise avec origin/avant-claude a la creation de ce fichier).",
+    "baseline_dirty_paths":  [
+
+                             ],
+    "_comment_tests":  "AttributeMirrorTransverseDisplayTest couvre les 12 fichiers Filament (Group A) : non-regression du LABEL affiche (identique avant/apres pour size/color/version) ET non-regression du TRI (les 4 orderBy(\u0027size\u0027)-\u003eorderBy(\u0027color\u0027) doivent produire le meme ordre qu\u0027avant, puisqu\u0027ils restent sur les colonnes dediees inchangees). InvoiceVariantDescriptionAttributeTest couvre exclusivement Invoice.php : comparaison texte-a-texte de InvoiceLine.variant_description avant/apres migration, pour un jeu de variantes representatif (size seul, color seul, size+color, aucun des deux, avec/sans sku). Les 3 tests existants sont revalides en non-regression du miroir lui-meme (prerequis inchange par cette etape).",
+    "test_command":  "php artisan test --filter=\"AttributeMirrorTransverseDisplayTest|InvoiceVariantDescriptionAttributeTest|AttributeCrossCheckTest|AttributeDualWriteTest|Tier1AttributeFoundationTest\"",
+    "requires_db_backup":  false
+}
