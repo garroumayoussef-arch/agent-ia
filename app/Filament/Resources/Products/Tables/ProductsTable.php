@@ -37,6 +37,19 @@ class ProductsTable
 
                 Tables\Columns\TextColumn::make('taille')
                     ->label('Taille')
+                    // Etape 2.6.6 : affichage depuis le systeme generique
+                    // d'attributs (attributeMirrorValue), colonne dediee
+                    // products.taille conservee comme unique source
+                    // d'ecriture et de tri (->sortable() ci-dessous reste
+                    // sur la colonne reelle, inchange). Repli sur $state
+                    // (valeur brute) quand aucune ligne miroir n'existe :
+                    // 'taille' est scope activity='sport' dans
+                    // AttributeDefinitionSeeder, donc jamais mirrore pour
+                    // un produit Bebe/Moto/Artisanat - sans ce repli,
+                    // l'affichage deviendrait vide pour ces activites,
+                    // traitant implicitement Sport comme l'activite
+                    // centrale. Aucune activite n'est privilegiee ici.
+                    ->formatStateUsing(fn ($state, $record) => $record->attributeMirrorValue('taille') ?? $state)
                     ->sortable(),
 
                 Tables\Columns\TextColumn::make('stock')

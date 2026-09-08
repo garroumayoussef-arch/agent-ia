@@ -2,6 +2,8 @@
 
 namespace Tests\Feature;
 
+use App\Filament\Resources\Products\Pages\ListProducts;
+use App\Filament\Resources\ProductVariants\Pages\ListProductVariants;
 use App\Filament\Resources\PurchaseOrders\Pages\CreatePurchaseOrder;
 use App\Filament\Resources\PurchaseOrders\Pages\ViewPurchaseOrder;
 use App\Filament\Resources\SalesOrders\Pages\CreateSalesOrder;
@@ -448,5 +450,113 @@ class AttributeMirrorTransverseDisplayTest extends TestCase
             '42 / Rouge — SKU : VAR-F12',
             $column->formatState($line->productVariant?->sku)
         );
+    }
+
+    /*
+     * =================================================================
+     * Étape 2.6.6 — deux fichiers supplémentaires, hors périmètre de
+     * 2.6.4 (volontairement exclus, cf. commentaire du manifeste
+     * checkpoints/steps/2.6.4.json : « strictement INDEPENDANTE de
+     * 2.6.5 [devenu 2.6.6] »). Ces deux tests caractérisent le
+     * comportement ACTUEL, AVANT toute modification de ProductsTable.php
+     * et ProductVariantsTable.php, et doivent rester intégralement verts
+     * après leur migration vers attributeMirrorValue() : même texte
+     * affiché, même ordre de tri, même résultat de filtre — les colonnes
+     * dédiées (`products.taille`, `product_variants.size`/`color`/
+     * `version`) restent l'unique source d'écriture, de tri et de
+     * filtre, conformément au manifeste 2.6.6.
+     * =================================================================
+     */
+
+    private function makeProductWithTaille(string $taille, array $attributes = []): Product
+    {
+        return Product::create(array_merge([
+            'reference' => 'REF-2.6.6-'.uniqid(),
+            'nom' => 'Produit 2.6.6',
+            'categorie' => 'Maillots',
+            'type' => 'Player Version',
+            'taille' => $taille,
+            'stock' => 0,
+            'prix_achat' => 10,
+            'prix_vente' => 20,
+        ], $attributes));
+    }
+
+    /*
+     * =================================================================
+     * 13. ProductsTable.php — colonne "taille" (TextColumn::make('taille')) :
+     *     affichage BRUT de la colonne dédiée `products.taille`, triable
+     *     directement sur cette colonne.
+     * =================================================================
+     */
+    public function test_products_table_taille_column_displays_raw_value(): void
+    {
+        $productM = $this->makeProductWithTaille('M', ['nom' => 'Maillot 2.6.6-M']);
+        $productL = $this->makeProductWithTaille('L', ['nom' => 'Maillot 2.6.6-L']);
+
+        Livewire::test(ListProducts::class)
+            ->assertTableColumnStateSet('taille', 'M', record: $productM)
+            ->assertTableColumnStateSet('taille', 'L', record: $productL);
+    }
+
+    public function test_products_table_taille_column_is_sortable(): void
+    {
+        $productL = $this->makeProductWithTaille('L', ['nom' => 'Maillot 2.6.6-tri-L']);
+        $productM = $this->makeProductWithTaille('M', ['nom' => 'Maillot 2.6.6-tri-M']);
+
+        Livewire::test(ListProducts::class)
+            ->sortTable('taille')
+            ->assertCanSeeTableRecords([$productL, $productM], inOrder: true)
+            ->sortTable('taille', 'desc')
+            ->assertCanSeeTableRecords([$productM, $productL], inOrder: true);
+    }
+
+    /*
+     * =================================================================
+     * 14. ProductVariantsTable.php — colonnes "size"/"color"/"version"
+     *     (TextColumn) : affichage BRUT des colonnes dédiées
+     *     `product_variants.size`/`color`/`version`, colonnes triables,
+     *     et SelectFilter::make('size') filtrant sur la colonne réelle.
+     * =================================================================
+     */
+    public function test_product_variants_table_columns_display_raw_values(): void
+    {
+        $product = $this->makeProduct(['nom' => 'Maillot 2.6.6-variante']);
+        $variant = $this->makeVariant($product, [
+            'sku' => 'VAR-2.6.6-1',
+            'size' => 'M',
+            'color' => 'Rouge',
+            'version' => 'Home',
+        ]);
+
+        Livewire::test(ListProductVariants::class)
+            ->assertTableColumnStateSet('size', 'M', record: $variant)
+            ->assertTableColumnStateSet('color', 'Rouge', record: $variant)
+            ->assertTableColumnStateSet('version', 'Home', record: $variant);
+    }
+
+    public function test_product_variants_table_size_column_is_sortable(): void
+    {
+        $product = $this->makeProduct(['nom' => 'Maillot 2.6.6-tri-variante']);
+        $variantL = $this->makeVariant($product, ['sku' => 'VAR-2.6.6-L', 'size' => 'L']);
+        $variantM = $this->makeVariant($product, ['sku' => 'VAR-2.6.6-M', 'size' => 'M']);
+
+        Livewire::test(ListProductVariants::class)
+            ->sortTable('size')
+            ->assertCanSeeTableRecords([$variantL, $variantM], inOrder: true)
+            ->sortTable('size', 'desc')
+            ->assertCanSeeTableRecords([$variantM, $variantL], inOrder: true);
+    }
+
+    public function test_product_variants_table_size_filter_uses_dedicated_column(): void
+    {
+        $product = $this->makeProduct(['nom' => 'Maillot 2.6.6-filtre']);
+        $variantM = $this->makeVariant($product, ['sku' => 'VAR-2.6.6-FM', 'size' => 'M']);
+        $variantL = $this->makeVariant($product, ['sku' => 'VAR-2.6.6-FL', 'size' => 'L']);
+
+        Livewire::test(ListProductVariants::class)
+            ->filterTable('size', 'M')
+            ->assertCanSeeTableRecords([$variantM])
+            ->assertCanNotSeeTableRecords([$variantL]);
     }
 }

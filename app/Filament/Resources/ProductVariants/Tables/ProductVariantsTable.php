@@ -31,18 +31,39 @@ class ProductVariantsTable
                     ->searchable()
                     ->placeholder('-'),
 
+                // Etape 2.6.6 : affichage des 3 colonnes ci-dessous depuis
+                // le systeme generique d'attributs (attributeMirrorValue),
+                // colonnes dediees product_variants.size/color/version
+                // conservees comme unique source d'ecriture, de tri
+                // (->sortable() sur 'size' ci-dessous, inchange) et de
+                // filtre (SelectFilter::make('size') plus bas, inchange).
+                // Repli sur $state (valeur brute) quand aucune ligne
+                // miroir n'existe : 'size'/'version' sont scopes
+                // activity='sport' dans AttributeDefinitionSeeder, donc
+                // jamais mirrores pour une variante Bebe/Moto/Artisanat -
+                // sans ce repli, l'affichage deviendrait vide pour ces
+                // activites, traitant implicitement Sport comme
+                // l'activite centrale. Le placeholder '-' ci-dessus reste
+                // fonctionnel : Filament l'evalue sur la valeur BRUTE de
+                // la colonne, avant tout formatStateUsing, donc une
+                // colonne deja vide en base continue d'afficher '-'
+                // exactement comme avant. Aucune activite n'est
+                // privilegiee ici.
                 Tables\Columns\TextColumn::make('size')
                     ->label('Taille')
                     ->placeholder('-')
+                    ->formatStateUsing(fn ($state, $record) => $record->attributeMirrorValue('size') ?? $state)
                     ->sortable(),
 
                 Tables\Columns\TextColumn::make('color')
                     ->label('Couleur')
-                    ->placeholder('-'),
+                    ->placeholder('-')
+                    ->formatStateUsing(fn ($state, $record) => $record->attributeMirrorValue('color') ?? $state),
 
                 Tables\Columns\TextColumn::make('version')
                     ->label('Version')
-                    ->placeholder('-'),
+                    ->placeholder('-')
+                    ->formatStateUsing(fn ($state, $record) => $record->attributeMirrorValue('version') ?? $state),
 
                 Tables\Columns\TextColumn::make('stock')
                     ->label('Stock')
