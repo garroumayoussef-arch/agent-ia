@@ -408,4 +408,16 @@ class Product extends Model
             ->whereHas('attributeDefinition', fn ($query) => $query->where('code', $code))
             ->value('value');
     }
+
+    /**
+     * Chantier Dropshipping, étape D1 — fiches de sourcing déclarées pour
+     * ce produit (quels fournisseurs peuvent le fournir). Relation
+     * additive en lecture seule : ne crée aucune nouvelle écriture sur
+     * Product, capacité Core réutilisable par n'importe quelle activité
+     * (aucune dépendance à `activity`).
+     */
+    public function supplierSourcings(): HasMany
+    {
+        return $this->hasMany(SupplierProductSourcing::class);
+    }
 }

@@ -205,4 +205,18 @@ class ProductVariant extends Model
             ->whereHas('attributeDefinition', fn ($query) => $query->where('code', $code))
             ->value('value');
     }
+
+    /**
+     * Chantier Dropshipping, étape D1 — fiches de sourcing déclarées pour
+     * cette variante (quels fournisseurs peuvent la fournir). Relation
+     * additive en lecture seule, même convention que
+     * purchaseOrderItems()/salesOrderItems() ci-dessus (FK explicite).
+     */
+    public function supplierSourcings(): HasMany
+    {
+        return $this->hasMany(
+            SupplierProductSourcing::class,
+            'product_variant_id'
+        );
+    }
 }
