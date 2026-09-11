@@ -1,0 +1,22 @@
+{
+    "_comment":  "Etape 2.6.6 - migrer l\u0027AFFICHAGE des attributs taille/size/color/version dans ProductsTable.php et ProductVariantsTable.php vers ProductVariant::attributeMirrorValue() / Product::attributeMirrorValue(), sur le meme modele que 2.6.4 (Stock/Achats/Ventes/Facturation). Les colonnes dediees products.taille, product_variants.size/color/version restent l\u0027UNIQUE source d\u0027ecriture et de tri : ProductForm.php et ProductVariantForm.php (formulaires de SAISIE) sont explicitement HORS PERIMETRE et ne figurent pas dans allowed_paths - seules les TABLES Filament (affichage en lecture seule) sont concernees. Le SelectFilter::make(\u0027size\u0027) et les colonnes -\u003esortable() de ProductVariantsTable.php doivent continuer a filtrer/trier sur la colonne reelle product_variants.size, jamais sur la valeur miroir. Aucune migration, aucune suppression de colonne, aucun seeder, aucune modification de products.version / club_id / competition_id. Depend de 2.6.4 (dernier step officiellement enregistre dans checkpoints/state.json) : 2.6.5 (commit WIP ff19f6e) et 2.6.6.1 (commit docs(checkpoint) 23d0f5c) ne sont pas des steps formellement enregistres au sens du systeme de checkpoint (cf. checkpoints/steps/2.6.5-report.md), donc ne peuvent pas servir de reference dans depends_on.",
+    "step":  "2.6.6",
+    "description":  "Migrer l\u0027affichage taille/size/color/version dans ProductsTable.php et ProductVariantsTable.php vers attributeMirrorValue(), en conservant les colonnes dediees comme unique source d\u0027ecriture, de tri et de filtre",
+    "depends_on":  "2.6.4",
+    "locked":  false,
+    "unlocked_by":  "pc",
+    "unlocked_at":  "2026-09-09T01:55:55+02:00",
+    "allowed_paths":  [
+                          "app/Filament/Resources/Products/Tables/ProductsTable.php",
+                          "app/Filament/Resources/ProductVariants/Tables/ProductVariantsTable.php",
+                          "tests/Feature/AttributeMirrorTransverseDisplayTest.php",
+                          "checkpoints/steps/2.6.6-report.md"
+                      ],
+    "_comment_baseline_dirty_paths":  "checkpoints/state.json (M) et CHECKPOINTS.md (untracked) sont deja sales avant le debut de cette etape, sans rapport avec elle (cf. git status au moment de la redaction de ce manifeste) - exclus du controle de fichiers interdits mais jamais git-add par \u0027commit\u0027.",
+    "baseline_dirty_paths":  [
+                                 "checkpoints/state.json",
+                                 "CHECKPOINTS.md"
+                             ],
+    "test_command":  "php artisan test --filter=\"AttributeMirrorTransverseDisplayTest|AttributeCrossCheckTest|AttributeDualWriteTest|Tier1AttributeFoundationTest|AttributeDefinitionSeederTest|AttributeBackfillTest|InvoiceVariantDescriptionAttributeTest|ProductTailleActivityGuardTest\"",
+    "requires_db_backup":  false
+}

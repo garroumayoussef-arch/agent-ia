@@ -1,0 +1,28 @@
+{
+    "_comment":  "Chantier Dropshipping, etape D1 - fondation du sourcing fournisseur : table supplier_product_sourcing (quel fournisseur peut sourcer quel produit/variante, a quel cout declaratif, avec quelle priorite, quel delai). Purement additive et isolee : aucune colonne ajoutee a une table existante, aucune interaction avec sales_orders/purchase_orders/stock_movements a ce stade (allocation, expedition, orchestration automatique : etapes ulterieures D2+, hors perimetre ici). Volontairement neutre vis-a-vis des activites : aucune colonne \u0027activity\u0027, aucune reference au mot dropshipping dans le schema - capacite reutilisable du Core, jamais attachee exclusivement a une activite. Double garantie d\u0027unicite (avec/sans variante), restrictOnDelete sur Supplier, cascadeOnDelete sur Product/ProductVariant. Relation Supplier::productSourcings() ajoutee en lecture seule ; modifications correlatives dans Product.php et ProductVariant.php. Perimetre repris tel quel depuis le working tree deja ecrit (non commite) au moment de la redaction de ce manifeste, confirme par recherche en lecture seule dans le depot et l\u0027historique Git (aucun manifeste ni plan preexistant pour D1).",
+    "step":  "D1",
+    "substep":  null,
+    "tier":  null,
+    "description":  "Chantier Dropshipping, etape D1 - fondation du sourcing fournisseur : creer la table supplier_product_sourcing, le modele SupplierProductSourcing, sa factory, ses tests, et la relation Supplier::productSourcings() (Core, additif, isole des flux commande/stock)",
+    "depends_on":  "2.6.6",
+    "locked":  false,
+    "unlocked_by":  "pc",
+    "unlocked_at":  "2026-09-11T02:44:51+02:00",
+    "allowed_paths":  [
+                          "database/migrations/2026_09_10_100000_create_supplier_product_sourcing_table.php",
+                          "app/Models/SupplierProductSourcing.php",
+                          "database/factories/SupplierProductSourcingFactory.php",
+                          "tests/Feature/SupplierProductSourcingTest.php",
+                          "app/Models/Supplier.php",
+                          "app/Models/Product.php",
+                          "app/Models/ProductVariant.php"
+                      ],
+    "_comment_baseline_dirty_paths":  "checkpoints/state.json (M) et CHECKPOINTS.md (untracked) sont deja sales avant le debut de cette etape, sans rapport avec elle (cf. git status au moment de la redaction de ce manifeste) - exclus du controle de fichiers interdits mais jamais git-add par \u0027commit\u0027.",
+    "baseline_dirty_paths":  [
+                                 "checkpoints/state.json",
+                                 "CHECKPOINTS.md",
+                                 "checkpoints/steps/2.6.6.json"
+                             ],
+    "test_command":  "php artisan test --filter=SupplierProductSourcingTest",
+    "requires_db_backup":  false
+}
