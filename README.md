@@ -96,6 +96,22 @@ Un système de checkpoint indépendant de tout agent de développement
 encadre la validation et le commit des étapes sensibles — voir
 [`checkpoints/README.md`](checkpoints/README.md).
 
+### Système de checkpoint — point d'entrée
+
+`.git/hooks/` n'est jamais suivi par Git : sur un nouveau clone ou un
+nouveau poste, aucun hook du système de checkpoint n'est actif tant que
+cette commande n'a pas été exécutée. C'est la **première étape
+obligatoire**, avant toute commande `validate` :
+
+```powershell
+checkpoints\hooks\install-hooks.ps1
+```
+
+Rappel : ces hooks locaux restent contournables par
+`git commit --no-verify` ; le seul backstop non contournable par un
+agent est la CI (`.github/workflows/checkpoint-validate.yml`). Détail
+complet du système : `checkpoints/README.md`.
+
 ## Installation locale
 
 ```bash
