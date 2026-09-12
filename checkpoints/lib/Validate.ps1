@@ -5,7 +5,7 @@ function Get-ChangedPaths {
     param([Parameter(Mandatory = $true)][string]$RepoRoot)
     Push-Location $RepoRoot
     try {
-        $lines = @(& git status --porcelain=v1)
+        $lines = @(& git status --porcelain=v1 --untracked-files=all)
         $paths = @()
         foreach ($line in $lines) {
             if ([string]::IsNullOrWhiteSpace($line)) { continue }
