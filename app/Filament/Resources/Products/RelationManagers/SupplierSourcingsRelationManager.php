@@ -2,6 +2,7 @@
 
 namespace App\Filament\Resources\Products\RelationManagers;
 
+use App\Filament\Concerns\DeterminesMutationAccessByRole;
 use Filament\Actions\CreateAction;
 use Filament\Actions\DeleteAction;
 use Filament\Actions\EditAction;
@@ -14,6 +15,8 @@ use Filament\Schemas\Schema;
 use Filament\Tables\Columns\IconColumn;
 use Filament\Tables\Columns\TextColumn;
 use Filament\Tables\Table;
+use Illuminate\Auth\Access\Response;
+use Illuminate\Database\Eloquent\Model;
 
 /**
  * Chantier Dropshipping, étape D2.3.2 — interface Filament du sourcing
@@ -43,12 +46,45 @@ use Filament\Tables\Table;
  * un produit dès sa création (product_id non nullable, cascadeOnDelete,
  * cf. migration D1) : elle ne peut pas être "associée" depuis un pool de
  * fiches existantes détachées d'un autre produit.
+ *
+ * Étape D2.4.5 — create/edit/delete/deleteAny restreints à admin/manager,
+ * via les 4 overrides de get*AuthorizationResponse() ci-dessous, exact
+ * symétrique de ce qui a déjà été fait en D2.4.4 sur
+ * SupplierProductSourcingsRelationManager (côté SupplierResource),
+ * fermant l'asymétrie qui existait jusqu'ici entre les deux
+ * RelationManagers de sourcing. Règle de rôle réutilisée depuis
+ * DeterminesMutationAccessByRole (même trait, non modifié par cette
+ * étape) : aucune Policy Laravel introduite, aucune nouvelle règle
+ * métier. deleteAny n'a aucun effet observable ici : aucune
+ * DeleteBulkAction dans ce RelationManager (cf. table() ci-dessous).
  */
 class SupplierSourcingsRelationManager extends RelationManager
 {
+    use DeterminesMutationAccessByRole;
+
     protected static string $relationship = 'supplierSourcings';
 
     protected static ?string $title = 'Sourcing fournisseurs';
+
+    protected function getCreateAuthorizationResponse(): Response
+    {
+        return static::currentUserCanMutate() ? Response::allow() : Response::deny();
+    }
+
+    protected function getEditAuthorizationResponse(Model $record): Response
+    {
+        return static::currentUserCanMutate() ? Response::allow() : Response::deny();
+    }
+
+    protected function getDeleteAuthorizationResponse(Model $record): Response
+    {
+        return static::currentUserCanMutate() ? Response::allow() : Response::deny();
+    }
+
+    protected function getDeleteAnyAuthorizationResponse(): Response
+    {
+        return static::currentUserCanMutate() ? Response::allow() : Response::deny();
+    }
 
     public function form(Schema $schema): Schema
     {

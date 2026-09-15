@@ -2,8 +2,8 @@
 
 namespace Tests\Feature;
 
-use App\Filament\Resources\Suppliers\Pages\EditSupplier;
-use App\Filament\Resources\Suppliers\RelationManagers\SupplierProductSourcingsRelationManager;
+use App\Filament\Resources\Products\Pages\EditProduct;
+use App\Filament\Resources\Products\RelationManagers\SupplierSourcingsRelationManager;
 use App\Models\Product;
 use App\Models\Supplier;
 use App\Models\User;
@@ -15,23 +15,25 @@ use ReflectionMethod;
 use Tests\TestCase;
 
 /**
- * Chantier Dropshipping, étape D2.4.4 — restriction admin/manager des
- * actions create/edit/delete/deleteAny de SupplierProductSourcingsRelationManager
- * (côté SupplierResource). Volontairement séparé de
- * SupplierProductSourcingsRelationManagerTest (D2.4.1), qui exclut
- * explicitement les permissions de son périmètre ("sujet traité
- * séparément après le câblage fonctionnel D2.4.2/D2.4.3").
+ * Chantier Dropshipping, étape D2.4.5 — restriction admin/manager des
+ * actions create/edit/delete/deleteAny de SupplierSourcingsRelationManager
+ * (côté ProductResource). Symétrique de
+ * SupplierProductSourcingsRelationManagerAuthorizationTest (D2.4.4, côté
+ * SupplierResource) : même structure, mêmes 4 profils testés (admin,
+ * manager, viewer, sans rôle), adaptée au formulaire côté Product
+ * (supplier_id requis dans le formulaire, jamais product_id — déjà
+ * déterminé par la relation supplierSourcings() du produit propriétaire).
  *
  * Couvre les 4 méthodes réellement consultées par Filament pour
  * autoriser les actions du tableau (get*AuthorizationResponse(), cf.
  * RelationManager::getDefaultActionAuthorizationResponse()), pas
  * seulement leurs enveloppes bool can*() — create/edit/delete via
- * assertions Filament sur la visibilité réelle du bouton, deleteAny via
- * réflexion sur la méthode protected canDeleteAny() (aucune
+ * assertions Filament sur la visibilité/utilisation réelle du bouton,
+ * deleteAny via réflexion sur la méthode protected canDeleteAny() (aucune
  * DeleteBulkAction configurée dans ce RelationManager, donc aucun effet
  * observable via l'interface).
  */
-class SupplierProductSourcingsRelationManagerAuthorizationTest extends TestCase
+class SupplierSourcingsRelationManagerAuthorizationTest extends TestCase
 {
     use RefreshDatabase;
 
@@ -42,11 +44,11 @@ class SupplierProductSourcingsRelationManagerAuthorizationTest extends TestCase
         $this->seed(RoleSeeder::class);
     }
 
-    private function mountRelationManager(Supplier $supplier): Testable
+    private function mountRelationManager(Product $product): Testable
     {
-        return Livewire::test(SupplierProductSourcingsRelationManager::class, [
-            'ownerRecord' => $supplier,
-            'pageClass' => EditSupplier::class,
+        return Livewire::test(SupplierSourcingsRelationManager::class, [
+            'ownerRecord' => $product,
+            'pageClass' => EditProduct::class,
         ]);
     }
 
@@ -66,52 +68,52 @@ class SupplierProductSourcingsRelationManagerAuthorizationTest extends TestCase
 
     public function test_un_admin_voit_et_peut_utiliser_laction_create(): void
     {
-        $supplier = Supplier::factory()->create(['name' => fake()->company()]);
         $product = Product::factory()->create();
+        $supplier = Supplier::factory()->create(['name' => fake()->company()]);
         $this->actingAs(User::factory()->create()->assignRole('admin'));
 
-        $this->mountRelationManager($supplier)
+        $this->mountRelationManager($product)
             ->assertTableActionVisible('create')
-            ->callTableAction('create', data: ['product_id' => $product->id])
+            ->callTableAction('create', data: ['supplier_id' => $supplier->id])
             ->assertHasNoTableActionErrors();
 
         $this->assertDatabaseHas('supplier_product_sourcing', [
-            'supplier_id' => $supplier->id,
             'product_id' => $product->id,
+            'supplier_id' => $supplier->id,
         ]);
     }
 
     public function test_un_manager_voit_et_peut_utiliser_laction_create(): void
     {
-        $supplier = Supplier::factory()->create(['name' => fake()->company()]);
         $product = Product::factory()->create();
+        $supplier = Supplier::factory()->create(['name' => fake()->company()]);
         $this->actingAs(User::factory()->create()->assignRole('manager'));
 
-        $this->mountRelationManager($supplier)
+        $this->mountRelationManager($product)
             ->assertTableActionVisible('create')
-            ->callTableAction('create', data: ['product_id' => $product->id])
+            ->callTableAction('create', data: ['supplier_id' => $supplier->id])
             ->assertHasNoTableActionErrors();
 
         $this->assertDatabaseHas('supplier_product_sourcing', [
-            'supplier_id' => $supplier->id,
             'product_id' => $product->id,
+            'supplier_id' => $supplier->id,
         ]);
     }
 
     public function test_un_viewer_ne_voit_pas_laction_create(): void
     {
-        $supplier = Supplier::factory()->create(['name' => fake()->company()]);
+        $product = Product::factory()->create();
         $this->actingAs(User::factory()->create()->assignRole('viewer'));
 
-        $this->mountRelationManager($supplier)->assertTableActionHidden('create');
+        $this->mountRelationManager($product)->assertTableActionHidden('create');
     }
 
     public function test_un_utilisateur_sans_role_ne_voit_pas_laction_create(): void
     {
-        $supplier = Supplier::factory()->create(['name' => fake()->company()]);
+        $product = Product::factory()->create();
         $this->actingAs(User::factory()->create()); // aucun rôle
 
-        $this->mountRelationManager($supplier)->assertTableActionHidden('create');
+        $this->mountRelationManager($product)->assertTableActionHidden('create');
     }
 
     /*
@@ -122,44 +124,48 @@ class SupplierProductSourcingsRelationManagerAuthorizationTest extends TestCase
 
     public function test_un_admin_voit_les_actions_edit_et_delete(): void
     {
+        $product = Product::factory()->create();
         $supplier = Supplier::factory()->create(['name' => fake()->company()]);
-        $sourcing = $supplier->productSourcings()->create(['product_id' => Product::factory()->create()->id]);
+        $sourcing = $product->supplierSourcings()->create(['supplier_id' => $supplier->id]);
         $this->actingAs(User::factory()->create()->assignRole('admin'));
 
-        $this->mountRelationManager($supplier)
+        $this->mountRelationManager($product)
             ->assertTableActionVisible('edit', $sourcing)
             ->assertTableActionVisible('delete', $sourcing);
     }
 
     public function test_un_manager_voit_les_actions_edit_et_delete(): void
     {
+        $product = Product::factory()->create();
         $supplier = Supplier::factory()->create(['name' => fake()->company()]);
-        $sourcing = $supplier->productSourcings()->create(['product_id' => Product::factory()->create()->id]);
+        $sourcing = $product->supplierSourcings()->create(['supplier_id' => $supplier->id]);
         $this->actingAs(User::factory()->create()->assignRole('manager'));
 
-        $this->mountRelationManager($supplier)
+        $this->mountRelationManager($product)
             ->assertTableActionVisible('edit', $sourcing)
             ->assertTableActionVisible('delete', $sourcing);
     }
 
     public function test_un_viewer_ne_voit_pas_les_actions_edit_et_delete(): void
     {
+        $product = Product::factory()->create();
         $supplier = Supplier::factory()->create(['name' => fake()->company()]);
-        $sourcing = $supplier->productSourcings()->create(['product_id' => Product::factory()->create()->id]);
+        $sourcing = $product->supplierSourcings()->create(['supplier_id' => $supplier->id]);
         $this->actingAs(User::factory()->create()->assignRole('viewer'));
 
-        $this->mountRelationManager($supplier)
+        $this->mountRelationManager($product)
             ->assertTableActionHidden('edit', $sourcing)
             ->assertTableActionHidden('delete', $sourcing);
     }
 
     public function test_un_utilisateur_sans_role_ne_voit_pas_les_actions_edit_et_delete(): void
     {
+        $product = Product::factory()->create();
         $supplier = Supplier::factory()->create(['name' => fake()->company()]);
-        $sourcing = $supplier->productSourcings()->create(['product_id' => Product::factory()->create()->id]);
+        $sourcing = $product->supplierSourcings()->create(['supplier_id' => $supplier->id]);
         $this->actingAs(User::factory()->create()); // aucun rôle
 
-        $this->mountRelationManager($supplier)
+        $this->mountRelationManager($product)
             ->assertTableActionHidden('edit', $sourcing)
             ->assertTableActionHidden('delete', $sourcing);
     }
@@ -176,67 +182,30 @@ class SupplierProductSourcingsRelationManagerAuthorizationTest extends TestCase
 
     public function test_candeleteany_autorise_admin_et_manager_refuse_viewer_et_sans_role(): void
     {
-        $supplier = Supplier::factory()->create(['name' => fake()->company()]);
+        $product = Product::factory()->create();
 
         $this->actingAs(User::factory()->create()->assignRole('admin'));
         $this->assertTrue($this->callProtectedMethod(
-            $this->mountRelationManager($supplier)->instance(),
+            $this->mountRelationManager($product)->instance(),
             'canDeleteAny'
         ));
 
         $this->actingAs(User::factory()->create()->assignRole('manager'));
         $this->assertTrue($this->callProtectedMethod(
-            $this->mountRelationManager($supplier)->instance(),
+            $this->mountRelationManager($product)->instance(),
             'canDeleteAny'
         ));
 
         $this->actingAs(User::factory()->create()->assignRole('viewer'));
         $this->assertFalse($this->callProtectedMethod(
-            $this->mountRelationManager($supplier)->instance(),
+            $this->mountRelationManager($product)->instance(),
             'canDeleteAny'
         ));
 
         $this->actingAs(User::factory()->create()); // aucun rôle
         $this->assertFalse($this->callProtectedMethod(
-            $this->mountRelationManager($supplier)->instance(),
+            $this->mountRelationManager($product)->instance(),
             'canDeleteAny'
         ));
-    }
-
-    /*
-     * =================================================================
-     * Non-régression D2.3 (Product) — jusqu'à D2.4.4, le RelationManager
-     * côté Product ne redéfinissait aucune des 4 méthodes d'autorisation
-     * (hors périmètre volontaire de cette étape-là). Depuis D2.4.5, cette
-     * asymétrie est fermée : le côté Product redéfinit désormais lui
-     * aussi ces 4 méthodes (cf.
-     * tests/Feature/SupplierSourcingsRelationManagerAuthorizationTest.php
-     * pour sa couverture dédiée). Le test qui caractérisait ici l'ancienne
-     * absence de protection a donc été retiré : son affirmation est
-     * devenue factuellement fausse par construction, ce qui ne constitue
-     * pas une régression.
-     * =================================================================
-     */
-
-    /**
-     * Preuve explicite que les 4 overrides attendus sont bien portés par
-     * SupplierProductSourcingsRelationManager elle-même (et pas
-     * silencieusement absorbés/oubliés).
-     */
-    public function test_le_relationmanager_cote_supplier_redefinit_bien_les_4_methodes_dautorisation(): void
-    {
-        foreach ([
-            'getCreateAuthorizationResponse',
-            'getEditAuthorizationResponse',
-            'getDeleteAuthorizationResponse',
-            'getDeleteAnyAuthorizationResponse',
-        ] as $method) {
-            $reflection = new ReflectionMethod(SupplierProductSourcingsRelationManager::class, $method);
-
-            $this->assertSame(
-                SupplierProductSourcingsRelationManager::class,
-                $reflection->getDeclaringClass()->getName(),
-            );
-        }
     }
 }
