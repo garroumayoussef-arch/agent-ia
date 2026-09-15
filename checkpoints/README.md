@@ -37,6 +37,7 @@ checkpoints\checkpoint.ps1 status
 checkpoints\checkpoint.ps1 validate -Step 2.6.2
 checkpoints\checkpoint.ps1 authorize -Step 2.6.2      # interactif uniquement
 checkpoints\checkpoint.ps1 commit -Step 2.6.2
+checkpoints\checkpoint.ps1 close -Step 2.6.2          # interactif uniquement, etapes validation-only
 checkpoints\checkpoint.ps1 rollback -To checkpoint/2.6.1   # interactif uniquement
 checkpoints\checkpoint.ps1 db -DbAction backup -File <sqlite> -Step 2.6.2
 checkpoints\checkpoint.ps1 db -DbAction verify -File <sqlite>
@@ -170,8 +171,47 @@ contenu/hash) - un raffinement possible mais non implemente ici.
 ## Format de l'etat (`checkpoints/state.json`)
 
 `status` (`idle` / `validated` / `validation_failed` / `ready_to_commit` /
-`committed`), `pending_step`, `last_committed_step`, `last_commit_sha`,
-`authorized_by`, `authorized_at`, `last_validation_log`.
+`committed` / `closed_validation_only`), `pending_step`,
+`last_committed_step`, `last_commit_sha`, `last_closed_step`,
+`last_closed_step_type` (`commit` / `validation_only`), `authorized_by`,
+`authorized_at`, `last_validation_log`.
+
+`last_committed_step`/`last_commit_sha` restent **strictement reserves au
+dernier VRAI commit Git** - ecrits exclusivement par `commit`/le hook
+`post-commit`, jamais par `close` (voir section suivante).
+`last_closed_step`/`last_closed_step_type` suivent la derniere etape
+cloturee par le systeme **quel que soit le moyen** (mis a jour aussi bien
+par `commit` que par `close`) : ces deux paires de champs peuvent diverger
+(une etape validation-only cloturee par `close` fait avancer
+`last_closed_step` sans jamais toucher `last_committed_step`), et c'est
+volontaire - cela rend l'etat non ambigu pour toute etape suivante qui
+consulterait `state.json`.
+
+### Étapes validation-only (`allowed_paths` vide) et `close`
+
+Une etape dont le manifeste declare `allowed_paths: []` (analyse/
+documentation, aucun fichier de production/test a produire) ne peut
+jamais etre cloturee par `commit` : celui-ci refuse par construction des
+qu'il n'y a rien a `git add` ("Aucun fichier autorise n'est modifie/
+stage. Rien a committer."). Une telle etape doit etre cloturee par
+`checkpoints\checkpoint.ps1 close -Step <id>` a la place, une fois
+`validate` puis `authorize` executes avec succes comme pour toute etape.
+
+`close` ne cree **jamais** de commit Git ni de tag `checkpoint/<id>` :
+il n'existe aucun objet Git a creer pour une etape qui ne modifie aucun
+fichier. `close` met a jour `checkpoints/state.json`
+(`status: "closed_validation_only"`, `last_closed_step`,
+`last_closed_step_type: "validation_only"`) et ecrit une entree dans
+`checkpoints/log/` (`commit: null`, `tag: null`,
+`closure_type: "validation_only"`, `head_sha_at_closure` informatif) -
+sans jamais modifier `last_committed_step`/`last_commit_sha`, qui restent
+ceux du dernier vrai commit.
+
+`close` refuse (comme `commit`) une etape dont `allowed_paths` n'est pas
+vide, une etape qui n'a pas ete `validate`e, une etape validee mais pas
+encore `authorize`e, et - meme garde-fou qu'`authorize` - tout appel dont
+l'entree standard est redirigee (`[Console]::IsInputRedirected`) ; il
+exige de retaper l'identifiant complet de l'etape a l'ecran avant d'agir.
 
 ## Format de l'historique (`checkpoints/log/*.json`)
 

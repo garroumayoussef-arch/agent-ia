@@ -12,6 +12,7 @@
     "chemin/relatif/exact/fichier.php",
     "dossier/avec/wildcard/*.php"
   ],
+  "_comment_allowed_paths_vide": "Un tableau vide ([]) est valide pour une etape 'validation-only' (analyse/documentation, aucun fichier de production/test a produire) : une telle etape ne peut jamais etre cloturee par 'commit' (qui refuse s'il n'y a rien a git-add), elle doit l'etre par 'checkpoint.ps1 close -Step <id>' a la place - voir checkpoints/README.md.",
   "_comment_baseline_dirty_paths": "Optionnel. Chemins DEJA modifies/non suivis AVANT le debut de cette etape (autre travail non commite, sans rapport). Exclus du controle de fichiers interdits par 'validate', mais jamais ajoutes par 'commit' (qui ne git-add que allowed_paths). A lister avec des chemins EXACTS, pas de wildcard large, pour ne jamais absorber par erreur un vrai nouveau fichier de cette etape. Ne doit partager aucun chemin avec allowed_paths (validate refuse sinon).",
   "baseline_dirty_paths": [],
   "test_command": "php artisan test --filter=NomDuFiltre",

@@ -581,6 +581,182 @@ try {
     Remove-Item -LiteralPath $manifest2Path -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath (Join-Path $sandbox 'SELFTEST_DUMMY_FILE_2.txt') -ErrorAction SilentlyContinue
 
+    # ==============================================================
+    # Scenarios 26-32 : commande 'close', dediee aux etapes
+    # "validation-only" (allowed_paths vide). Manifeste factice dedie,
+    # commite une fois pour ne jamais interferer avec les
+    # Reset-SandboxState/validate des scenarios precedents (meme
+    # technique que le second manifeste du scenario 16).
+    # ==============================================================
+    $closeManifestPath = Join-Path $sandbox 'checkpoints\steps\checkpoint-selftest-close.json'
+    $closeManifestDef = [ordered]@{
+        step               = 'checkpoint-selftest-close'
+        substep            = $null
+        tier               = 0
+        description        = 'Manifeste factice "validation-only" (allowed_paths vide) pour les tests de close.'
+        depends_on         = 'checkpoint-selftest'
+        locked             = $false
+        unlocked_by        = 'system-selftest'
+        unlocked_at        = $null
+        allowed_paths      = @()
+        test_command       = $null
+        requires_db_backup = $false
+    }
+    ($closeManifestDef | ConvertTo-Json -Depth 10) | Set-Content -LiteralPath $closeManifestPath -Encoding UTF8
+    Push-Location $sandbox
+    try {
+        & git add -- checkpoints/steps/checkpoint-selftest-close.json
+        & git commit --quiet -m "WIP: add validation-only selftest manifest for close scenarios"
+    } finally { Pop-Location }
+
+    . (Join-Path $sandbox 'checkpoints\lib\Close.ps1')
+
+    # --------------------------------------------------------------
+    # Scenario 26 : close refuse une etape dont allowed_paths n'est pas
+    # vide (verification metier, exercable sans interactivite car elle
+    # passe avant le controle d'interactivite dans Invoke-CheckpointClose)
+    # --------------------------------------------------------------
+    Reset-SandboxState
+    $state = Get-CheckpointState
+    $state.status = 'ready_to_commit'
+    $state.pending_step = 'checkpoint-selftest'
+    $state.authorized_by = 'selftest-harness (simule)'
+    $state.authorized_at = (New-Timestamp)
+    Set-CheckpointState -State $state
+    $closeOutput26 = "" | & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $ckpt close -Step checkpoint-selftest 2>&1
+    $closeExit26 = $LASTEXITCODE
+    $stateAfter26 = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json
+    $mentionsAllowedPaths26 = ($closeOutput26 -join "`n") -match 'allowed_paths'
+    Add-Result -Name "26. close refuse une etape dont allowed_paths n'est pas vide" -Passed ($closeExit26 -ne 0 -and $stateAfter26.status -eq 'ready_to_commit' -and $mentionsAllowedPaths26) -Detail "exit=$closeExit26 state.status=$($stateAfter26.status) message_ok=$mentionsAllowedPaths26"
+
+    # --------------------------------------------------------------
+    # Scenario 27 : close refuse une etape non validee (aucune etape en
+    # attente ne correspond)
+    # --------------------------------------------------------------
+    Reset-SandboxState
+    $closeOutput27 = "" | & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $ckpt close -Step checkpoint-selftest-close 2>&1
+    $closeExit27 = $LASTEXITCODE
+    $stateAfter27 = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json
+    Add-Result -Name "27. close refuse une etape non validee (aucune etape en attente)" -Passed ($closeExit27 -ne 0 -and $stateAfter27.status -ne 'closed_validation_only') -Detail "exit=$closeExit27 state.status=$($stateAfter27.status)"
+
+    # --------------------------------------------------------------
+    # Scenario 28 : close refuse une etape validee mais pas encore
+    # autorisee (status='validated', jamais passee par authorize)
+    # --------------------------------------------------------------
+    Reset-SandboxState
+    $state = Get-CheckpointState
+    $state.status = 'validated'
+    $state.pending_step = 'checkpoint-selftest-close'
+    Set-CheckpointState -State $state
+    $closeOutput28 = "" | & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $ckpt close -Step checkpoint-selftest-close 2>&1
+    $closeExit28 = $LASTEXITCODE
+    $stateAfter28 = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json
+    $mentionsAuth28 = ($closeOutput28 -join "`n") -match 'autoris'
+    Add-Result -Name "28. close refuse une etape validee mais pas encore autorisee" -Passed ($closeExit28 -ne 0 -and $stateAfter28.status -eq 'validated' -and $mentionsAuth28) -Detail "exit=$closeExit28 state.status=$($stateAfter28.status) message_ok=$mentionsAuth28"
+
+    # --------------------------------------------------------------
+    # Scenario 29 : meme lorsque les preconditions metier sont satisfaites
+    # (validee + autorisee + allowed_paths vide), close refuse un appel
+    # non-interactif - le garde-fou d'interactivite est reellement
+    # applique, pas seulement les preconditions metier.
+    # --------------------------------------------------------------
+    Reset-SandboxState
+    $state = Get-CheckpointState
+    $state.status = 'ready_to_commit'
+    $state.pending_step = 'checkpoint-selftest-close'
+    $state.authorized_by = 'selftest-harness (simule)'
+    $state.authorized_at = (New-Timestamp)
+    Set-CheckpointState -State $state
+    $closeOutput29 = "" | & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $ckpt close -Step checkpoint-selftest-close 2>&1
+    $closeExit29 = $LASTEXITCODE
+    $stateAfter29 = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json
+    Add-Result -Name "29. close refuse un appel non-interactif meme quand les preconditions metier sont satisfaites" -Passed ($closeExit29 -ne 0 -and $stateAfter29.status -eq 'ready_to_commit') -Detail "exit=$closeExit29 state.status=$($stateAfter29.status)"
+
+    # --------------------------------------------------------------
+    # Scenario 30 : mutation d'etat de Close-CheckpointStep (logique
+    # testee directement, sans la confirmation interactive - meme limite
+    # assumee que le succes d'Authorize.ps1). last_committed_step/
+    # last_commit_sha pre-positionnes a une valeur sentinelle DISTINCTE
+    # pour prouver qu'ils restent strictement inchanges par close.
+    # --------------------------------------------------------------
+    Reset-SandboxState
+    $state = Get-CheckpointState
+    $state.status = 'ready_to_commit'
+    $state.pending_step = 'checkpoint-selftest-close'
+    $state.authorized_by = 'selftest-harness (simule)'
+    $state.authorized_at = (New-Timestamp)
+    $state.last_committed_step = 'SENTINEL-PREVIOUS-STEP'
+    $state.last_commit_sha = 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef'
+    Set-CheckpointState -State $state
+    $closeManifestObj30 = Get-StepManifest -Step 'checkpoint-selftest-close'
+    $stateForClose30 = Get-CheckpointState
+    Close-CheckpointStep -Step 'checkpoint-selftest-close' -Manifest $closeManifestObj30 -State $stateForClose30 | Out-Null
+    $stateAfter30 = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json
+    $lastLog30 = Get-ChildItem -LiteralPath (Join-Path $sandbox 'checkpoints\log') -Filter 'checkpoint-selftest-close-*.json' | Sort-Object LastWriteTime | Select-Object -Last 1
+    $logObj30 = if ($lastLog30) { Get-Content -LiteralPath $lastLog30.FullName -Raw | ConvertFrom-Json } else { $null }
+    $passed30 = ($stateAfter30.status -eq 'closed_validation_only') -and
+        ($null -eq $stateAfter30.pending_step) -and
+        ($stateAfter30.last_closed_step -eq 'checkpoint-selftest-close') -and
+        ($stateAfter30.last_closed_step_type -eq 'validation_only') -and
+        ($stateAfter30.last_committed_step -eq 'SENTINEL-PREVIOUS-STEP') -and
+        ($stateAfter30.last_commit_sha -eq 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef') -and
+        ($null -ne $logObj30) -and
+        ($null -eq $logObj30.commit) -and
+        ($null -eq $logObj30.tag) -and
+        ($logObj30.closure_type -eq 'validation_only')
+    Add-Result -Name "30. Close-CheckpointStep cloture correctement sans toucher last_committed_step/last_commit_sha, et journalise sans commit/tag" -Passed $passed30 -Detail "state.status=$($stateAfter30.status) last_closed_step=$($stateAfter30.last_closed_step) last_closed_step_type=$($stateAfter30.last_closed_step_type) last_committed_step=$($stateAfter30.last_committed_step) last_commit_sha=$($stateAfter30.last_commit_sha)"
+
+    # --------------------------------------------------------------
+    # Scenario 31 : 'commit' continue de refuser une etape validation-only
+    # (comportement INCHANGE, volontairement conserve : commit reste
+    # reserve aux etapes avec du code a committer, close a celles qui
+    # n'en ont pas).
+    # --------------------------------------------------------------
+    Reset-SandboxState
+    $state = Get-CheckpointState
+    $state.status = 'ready_to_commit'
+    $state.pending_step = 'checkpoint-selftest-close'
+    $state.authorized_by = 'selftest-harness (simule)'
+    $state.authorized_at = (New-Timestamp)
+    Set-CheckpointState -State $state
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $ckpt commit -Step checkpoint-selftest-close *> $null
+    $commitExit31 = $LASTEXITCODE
+    $stateAfter31 = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json
+    Add-Result -Name "31. commit continue de refuser une etape validation-only (allowed_paths vide) - comportement inchange" -Passed ($commitExit31 -ne 0 -and $stateAfter31.status -ne 'committed') -Detail "exit=$commitExit31 state.status=$($stateAfter31.status)"
+
+    # --------------------------------------------------------------
+    # Scenario 32 : non-regression - un commit NORMAL (allowed_paths non
+    # vide, ancien manifeste checkpoint-selftest deja utilise par les
+    # scenarios 1-25) reste inchange dans son resultat Git (tag/message)
+    # ET porte desormais aussi les nouveaux champs de tracabilite
+    # (last_closed_step/last_closed_step_type='commit'), pour que ces
+    # champs restent non-ambigus apres une etape normale posterieure a
+    # une etape close.
+    # --------------------------------------------------------------
+    Reset-SandboxState
+    $state = Get-CheckpointState
+    $state.status = 'ready_to_commit'
+    $state.pending_step = 'checkpoint-selftest'
+    $state.authorized_by = 'selftest-harness (simule)'
+    $state.authorized_at = (New-Timestamp)
+    Set-CheckpointState -State $state
+    "modif autorisee 32" | Set-Content -LiteralPath $dummyFile
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $ckpt commit -Step checkpoint-selftest *> $null
+    $commitExit32 = $LASTEXITCODE
+    $stateAfter32 = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json
+    Push-Location $sandbox
+    try {
+        $tagExists32 = @(& git tag -l 'checkpoint/checkpoint-selftest')
+        $lastMsg32 = (& git log -1 --pretty=%B).Trim()
+    } finally { Pop-Location }
+    $passed32 = ($commitExit32 -eq 0) -and ($stateAfter32.status -eq 'committed') -and
+        ($stateAfter32.last_closed_step -eq 'checkpoint-selftest') -and
+        ($stateAfter32.last_closed_step_type -eq 'commit') -and
+        ($tagExists32.Count -gt 0) -and ($lastMsg32 -match '^checkpoint\(step-checkpoint-selftest\):')
+    Add-Result -Name "32. Un commit normal (ancien manifeste, allowed_paths non vide) reste inchange ET porte les nouveaux champs de tracabilite (last_closed_step_type='commit')" -Passed $passed32 -Detail "exit=$commitExit32 state.status=$($stateAfter32.status) last_closed_step=$($stateAfter32.last_closed_step) last_closed_step_type=$($stateAfter32.last_closed_step_type) tag=$($tagExists32 -join ',')"
+
+    Remove-Item -LiteralPath $closeManifestPath -ErrorAction SilentlyContinue
+
 } finally {
     Pop-Location
 }

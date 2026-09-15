@@ -46,6 +46,8 @@ try {
                 $state.last_committed_step = $step
                 $state.last_commit_sha = $sha
                 $state.pending_step = $null
+                $state | Add-Member -NotePropertyName 'last_closed_step' -NotePropertyValue $step -Force
+                $state | Add-Member -NotePropertyName 'last_closed_step_type' -NotePropertyValue 'commit' -Force
                 Set-CheckpointState -State $state
             }
             Remove-PendingCheckpointMarker

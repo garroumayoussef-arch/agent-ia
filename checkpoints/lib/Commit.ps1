@@ -99,6 +99,8 @@ function Invoke-CheckpointCommit {
         $state.last_committed_step = $Step
         $state.last_commit_sha = $commitSha
         $state.pending_step = $null
+        $state | Add-Member -NotePropertyName 'last_closed_step' -NotePropertyValue $Step -Force
+        $state | Add-Member -NotePropertyName 'last_closed_step_type' -NotePropertyValue 'commit' -Force
         Set-CheckpointState -State $state
 
         $logDir = Join-Path (Get-CheckpointsDir) 'log'
