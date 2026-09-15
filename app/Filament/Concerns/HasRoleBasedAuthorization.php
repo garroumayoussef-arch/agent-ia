@@ -2,8 +2,6 @@
 
 namespace App\Filament\Concerns;
 
-use Illuminate\Support\Facades\Auth;
-
 /**
  * Autorisation de mutation basée sur les rôles (admin/manager/viewer),
  * appliquée à toutes les Resources "métier" du panel (catalogue, stock,
@@ -17,9 +15,17 @@ use Illuminate\Support\Facades\Auth;
  * UserResource n'utilise PAS ce trait : la gestion des utilisateurs et
  * de leurs rôles est réservée aux admins, y compris en lecture (voir
  * ses propres méthodes can*()).
+ *
+ * La règle elle-même (currentUserCanMutate()) vit dans
+ * DeterminesMutationAccessByRole (étape D2.4.4), extraite pour être
+ * réutilisable par des classes dont la forme des can*() diffère de
+ * celle d'une Resource (ex. RelationManager) — comportement de ce
+ * trait strictement inchangé par cette extraction.
  */
 trait HasRoleBasedAuthorization
 {
+    use DeterminesMutationAccessByRole;
+
     public static function canCreate(): bool
     {
         return static::currentUserCanMutate();
@@ -38,16 +44,5 @@ trait HasRoleBasedAuthorization
     public static function canDeleteAny(): bool
     {
         return static::currentUserCanMutate();
-    }
-
-    private static function currentUserCanMutate(): bool
-    {
-        $user = Auth::user();
-
-        if (! $user) {
-            return false;
-        }
-
-        return $user->hasAnyRole(['admin', 'manager']);
     }
 }
