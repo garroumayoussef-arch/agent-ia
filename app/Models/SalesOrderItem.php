@@ -5,6 +5,7 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasOne;
 
 class SalesOrderItem extends Model
 {
@@ -203,6 +204,19 @@ class SalesOrderItem extends Model
     public function taxRate(): BelongsTo
     {
         return $this->belongsTo(TaxRate::class);
+    }
+
+    /**
+     * Chantier Dropshipping, étape D2.4.7 — instantané de la décision de
+     * sourcing fournisseur pour cette ligne, si elle a été allouée
+     * (SalesOrderItemAllocation::recordFor()). Relation additive en
+     * lecture seule : ne crée aucune nouvelle écriture sur
+     * SalesOrderItem. Au plus une allocation par ligne dans cette étape
+     * (contrainte UNIQUE sur sales_order_item_id).
+     */
+    public function allocation(): HasOne
+    {
+        return $this->hasOne(SalesOrderItemAllocation::class);
     }
 
     /**
