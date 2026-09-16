@@ -2,6 +2,7 @@
 
 namespace App\Filament\Resources\SalesOrders\Schemas;
 
+use App\Filament\Resources\PurchaseOrders\Tables\PurchaseOrdersTable;
 use App\Filament\Resources\SalesOrders\Tables\SalesOrdersTable;
 use App\Models\SalesOrder;
 use App\Models\SalesOrderItem;
@@ -130,8 +131,26 @@ class SalesOrderInfolist
                                         return $allocation->supplierProductSourcing?->supplier?->name
                                             .' — '.$purchaseOrder->reference;
                                     }),
+
+                                // Chantier Dropshipping, étape D2.8.2
+                                // (Gap B) — statut réel de l'achat
+                                // fournisseur généré (D2.6.3), distinct
+                                // de sourcing_status ci-dessus qui ne
+                                // s'appuie pas sur cette information :
+                                // permet notamment de distinguer un
+                                // achat annulé (PurchaseOrder::cancel())
+                                // d'un achat actif. Lit le PurchaseOrder
+                                // déjà eager-chargé par le ->state() du
+                                // RepeatableEntry ci-dessus (aucun N+1).
+                                TextEntry::make('purchase_order_status')
+                                    ->label('Statut achat fournisseur')
+                                    ->badge()
+                                    ->placeholder('-')
+                                    ->state(fn (SalesOrderItem $record): ?string => $record->allocation?->purchaseOrderItem?->purchaseOrder?->status)
+                                    ->formatStateUsing(fn (?string $state): ?string => PurchaseOrdersTable::statusLabel($state))
+                                    ->color(fn (?string $state): ?string => PurchaseOrdersTable::statusColor($state)),
                             ])
-                            ->columns(6),
+                            ->columns(7),
                     ]),
 
                 Section::make('Notes')

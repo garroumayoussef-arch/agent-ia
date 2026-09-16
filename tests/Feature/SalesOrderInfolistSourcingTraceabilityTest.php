@@ -37,6 +37,13 @@ use Tests\TestCase;
  * l'écriture de ce fichier : "Non sourcé" (aucune allocation), "Non
  * généré" (allocation sans PurchaseOrder), "{fournisseur} — {référence}"
  * (allocation convertie en PurchaseOrder).
+ *
+ * Chantier Dropshipping, étape D2.8 (Gap B) — méthodes 4 et 5 ajoutées :
+ * caractérisation ADDITIVE d'une nouvelle colonne "Statut achat
+ * fournisseur" (Option B2, validée explicitement), STRICTEMENT
+ * SÉPARÉE de l'entrée "sourcing_status" ci-dessus dont le contrat D2.7
+ * (déjà validé, tagué, poussé) reste inchangé — aucune des 3 méthodes
+ * précédentes n'est modifiée.
  */
 class SalesOrderInfolistSourcingTraceabilityTest extends TestCase
 {
@@ -136,5 +143,67 @@ class SalesOrderInfolistSourcingTraceabilityTest extends TestCase
         Livewire::test(ViewSalesOrder::class, ['record' => $order->fresh()->getKey()])
             ->assertSuccessful()
             ->assertSee("Fournisseur Beta — {$purchaseOrder->reference}");
+    }
+
+    /*
+     * =================================================================
+     * 4. (D2.8, Gap B) PurchaseOrder généré, statut par défaut (Brouillon)
+     *    : la nouvelle colonne "Statut achat fournisseur" affiche le
+     *    libellé réel du statut, réutilisant PurchaseOrdersTable::
+     *    statusLabel() (aucun nouveau statut métier).
+     * =================================================================
+     */
+    public function test_statut_achat_fournisseur_affiche_le_libelle_du_statut(): void
+    {
+        $product = Product::factory()->create();
+        $this->createSourcing($product, 'Fournisseur Delta');
+
+        $order = SalesOrder::factory()->create();
+        $item = SalesOrderItem::factory()->create([
+            'sales_order_id' => $order->id,
+            'product_id' => $product->id,
+        ]);
+        $order->markAsConfirmed();
+        $allocation = SalesOrderItemAllocation::recordFor($item->fresh());
+
+        (new CreatePurchaseOrdersFromAllocations)->execute(
+            SalesOrderItemAllocation::whereKey($allocation->id)->get()
+        );
+
+        Livewire::test(ViewSalesOrder::class, ['record' => $order->fresh()->getKey()])
+            ->assertSuccessful()
+            ->assertSee('Brouillon');
+    }
+
+    /*
+     * =================================================================
+     * 5. (D2.8, Gap B) PurchaseOrder ANNULÉ : la nouvelle colonne
+     *    distingue explicitement ce cas — objectif central du Gap B,
+     *    absent du contrat D2.7 (qui affiche la même chose quel que
+     *    soit le statut du PurchaseOrder).
+     * =================================================================
+     */
+    public function test_statut_achat_fournisseur_distingue_un_achat_annule(): void
+    {
+        $product = Product::factory()->create();
+        $this->createSourcing($product, 'Fournisseur Epsilon');
+
+        $order = SalesOrder::factory()->create();
+        $item = SalesOrderItem::factory()->create([
+            'sales_order_id' => $order->id,
+            'product_id' => $product->id,
+        ]);
+        $order->markAsConfirmed();
+        $allocation = SalesOrderItemAllocation::recordFor($item->fresh());
+
+        (new CreatePurchaseOrdersFromAllocations)->execute(
+            SalesOrderItemAllocation::whereKey($allocation->id)->get()
+        );
+
+        PurchaseOrder::firstOrFail()->cancel();
+
+        Livewire::test(ViewSalesOrder::class, ['record' => $order->fresh()->getKey()])
+            ->assertSuccessful()
+            ->assertSee('Annulé');
     }
 }
