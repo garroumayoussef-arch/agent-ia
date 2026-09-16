@@ -6,6 +6,7 @@ use App\Services\SupplierSourcingResolver;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasOne;
 use Illuminate\Support\Facades\DB;
 
 /**
@@ -112,5 +113,22 @@ class SalesOrderItemAllocation extends Model
     public function user(): BelongsTo
     {
         return $this->belongsTo(User::class);
+    }
+
+    /**
+     * Chantier Dropshipping, étape D2.6.2 — la ligne de commande
+     * fournisseur (PurchaseOrderItem) qui a converti cette allocation en
+     * achat effectif, si elle existe (App\Services\
+     * CreatePurchaseOrdersFromAllocations, D2.6.3). Relation additive en
+     * lecture seule : ne crée aucune nouvelle écriture sur
+     * SalesOrderItemAllocation. Au plus une PurchaseOrderItem par
+     * allocation (contrainte UNIQUE sur
+     * purchase_order_items.sales_order_item_allocation_id) — sert
+     * exclusivement au contrôle d'idempotence de D2.6.3, jamais à
+     * recordFor() ci-dessus, qui reste inchangé.
+     */
+    public function purchaseOrderItem(): HasOne
+    {
+        return $this->hasOne(PurchaseOrderItem::class);
     }
 }

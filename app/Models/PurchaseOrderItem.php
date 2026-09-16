@@ -219,6 +219,21 @@ class PurchaseOrderItem extends Model
     }
 
     /**
+     * Chantier Dropshipping, étape D2.6.2 — la décision de sourcing
+     * (SalesOrderItemAllocation, D2.4.7) qui a produit cette ligne
+     * d'achat, si elle a été créée via App\Services\
+     * CreatePurchaseOrdersFromAllocations (D2.6.3) plutôt que
+     * manuellement. Relation additive en lecture seule : ne crée aucune
+     * nouvelle écriture sur PurchaseOrderItem, son cycle de réception
+     * (quantity_received) reste entièrement inchangé. Nullable : une
+     * ligne créée manuellement (flux existant) n'a pas de valeur ici.
+     */
+    public function allocation(): BelongsTo
+    {
+        return $this->belongsTo(SalesOrderItemAllocation::class, 'sales_order_item_allocation_id');
+    }
+
+    /**
      * Résout le taux de TVA applicable à cette ligne d'achat :
      * explicite sur la ligne > taux d'achat par défaut du produit >
      * taux d'achat par défaut système. Requêtes fraîches (pas les
