@@ -3,6 +3,7 @@
 namespace App\Filament\Resources\PurchaseOrders\Schemas;
 
 use App\Filament\Resources\PurchaseOrders\Tables\PurchaseOrdersTable;
+use App\Models\PurchaseOrder;
 use App\Models\PurchaseOrderItem;
 use App\Models\PurchaseOrderItemReturn;
 use Filament\Infolists\Components\RepeatableEntry;
@@ -50,6 +51,17 @@ class PurchaseOrderInfolist
                     ->schema([
                         RepeatableEntry::make('items')
                             ->label('')
+                            // Chantier Dropshipping, étape D2.8 (Gap A) —
+                            // remplace la résolution par défaut de
+                            // Filament (accès paresseux $record->items)
+                            // par un chargement explicite, pour que
+                            // allocation/salesOrderItem/salesOrder ne
+                            // coûte qu'une requête pour l'ensemble des
+                            // lignes, quel que soit leur nombre — même
+                            // pattern que SalesOrderInfolist.php (D2.7.2).
+                            ->state(fn (PurchaseOrder $record) => $record->items()
+                                ->with(['allocation.salesOrderItem.salesOrder'])
+                                ->get())
                             ->schema([
                                 TextEntry::make('product.nom')
                                     ->label('Produit'),
@@ -85,8 +97,29 @@ class PurchaseOrderInfolist
                                     ->label('Prix unitaire')
                                     ->money('EUR')
                                     ->placeholder('-'),
+
+                                // Chantier Dropshipping, étape D2.8 (Gap A)
+                                // — traçabilité READ-ONLY symétrique de
+                                // D2.7 : origine SalesOrder de cette ligne
+                                // si elle a été générée par
+                                // CreatePurchaseOrdersFromAllocations
+                                // (D2.6.3), lue via la relation existante
+                                // PurchaseOrderItem::allocation(), sans
+                                // aucun appel à ce service ni à
+                                // SalesOrderItemAllocation::recordFor().
+                                TextEntry::make('origin')
+                                    ->label('Origine')
+                                    ->state(function (PurchaseOrderItem $record): string {
+                                        $salesOrder = $record->allocation?->salesOrderItem?->salesOrder;
+
+                                        if (! $salesOrder) {
+                                            return 'Achat direct';
+                                        }
+
+                                        return "Vente {$salesOrder->reference}";
+                                    }),
                             ])
-                            ->columns(5),
+                            ->columns(6),
                     ]),
 
                 // Chantier "bon de retour" (décision 4, validée) — section
