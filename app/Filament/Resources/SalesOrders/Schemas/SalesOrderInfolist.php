@@ -3,6 +3,7 @@
 namespace App\Filament\Resources\SalesOrders\Schemas;
 
 use App\Filament\Resources\SalesOrders\Tables\SalesOrdersTable;
+use App\Models\SalesOrder;
 use App\Models\SalesOrderItem;
 use Filament\Infolists\Components\RepeatableEntry;
 use Filament\Infolists\Components\TextEntry;
@@ -49,6 +50,22 @@ class SalesOrderInfolist
                     ->schema([
                         RepeatableEntry::make('items')
                             ->label('')
+                            // Chantier Dropshipping, étape D2.7.2 —
+                            // remplace la résolution par défaut de
+                            // Filament (accès paresseux $record->items,
+                            // une requête par relation supplémentaire et
+                            // par ligne) par un chargement explicite,
+                            // pour que allocation/supplierProductSourcing/
+                            // supplier et allocation/purchaseOrderItem/
+                            // purchaseOrder ne coûtent qu'une requête
+                            // chacun pour l'ensemble des lignes, quel que
+                            // soit leur nombre.
+                            ->state(fn (SalesOrder $record) => $record->items()
+                                ->with([
+                                    'allocation.supplierProductSourcing.supplier',
+                                    'allocation.purchaseOrderItem.purchaseOrder',
+                                ])
+                                ->get())
                             ->schema([
                                 TextEntry::make('product.nom')
                                     ->label('Produit'),
@@ -84,8 +101,37 @@ class SalesOrderInfolist
                                     ->label('Prix unitaire')
                                     ->money('EUR')
                                     ->placeholder('-'),
+
+                                // Chantier Dropshipping, étape D2.7.2 —
+                                // traçabilité READ-ONLY du sourcing
+                                // fournisseur (D2.4.7) et de la commande
+                                // fournisseur éventuellement générée
+                                // (D2.6.3), sans aucune nouvelle règle de
+                                // sélection fournisseur ni de génération
+                                // de PurchaseOrder : la donnée est lue
+                                // telle que déjà décidée/persistée par
+                                // SalesOrderItemAllocation::recordFor()
+                                // et CreatePurchaseOrdersFromAllocations.
+                                TextEntry::make('sourcing_status')
+                                    ->label('Sourcing fournisseur')
+                                    ->state(function (SalesOrderItem $record): string {
+                                        $allocation = $record->allocation;
+
+                                        if (! $allocation) {
+                                            return 'Non sourcé';
+                                        }
+
+                                        $purchaseOrder = $allocation->purchaseOrderItem?->purchaseOrder;
+
+                                        if (! $purchaseOrder) {
+                                            return 'Non généré';
+                                        }
+
+                                        return $allocation->supplierProductSourcing?->supplier?->name
+                                            .' — '.$purchaseOrder->reference;
+                                    }),
                             ])
-                            ->columns(5),
+                            ->columns(6),
                     ]),
 
                 Section::make('Notes')
