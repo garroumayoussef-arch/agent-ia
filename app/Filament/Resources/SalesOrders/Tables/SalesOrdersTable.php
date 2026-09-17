@@ -2,6 +2,7 @@
 
 namespace App\Filament\Resources\SalesOrders\Tables;
 
+use App\Filament\Resources\PurchaseOrders\Tables\PurchaseOrdersTable;
 use App\Models\Customer;
 use App\Models\SalesOrder;
 use Filament\Actions\DeleteAction;
@@ -11,12 +12,35 @@ use Filament\Notifications\Notification;
 use Filament\Tables;
 use Filament\Tables\Filters\SelectFilter;
 use Filament\Tables\Table;
+use Illuminate\Database\Eloquent\Builder;
 
 class SalesOrdersTable
 {
+    // Chantier Dropshipping, Gap D — ordre de priorité verrouillé (Q1) :
+    // ne jamais masquer une annulation, même si d'autres lignes de la
+    // commande sont dans un état plus avancé.
+    private const SOURCING_OVERVIEW_PRIORITY = [
+        'cancelled',
+        'non_sourced',
+        'non_generated',
+        'draft',
+        'ordered',
+        'partially_received',
+        'received',
+    ];
+
     public static function configure(Table $table): Table
     {
         return $table
+            // Chantier Dropshipping, Gap D — chargement explicite à
+            // l'échelle de la liste (plusieurs commandes par page), sur
+            // le même principe que SalesOrderInfolist.php (D2.7.2) qui ne
+            // traite qu'un seul enregistrement : sans ce eager loading,
+            // sourcingOverviewState() ci-dessous provoquerait un N+1 par
+            // ligne de chaque commande affichée.
+            ->modifyQueryUsing(fn (Builder $query) => $query->with([
+                'items.allocation.purchaseOrderItem.purchaseOrder',
+            ]))
             ->columns([
                 Tables\Columns\TextColumn::make('reference')
                     ->label('Référence')
@@ -37,6 +61,22 @@ class SalesOrdersTable
                 Tables\Columns\TextColumn::make('items_count')
                     ->label('Lignes')
                     ->counts('items'),
+
+                // Chantier Dropshipping, Gap D — visibilité READ-ONLY,
+                // dans la liste, de l'état sourcing/achat fournisseur
+                // déjà calculé ligne par ligne dans SalesOrderInfolist.php
+                // (sourcing_status D2.7, purchase_order_status D2.8.2) :
+                // agrégation en un seul badge par commande selon la
+                // priorité fixe verrouillée (Gap D, Q1) — ne réévalue
+                // aucune règle de sourcing, ne lit que ce qui est déjà
+                // persisté par SalesOrderItemAllocation::recordFor()
+                // (D2.4.7) et CreatePurchaseOrdersFromAllocations (D2.6).
+                Tables\Columns\TextColumn::make('sourcing_overview')
+                    ->label('Sourcing fournisseur')
+                    ->badge()
+                    ->state(fn (SalesOrder $record): string => static::sourcingOverviewState($record))
+                    ->formatStateUsing(fn (string $state): string => static::sourcingOverviewLabel($state))
+                    ->color(fn (string $state): string => static::sourcingOverviewColor($state)),
 
                 Tables\Columns\TextColumn::make('order_date')
                     ->label('Date de commande')
@@ -114,6 +154,56 @@ class SalesOrdersTable
             SalesOrder::STATUS_SHIPPED => 'success',
             SalesOrder::STATUS_CANCELLED => 'danger',
             default => 'gray',
+        };
+    }
+
+    /**
+     * Chantier Dropshipping, Gap D — état agrégé (une seule valeur par
+     * commande) de sourcing/achat fournisseur, calculé sur l'ensemble des
+     * lignes déjà chargées par modifyQueryUsing() ci-dessus. Applique la
+     * priorité verrouillée (Gap D, Q1) : une seule ligne annulée suffit à
+     * faire remonter 'cancelled' au niveau de la commande, quel que soit
+     * l'état des autres lignes.
+     */
+    public static function sourcingOverviewState(SalesOrder $record): string
+    {
+        $states = $record->items->map(function ($item): string {
+            $allocation = $item->allocation;
+
+            if (! $allocation) {
+                return 'non_sourced';
+            }
+
+            $purchaseOrder = $allocation->purchaseOrderItem?->purchaseOrder;
+
+            return $purchaseOrder?->status ?? 'non_generated';
+        });
+
+        foreach (self::SOURCING_OVERVIEW_PRIORITY as $candidate) {
+            if ($states->contains($candidate)) {
+                return $candidate;
+            }
+        }
+
+        // Commande sans ligne (cas dégénéré, non observé en pratique).
+        return 'non_sourced';
+    }
+
+    public static function sourcingOverviewLabel(string $state): string
+    {
+        return match ($state) {
+            'non_sourced' => 'Non sourcé',
+            'non_generated' => 'Non généré',
+            default => PurchaseOrdersTable::statusLabel($state),
+        };
+    }
+
+    public static function sourcingOverviewColor(string $state): string
+    {
+        return match ($state) {
+            'non_sourced' => 'warning',
+            'non_generated' => 'gray',
+            default => PurchaseOrdersTable::statusColor($state),
         };
     }
 }
