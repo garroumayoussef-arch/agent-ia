@@ -2,6 +2,7 @@
 
 namespace App\Filament\Resources\SalesOrders\Pages;
 
+use App\Filament\Resources\SalesOrders\Concerns\HasSalesOrderReallocationAction;
 use App\Filament\Resources\SalesOrders\Concerns\HasSalesOrderSourcingAction;
 use App\Filament\Resources\SalesOrders\Pages\Concerns\HasSalesOrderWorkflowActions;
 use App\Filament\Resources\SalesOrders\SalesOrderResource;
@@ -17,6 +18,7 @@ class EditSalesOrder extends EditRecord
 {
     use HasSalesOrderWorkflowActions;
     use HasSalesOrderSourcingAction;
+    use HasSalesOrderReallocationAction;
 
     protected static string $resource = SalesOrderResource::class;
 
@@ -110,6 +112,56 @@ class EditSalesOrder extends EditRecord
                     Notification::make()
                         ->title('Commandes fournisseurs générées')
                         ->body(implode(', ', $parts).'.')
+                        ->color($failed > 0 ? 'warning' : 'success')
+                        ->send();
+                }),
+            Action::make('reallocateSourcing')
+                ->label('Réallouer vers un autre fournisseur')
+                ->icon('heroicon-o-arrow-path')
+                ->color('info')
+                ->visible(fn (SalesOrder $record): bool => in_array(
+                    $record->status,
+                    [SalesOrder::STATUS_CONFIRMED, SalesOrder::STATUS_PARTIALLY_SHIPPED],
+                    true
+                ))
+                ->authorize(fn (SalesOrder $record): bool => SalesOrderResource::canEdit($record))
+                ->authorizationNotification()
+                ->authorizationMessage('Cette action est réservée aux administrateurs et gestionnaires.')
+                ->requiresConfirmation()
+                ->action(function (SalesOrder $record) {
+                    $result = $this->orchestrateReallocation($record);
+
+                    $reallocated = count($result['reallocated']);
+                    $skipped = count($result['skipped']);
+                    $failed = count($result['failed']);
+
+                    if ($reallocated === 0 && $failed === 0) {
+                        Notification::make()->title('Aucune ligne éligible à la ré-allocation')->info()->send();
+
+                        return;
+                    }
+
+                    $parts = array_filter([
+                        $reallocated > 0 ? "{$reallocated} ligne(s) ré-allouée(s)" : null,
+                        $skipped > 0 ? "{$skipped} non éligible(s)" : null,
+                        $failed > 0 ? "{$failed} en échec" : null,
+                    ]);
+
+                    // Les messages d'échec sont affichés explicitement
+                    // (spécification validée : information explicite à
+                    // l'utilisateur, notamment "aucun fournisseur
+                    // alternatif compatible"), jamais réduits à un
+                    // simple compte contrairement à allocateSourcing/
+                    // createPurchaseOrders.
+                    $body = implode(', ', $parts).'.';
+
+                    if ($failed > 0) {
+                        $body .= ' '.implode(' ', array_unique($result['failed']));
+                    }
+
+                    Notification::make()
+                        ->title('Ré-allocation traitée')
+                        ->body($body)
                         ->color($failed > 0 ? 'warning' : 'success')
                         ->send();
                 }),

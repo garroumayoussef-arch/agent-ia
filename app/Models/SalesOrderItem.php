@@ -211,12 +211,27 @@ class SalesOrderItem extends Model
      * sourcing fournisseur pour cette ligne, si elle a été allouée
      * (SalesOrderItemAllocation::recordFor()). Relation additive en
      * lecture seule : ne crée aucune nouvelle écriture sur
-     * SalesOrderItem. Au plus une allocation par ligne dans cette étape
-     * (contrainte UNIQUE sur sales_order_item_id).
+     * SalesOrderItem.
+     *
+     * Chantier Dropshipping, étape D2.9 — depuis la levée de la
+     * contrainte UNIQUE(sales_order_item_id) (D2.9), plusieurs
+     * allocations peuvent exister pour une même ligne : l'allocation
+     * d'origine (recordFor()), puis une ou plusieurs ré-allocations
+     * additives (reallocateFor()), jamais supprimées ni modifiées.
+     * latestOfMany() fait toujours remonter la plus récente = l'ACTIVE,
+     * jamais une allocation historique remplacée — la chaîne est
+     * garantie linéaire (une seule racine par recordFor()->exists(), un
+     * seul remplaçant par allocation via UNIQUE(replaces_allocation_id),
+     * D2.9), donc "la plus récente" coïncide toujours avec "celle non
+     * encore remplacée". Même nom, même type (HasOne) qu'avant D2.9 :
+     * tous les appelants existants (D2.6/D2.7/D2.8.x, y compris
+     * l'eager-loading `items.allocation.…`) continuent de fonctionner
+     * sans aucune modification, et reçoivent désormais correctement
+     * l'allocation courante plutôt qu'une ligne arbitraire.
      */
     public function allocation(): HasOne
     {
-        return $this->hasOne(SalesOrderItemAllocation::class);
+        return $this->hasOne(SalesOrderItemAllocation::class)->latestOfMany();
     }
 
     /**

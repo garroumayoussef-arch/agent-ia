@@ -262,4 +262,114 @@ class SupplierSourcingResolverTest extends TestCase
             $this->assertSame($sourcing->id, $best->id);
         }
     }
+
+    /*
+     * =================================================================
+     * D2.9 — exclusion d'un fournisseur (ré-allocation manuelle),
+     * paramètre optionnel et rétrocompatible
+     * =================================================================
+     */
+
+    public function test_best_exclut_le_fournisseur_donne_et_retient_le_suivant(): void
+    {
+        $product = Product::factory()->create();
+
+        $exclu = $product->supplierSourcings()->create([
+            'supplier_id' => Supplier::factory()->create(['name' => fake()->company()])->id,
+            'priority' => 1,
+            'is_active' => true,
+        ]);
+        $alternatif = $product->supplierSourcings()->create([
+            'supplier_id' => Supplier::factory()->create(['name' => fake()->company()])->id,
+            'priority' => 2,
+            'is_active' => true,
+        ]);
+
+        $result = $this->resolver()->best($product, excludeSupplierId: $exclu->supplier_id);
+
+        $this->assertSame($alternatif->id, $result->id);
+    }
+
+    public function test_best_retourne_null_si_le_fournisseur_exclu_est_le_seul_actif(): void
+    {
+        $product = Product::factory()->create();
+
+        $unique = $product->supplierSourcings()->create([
+            'supplier_id' => Supplier::factory()->create(['name' => fake()->company()])->id,
+            'is_active' => true,
+        ]);
+
+        $this->assertNull($this->resolver()->best($product, excludeSupplierId: $unique->supplier_id));
+    }
+
+    public function test_exclusion_sur_palier_specifique_ne_bascule_jamais_vers_le_generique(): void
+    {
+        $product = Product::factory()->create();
+        $variant = ProductVariant::factory()->create(['product_id' => $product->id]);
+
+        // Unique fournisseur spécifique actif de la variante.
+        $sourcingSpecifique = $variant->supplierSourcings()->create([
+            'product_id' => $product->id,
+            'supplier_id' => Supplier::factory()->create(['name' => fake()->company()])->id,
+            'is_active' => true,
+        ]);
+
+        // Fournisseur générique du produit parent, actif, meilleure
+        // priorité en valeur — ne doit JAMAIS être proposé ici : exclure
+        // l'unique fournisseur spécifique ne doit pas faire basculer
+        // silencieusement vers le générique (règle de priorité stricte
+        // D2.4.6, jamais violée par l'exclusion D2.9).
+        $product->supplierSourcings()->create([
+            'supplier_id' => Supplier::factory()->create(['name' => fake()->company()])->id,
+            'product_variant_id' => null,
+            'priority' => 1,
+            'is_active' => true,
+        ]);
+
+        $result = $this->resolver()->best($variant, excludeSupplierId: $sourcingSpecifique->supplier_id);
+
+        $this->assertNull($result);
+    }
+
+    public function test_exclusion_sur_palier_specifique_retient_lautre_fournisseur_specifique(): void
+    {
+        $product = Product::factory()->create();
+        $variant = ProductVariant::factory()->create(['product_id' => $product->id]);
+
+        $exclu = $variant->supplierSourcings()->create([
+            'product_id' => $product->id,
+            'supplier_id' => Supplier::factory()->create(['name' => fake()->company()])->id,
+            'priority' => 1,
+            'is_active' => true,
+        ]);
+        $alternatif = $variant->supplierSourcings()->create([
+            'product_id' => $product->id,
+            'supplier_id' => Supplier::factory()->create(['name' => fake()->company()])->id,
+            'priority' => 2,
+            'is_active' => true,
+        ]);
+
+        $result = $this->resolver()->best($variant, excludeSupplierId: $exclu->supplier_id);
+
+        $this->assertSame($alternatif->id, $result->id);
+    }
+
+    public function test_sans_exclusion_le_comportement_reste_strictement_inchange(): void
+    {
+        $product = Product::factory()->create();
+
+        $meilleur = $product->supplierSourcings()->create([
+            'supplier_id' => Supplier::factory()->create(['name' => fake()->company()])->id,
+            'priority' => 1,
+            'is_active' => true,
+        ]);
+        $product->supplierSourcings()->create([
+            'supplier_id' => Supplier::factory()->create(['name' => fake()->company()])->id,
+            'priority' => 2,
+            'is_active' => true,
+        ]);
+
+        $this->assertSame($meilleur->id, $this->resolver()->best($product)->id);
+        $this->assertSame($meilleur->id, $this->resolver()->forProduct($product)->first()->id);
+    }
 }
