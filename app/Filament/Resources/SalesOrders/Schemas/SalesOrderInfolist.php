@@ -65,6 +65,15 @@ class SalesOrderInfolist
                                 ->with([
                                     'allocation.supplierProductSourcing.supplier',
                                     'allocation.purchaseOrderItem.purchaseOrder',
+                                    // Chantier Dropshipping, étape D2.10 —
+                                    // traçabilité READ-ONLY de la
+                                    // ré-allocation (D2.9) : chargement
+                                    // explicite du même niveau que les
+                                    // deux lignes ci-dessus, pour que
+                                    // allocation.replacesAllocation ne
+                                    // coûte qu'une requête pour
+                                    // l'ensemble des lignes.
+                                    'allocation.replacesAllocation.supplierProductSourcing.supplier',
                                 ])
                                 ->get())
                             ->schema([
@@ -149,8 +158,39 @@ class SalesOrderInfolist
                                     ->state(fn (SalesOrderItem $record): ?string => $record->allocation?->purchaseOrderItem?->purchaseOrder?->status)
                                     ->formatStateUsing(fn (?string $state): ?string => PurchaseOrdersTable::statusLabel($state))
                                     ->color(fn (?string $state): ?string => PurchaseOrdersTable::statusColor($state)),
+
+                                // Chantier Dropshipping, étape D2.10 —
+                                // traçabilité READ-ONLY de la
+                                // ré-allocation manuelle vers un
+                                // fournisseur alternatif (D2.9,
+                                // SalesOrderItemAllocation::reallocateFor(),
+                                // inchangée). Source de vérité unique :
+                                // SalesOrderItemAllocation::
+                                // replacesAllocation() (D2.9, additive,
+                                // inchangée) — jamais replacedBy(),
+                                // toujours null sur l'allocation ACTIVE
+                                // retournée par SalesOrderItem::
+                                // allocation() (hasOne()->latestOfMany(),
+                                // D2.9). ->visible() (et non
+                                // ->placeholder()) : une ligne jamais
+                                // ré-allouée n'affiche RIEN, pas un tiret
+                                // - contrairement à purchase_order_status
+                                // ci-dessus. Gap C (PurchaseOrder
+                                // regroupant plusieurs SalesOrder
+                                // distincts) explicitement hors périmètre,
+                                // non traité ici.
+                                TextEntry::make('reallocation_status')
+                                    ->label('Ré-allocation')
+                                    ->visible(fn (SalesOrderItem $record): bool => $record->allocation?->replacesAllocation !== null)
+                                    ->state(function (SalesOrderItem $record): ?string {
+                                        $previous = $record->allocation?->replacesAllocation;
+
+                                        return $previous !== null
+                                            ? 'Ré-alloué depuis '.($previous->supplierProductSourcing?->supplier?->name ?? '-')
+                                            : null;
+                                    }),
                             ])
-                            ->columns(7),
+                            ->columns(8),
                     ]),
 
                 Section::make('Notes')
