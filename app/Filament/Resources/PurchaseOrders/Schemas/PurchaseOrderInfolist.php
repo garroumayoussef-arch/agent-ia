@@ -60,7 +60,17 @@ class PurchaseOrderInfolist
                             // lignes, quel que soit leur nombre — même
                             // pattern que SalesOrderInfolist.php (D2.7.2).
                             ->state(fn (PurchaseOrder $record) => $record->items()
-                                ->with(['allocation.salesOrderItem.salesOrder'])
+                                ->with([
+                                    'allocation.salesOrderItem.salesOrder',
+                                    // Chantier Dropshipping, étape D2.11
+                                    // — traçabilité READ-ONLY symétrique
+                                    // de D2.10 (ré-allocation, D2.9),
+                                    // chargée au même niveau que la ligne
+                                    // ci-dessus pour ne coûter qu'une
+                                    // requête par palier de relation,
+                                    // quel que soit le nombre de lignes.
+                                    'allocation.replacesAllocation.purchaseOrderItem.purchaseOrder',
+                                ])
                                 ->get())
                             ->schema([
                                 TextEntry::make('product.nom')
@@ -118,8 +128,33 @@ class PurchaseOrderInfolist
 
                                         return "Vente {$salesOrder->reference}";
                                     }),
+
+                                // Chantier Dropshipping, étape D2.11 —
+                                // traçabilité READ-ONLY symétrique de
+                                // D2.10 (ré-allocation manuelle vers un
+                                // fournisseur alternatif, D2.9,
+                                // reallocateFor() inchangée). Source de
+                                // vérité unique : SalesOrderItemAllocation::
+                                // replacesAllocation() (D2.9, additive,
+                                // inchangée). ->visible() (jamais
+                                // ->placeholder()) : une ligne issue
+                                // d'une allocation racine n'affiche RIEN
+                                // — même discipline que D2.10. Affiche
+                                // UNIQUEMENT la référence du PurchaseOrder
+                                // remplacé (décision validée) : ni le
+                                // fournisseur remplacé, ni la référence
+                                // de la SalesOrder d'origine (déjà
+                                // visible via 'origin' ci-dessus, jamais
+                                // dupliquée ici). Gap C (PurchaseOrder
+                                // regroupant plusieurs SalesOrder
+                                // distincts) explicitement hors périmètre,
+                                // non traité.
+                                TextEntry::make('replaced_purchase_order')
+                                    ->label('Achat remplacé')
+                                    ->visible(fn (PurchaseOrderItem $record): bool => $record->allocation?->replacesAllocation?->purchaseOrderItem?->purchaseOrder !== null)
+                                    ->state(fn (PurchaseOrderItem $record): ?string => $record->allocation?->replacesAllocation?->purchaseOrderItem?->purchaseOrder?->reference),
                             ])
-                            ->columns(6),
+                            ->columns(7),
                     ]),
 
                 // Chantier "bon de retour" (décision 4, validée) — section
