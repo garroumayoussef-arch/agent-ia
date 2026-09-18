@@ -40,6 +40,12 @@ class SalesOrdersTable
             // ligne de chaque commande affichée.
             ->modifyQueryUsing(fn (Builder $query) => $query->with([
                 'items.allocation.purchaseOrderItem.purchaseOrder',
+                // Chantier Dropshipping, étape D2.12 — chargement
+                // explicite au même niveau que la ligne ci-dessus, pour
+                // que reallocationOverviewState() ci-dessous ne coûte
+                // qu'une requête pour l'ensemble des lignes de toutes
+                // les commandes affichées, jamais un N+1 par ligne.
+                'items.allocation.replacesAllocation',
             ]))
             ->columns([
                 Tables\Columns\TextColumn::make('reference')
@@ -77,6 +83,20 @@ class SalesOrdersTable
                     ->state(fn (SalesOrder $record): string => static::sourcingOverviewState($record))
                     ->formatStateUsing(fn (string $state): string => static::sourcingOverviewLabel($state))
                     ->color(fn (string $state): string => static::sourcingOverviewColor($state)),
+
+                // Chantier Dropshipping, étape D2.12 — visibilité
+                // READ-ONLY, dans la liste, de la ré-allocation (D2.9)
+                // déjà visible ligne par ligne dans SalesOrderInfolist.php
+                // (reallocation_status, D2.10) : indicateur agrégé par
+                // commande (au moins une ligne ré-allouée), ne réévalue
+                // aucune règle, ne lit que SalesOrderItemAllocation::
+                // replacesAllocation() (D2.9, inchangée). État null (donc
+                // aucun badge affiché) si aucune ligne n'a jamais été
+                // ré-allouée — même discipline que D2.10/D2.11.
+                Tables\Columns\TextColumn::make('reallocation_overview')
+                    ->label('Ré-allocation')
+                    ->badge()
+                    ->state(fn (SalesOrder $record): ?string => static::reallocationOverviewState($record)),
 
                 Tables\Columns\TextColumn::make('order_date')
                     ->label('Date de commande')
@@ -205,5 +225,23 @@ class SalesOrdersTable
             'non_generated' => 'gray',
             default => PurchaseOrdersTable::statusColor($state),
         };
+    }
+
+    /**
+     * Chantier Dropshipping, étape D2.12 — indicateur agrégé (une seule
+     * valeur par commande) de ré-allocation, calculé sur l'ensemble des
+     * lignes déjà chargées par modifyQueryUsing() ci-dessus. Contrairement
+     * à sourcingOverviewState() (toujours non-nul, une des 7 priorités
+     * fixes s'applique toujours), ce booléen retourne explicitement null
+     * dès qu'aucune ligne n'a jamais été ré-allouée : le badge Filament
+     * ne s'affiche alors pas du tout, aucun état neutre inventé.
+     */
+    public static function reallocationOverviewState(SalesOrder $record): ?string
+    {
+        $hasReallocation = $record->items->contains(
+            fn ($item): bool => $item->allocation?->replacesAllocation !== null
+        );
+
+        return $hasReallocation ? 'Ré-alloué' : null;
     }
 }

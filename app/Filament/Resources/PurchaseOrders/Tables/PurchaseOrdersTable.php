@@ -27,6 +27,13 @@ class PurchaseOrdersTable
             // par ligne de chaque bon de commande affiché.
             ->modifyQueryUsing(fn (Builder $query) => $query->with([
                 'items.allocation.salesOrderItem.salesOrder',
+                // Chantier Dropshipping, étape D2.12 — chargement
+                // explicite au même niveau que la ligne ci-dessus, pour
+                // que replacedPurchaseOrderOverview() ci-dessous ne
+                // coûte qu'une requête par palier de relation pour
+                // l'ensemble des lignes de tous les bons affichés,
+                // indépendamment du nombre de références distinctes.
+                'items.allocation.replacesAllocation.purchaseOrderItem.purchaseOrder',
             ]))
             ->columns([
                 Tables\Columns\TextColumn::make('reference')
@@ -60,6 +67,25 @@ class PurchaseOrdersTable
                 Tables\Columns\TextColumn::make('origin_overview')
                     ->label('Origine')
                     ->state(fn (PurchaseOrder $record): string => static::originOverview($record)),
+
+                // Chantier Dropshipping, étape D2.12 — visibilité
+                // READ-ONLY, dans la liste, de la ré-allocation (D2.9)
+                // déjà visible ligne par ligne dans
+                // PurchaseOrderInfolist.php (replaced_purchase_order,
+                // D2.11) : agrégation de TOUTES les références distinctes
+                // de PurchaseOrder remplacés (jamais une seule masquant
+                // les autres), déduplication en mémoire uniquement, sur
+                // les relations déjà eager-chargées ci-dessus — aucune
+                // requête supplémentaire par ligne ni par référence.
+                // ->badge() avec un état tableau : Filament affiche une
+                // pastille par élément, sans concaténation inventée.
+                // Tableau vide = aucun badge affiché. N'appelle jamais
+                // originOverview() ni ne la modifie. Gap C (PurchaseOrder
+                // multi-SalesOrder) non traité, hors périmètre.
+                Tables\Columns\TextColumn::make('replaced_purchase_order_overview')
+                    ->label('Achat remplacé')
+                    ->badge()
+                    ->state(fn (PurchaseOrder $record): array => static::replacedPurchaseOrderOverview($record)),
 
                 Tables\Columns\TextColumn::make('order_date')
                     ->label('Date de commande')
@@ -168,5 +194,34 @@ class PurchaseOrdersTable
         }
 
         return "Vente {$salesReferences->first()} + achat direct";
+    }
+
+    /**
+     * Chantier Dropshipping, étape D2.12 — références distinctes des
+     * PurchaseOrder remplacés (D2.9, SalesOrderItemAllocation::
+     * replacesAllocation()) parmi l'ensemble des lignes de ce
+     * PurchaseOrder, déjà chargées par modifyQueryUsing() ci-dessus.
+     * Contrairement à originOverview() (->first() documenté, cas
+     * multi-valeurs structurellement inatteignable), le cas
+     * "plusieurs références remplacées distinctes" EST atteignable ici
+     * (CreatePurchaseOrdersFromAllocations peut regrouper, sur un même
+     * nouveau PurchaseOrder, des ré-allocations issues de PurchaseOrder
+     * remplacés différents) : toutes les références distinctes sont
+     * donc retournées, jamais une seule masquant les autres. Déduplication
+     * (->unique()) et filtrage (->filter(), retire les lignes sans
+     * ré-allocation) strictement en mémoire sur la Collection déjà
+     * chargée — aucune requête SQL supplémentaire, quel que soit le
+     * nombre de références distinctes.
+     *
+     * @return array<int, string>
+     */
+    public static function replacedPurchaseOrderOverview(PurchaseOrder $record): array
+    {
+        return $record->items
+            ->map(fn (PurchaseOrderItem $item) => $item->allocation?->replacesAllocation?->purchaseOrderItem?->purchaseOrder?->reference)
+            ->filter()
+            ->unique()
+            ->values()
+            ->all();
     }
 }

@@ -6,6 +6,7 @@ use App\Filament\Resources\SalesOrders\Pages\ListSalesOrders;
 use App\Filament\Resources\SalesOrders\Tables\SalesOrdersTable;
 use App\Models\Product;
 use App\Models\PurchaseOrder;
+use App\Models\PurchaseOrderItemReturn;
 use App\Models\SalesOrder;
 use App\Models\SalesOrderItem;
 use App\Models\SalesOrderItemAllocation;
@@ -14,6 +15,7 @@ use App\Models\User;
 use App\Models\Warehouse;
 use App\Services\CreatePurchaseOrdersFromAllocations;
 use Database\Seeders\RoleSeeder;
+use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Livewire\Livewire;
@@ -84,6 +86,38 @@ class SalesOrdersTableSourcingOverviewTest extends TestCase
     private function allocate(SalesOrderItem $item): SalesOrderItemAllocation
     {
         return SalesOrderItemAllocation::recordFor($item->fresh());
+    }
+
+    /**
+     * Chantier Dropshipping, étape D2.12 — construit une ligne
+     * intégralement ré-allouée (D2.9) sur une commande dédiée. Retourne
+     * la SalesOrder fraîche.
+     */
+    private function createOrderWithReallocatedLine(int $quantity = 5): SalesOrder
+    {
+        $product = Product::factory()->create();
+        $this->createSourcing($product, 'Fournisseur Zeta');
+        $this->createSourcing($product, 'Fournisseur Eta');
+
+        $order = SalesOrder::factory()->create();
+        $item = SalesOrderItem::factory()->create([
+            'sales_order_id' => $order->id,
+            'product_id' => $product->id,
+            'quantity_ordered' => $quantity,
+        ]);
+        $order->markAsConfirmed();
+
+        $allocation = $this->allocate($item);
+
+        $purchaseOrder = (new CreatePurchaseOrdersFromAllocations)->execute(new Collection([$allocation]))['created'][0];
+        $purchaseOrder->markAsOrdered();
+        $purchaseOrderItem = $purchaseOrder->items()->first();
+        $purchaseOrder->fresh()->receive([$purchaseOrderItem->id => $quantity]);
+        PurchaseOrderItemReturn::recordFor($purchaseOrderItem->fresh(), $quantity, now()->toDateString());
+
+        SalesOrderItemAllocation::reallocateFor($allocation->fresh());
+
+        return $order->fresh();
     }
 
     /*
@@ -255,6 +289,12 @@ class SalesOrdersTableSourcingOverviewTest extends TestCase
             $this->allocate($item);
         }
 
+        // Chantier Dropshipping, étape D2.12 — inclut une commande
+        // ré-allouée parmi les 5, pour démontrer que reallocation_overview
+        // ne coûte pas de requête supplémentaire liée au nombre de
+        // commandes/lignes affichées (même seuil que sourcing_overview).
+        $this->createOrderWithReallocatedLine();
+
         DB::enableQueryLog();
 
         Livewire::test(ListSalesOrders::class)->assertSuccessful();
@@ -270,7 +310,39 @@ class SalesOrdersTableSourcingOverviewTest extends TestCase
         $this->assertLessThan(
             30,
             $queryCount,
-            "Nombre de requêtes SQL anormalement élevé ({$queryCount}) : suspicion de N+1 sur la colonne 'sourcing_overview'."
+            "Nombre de requêtes SQL anormalement élevé ({$queryCount}) : suspicion de N+1 sur les colonnes 'sourcing_overview'/'reallocation_overview'."
         );
+    }
+
+    /*
+     * =================================================================
+     * D2.12 — agrégation READ-ONLY de la ré-allocation (D2.9/D2.10)
+     * =================================================================
+     */
+
+    /**
+     * 8. Commande sans aucune ligne ré-allouée : état agrégé null,
+     *    aucun badge affiché (non-régression sur toutes les commandes
+     *    normales déjà couvertes par les scénarios 1 à 6 ci-dessus).
+     */
+    public function test_commande_sans_reallocation_agrege_en_neutre(): void
+    {
+        $order = SalesOrder::factory()->create();
+        $item = $this->createItem($order, 'Fournisseur Thêta');
+        $order->markAsConfirmed();
+        $this->allocate($item);
+
+        $this->assertNull(SalesOrdersTable::reallocationOverviewState($order->fresh()));
+    }
+
+    /**
+     * 9. Commande avec au moins une ligne ré-allouée : état agrégé
+     *    'Ré-alloué'.
+     */
+    public function test_commande_avec_ligne_reallouee_agrege_en_realloue(): void
+    {
+        $order = $this->createOrderWithReallocatedLine();
+
+        $this->assertSame('Ré-alloué', SalesOrdersTable::reallocationOverviewState($order));
     }
 }
