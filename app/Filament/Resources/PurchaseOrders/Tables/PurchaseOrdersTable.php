@@ -81,7 +81,7 @@ class PurchaseOrdersTable
                 // pastille par élément, sans concaténation inventée.
                 // Tableau vide = aucun badge affiché. N'appelle jamais
                 // originOverview() ni ne la modifie. Gap C (PurchaseOrder
-                // multi-SalesOrder) non traité, hors périmètre.
+                // multi-SalesOrder) : séparation assurée à la génération par D2.14.
                 Tables\Columns\TextColumn::make('replaced_purchase_order_overview')
                     ->label('Achat remplacé')
                     ->badge()
@@ -169,12 +169,11 @@ class PurchaseOrdersTable
     /**
      * Chantier Dropshipping, Gap D — origine agrégée (une seule valeur
      * par bon de commande) calculée sur l'ensemble des lignes déjà
-     * chargées par modifyQueryUsing() ci-dessus. Le cas "plusieurs ventes
-     * différentes sur le même bon" n'est atteignable par aucun chemin de
-     * code actuel (CreatePurchaseOrdersFromAllocations scope toujours la
-     * génération à une seule SalesOrder par appel et crée systématiquement
-     * un nouveau PurchaseOrder) : ->first() ne masque donc aucun cas réel,
-     * ce n'est pas une hypothèse défensive.
+     * chargées par modifyQueryUsing() ci-dessus. D2.14 garantit une seule
+     * SalesOrder par achat généré par CreatePurchaseOrdersFromAllocations,
+     * même si un appel traite plusieurs ventes. Cette garantie ne porte
+     * pas sur les écritures directes ou les achats historiques : leur
+     * traitement reste inchangé ici.
      */
     public static function originOverview(PurchaseOrder $record): string
     {
@@ -201,13 +200,12 @@ class PurchaseOrdersTable
      * PurchaseOrder remplacés (D2.9, SalesOrderItemAllocation::
      * replacesAllocation()) parmi l'ensemble des lignes de ce
      * PurchaseOrder, déjà chargées par modifyQueryUsing() ci-dessus.
-     * Contrairement à originOverview() (->first() documenté, cas
-     * multi-valeurs structurellement inatteignable), le cas
+     * Contrairement à originOverview() (une vente par achat généré), le cas
      * "plusieurs références remplacées distinctes" EST atteignable ici
      * (CreatePurchaseOrdersFromAllocations peut regrouper, sur un même
      * nouveau PurchaseOrder, des ré-allocations issues de PurchaseOrder
-     * remplacés différents) : toutes les références distinctes sont
-     * donc retournées, jamais une seule masquant les autres. Déduplication
+     * remplacés différents pour une même SalesOrder) : toutes les références
+     * distinctes sont retournées, jamais une seule masquant les autres. Déduplication
      * (->unique()) et filtrage (->filter(), retire les lignes sans
      * ré-allocation) strictement en mémoire sur la Collection déjà
      * chargée — aucune requête SQL supplémentaire, quel que soit le

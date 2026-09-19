@@ -184,8 +184,9 @@ class PurchaseOrdersTableOriginOverviewTest extends TestCase
         Supplier $nouveauFournisseur,
         string $ancienFournisseurName,
         int $quantity = 5,
+        ?SalesOrderItem $item = null,
     ): array {
-        $product = Product::factory()->create();
+        $product = $item?->product ?? Product::factory()->create();
         $product->supplierSourcings()->create([
             'supplier_id' => Supplier::factory()->create(['name' => $ancienFournisseurName])->id,
             'is_active' => true,
@@ -195,13 +196,16 @@ class PurchaseOrdersTableOriginOverviewTest extends TestCase
             'is_active' => true,
         ]);
 
-        $order = SalesOrder::factory()->create();
-        $item = SalesOrderItem::factory()->create([
-            'sales_order_id' => $order->id,
-            'product_id' => $product->id,
-            'quantity_ordered' => $quantity,
-        ]);
-        $order->markAsConfirmed();
+        if ($item === null) {
+            $order = SalesOrder::factory()->create();
+            $item = SalesOrderItem::factory()->create([
+                'sales_order_id' => $order->id,
+                'product_id' => $product->id,
+                'quantity_ordered' => $quantity,
+            ]);
+            $order->markAsConfirmed();
+        }
+        $quantity = $item->quantity_ordered;
 
         $allocation = SalesOrderItemAllocation::recordFor($item->fresh());
 
@@ -214,6 +218,22 @@ class PurchaseOrdersTableOriginOverviewTest extends TestCase
         $nouvelleAllocation = SalesOrderItemAllocation::reallocateFor($allocation->fresh());
 
         return [$ancienPurchaseOrder->fresh(), $nouvelleAllocation];
+    }
+
+    /** D2.14 : deux anciens achats distincts pour une même vente. */
+    private function createTwoReallocationsForOneOrder(Supplier $supplier): array
+    {
+        $order = SalesOrder::factory()->create();
+        $items = SalesOrderItem::factory()->count(2)->create([
+            'sales_order_id' => $order->id,
+            'quantity_ordered' => 5,
+        ]);
+        $order->markAsConfirmed();
+
+        return [
+            $this->createReallocatedAllocationTo($supplier, 'Ancien fournisseur A', item: $items[0]),
+            $this->createReallocatedAllocationTo($supplier, 'Ancien fournisseur B', item: $items[1]),
+        ];
     }
 
     /*
@@ -261,18 +281,25 @@ class PurchaseOrdersTableOriginOverviewTest extends TestCase
     /**
      * 8. Plusieurs références remplacées DISTINCTES, regroupées sur le
      *    MÊME nouveau PurchaseOrder (deux ré-allocations indépendantes
-     *    vers le même fournisseur) : toutes les références apparaissent,
+     *    de la même vente vers le même fournisseur) : toutes les références apparaissent,
      *    aucune n'est masquée.
      */
     public function test_plusieurs_references_remplacees_distinctes_agregent_toutes_sans_doublon(): void
     {
         $nouveauFournisseur = Supplier::factory()->create(['name' => 'Fournisseur Commun']);
-        [$ancienPurchaseOrderA, $allocationA] = $this->createReallocatedAllocationTo($nouveauFournisseur, 'Fournisseur A');
-        [$ancienPurchaseOrderB, $allocationB] = $this->createReallocatedAllocationTo($nouveauFournisseur, 'Fournisseur B');
+        [[$ancienPurchaseOrderA, $allocationA], [$ancienPurchaseOrderB, $allocationB]] =
+            $this->createTwoReallocationsForOneOrder($nouveauFournisseur);
 
-        $nouveauPurchaseOrder = (new CreatePurchaseOrdersFromAllocations)->execute(
+        $result = (new CreatePurchaseOrdersFromAllocations)->execute(
             new Collection([$allocationA, $allocationB])
-        )['created'][0];
+        );
+        $this->assertCount(1, $result['created']);
+        $this->assertSame([], $result['failed']);
+        $nouveauPurchaseOrder = $result['created'][0];
+        $this->assertEqualsCanonicalizing(
+            [$allocationA->id, $allocationB->id],
+            $nouveauPurchaseOrder->items()->pluck('sales_order_item_allocation_id')->all()
+        );
 
         $references = PurchaseOrdersTable::replacedPurchaseOrderOverview(
             $nouveauPurchaseOrder->fresh(['items.allocation.replacesAllocation.purchaseOrderItem.purchaseOrder'])
@@ -281,6 +308,33 @@ class PurchaseOrdersTableOriginOverviewTest extends TestCase
         $this->assertCount(2, $references);
         $this->assertContains($ancienPurchaseOrderA->reference, $references);
         $this->assertContains($ancienPurchaseOrderB->reference, $references);
+    }
+
+    public function test_reallocations_de_ventes_distinctes_restent_separees_et_tracees(): void
+    {
+        $supplier = Supplier::factory()->create(['name' => fake()->company()]);
+        [$oldA, $a] = $this->createReallocatedAllocationTo($supplier, 'Ancien A');
+        [$oldB, $b] = $this->createReallocatedAllocationTo($supplier, 'Ancien B');
+
+        $result = (new CreatePurchaseOrdersFromAllocations)->execute(new Collection([$a, $b]));
+
+        $this->assertCount(2, $result['created']);
+        $this->assertSame([], $result['failed']);
+        foreach ([[$oldA, $a], [$oldB, $b]] as $index => [$old, $allocation]) {
+            $purchaseOrder = $result['created'][$index];
+            $this->assertSame($supplier->id, $purchaseOrder->supplier_id);
+            $this->assertSame([$allocation->id], $purchaseOrder->items()->pluck('sales_order_item_allocation_id')->all());
+            $this->assertSame(
+                [$old->reference],
+                PurchaseOrdersTable::replacedPurchaseOrderOverview(
+                    $purchaseOrder->fresh(['items.allocation.replacesAllocation.purchaseOrderItem.purchaseOrder'])
+                )
+            );
+            $this->assertSame(
+                'Vente '.$allocation->salesOrderItem->salesOrder->reference,
+                PurchaseOrdersTable::originOverview($purchaseOrder->fresh(['items.allocation.salesOrderItem.salesOrder']))
+            );
+        }
     }
 
     /**
@@ -363,9 +417,12 @@ class PurchaseOrdersTableOriginOverviewTest extends TestCase
         // requête supplémentaire liée au nombre de références distinctes
         // (déduplication strictement en mémoire).
         $nouveauFournisseur = Supplier::factory()->create(['name' => 'Fournisseur N+1 Commun']);
-        [, $allocationX] = $this->createReallocatedAllocationTo($nouveauFournisseur, 'Fournisseur N+1 X');
-        [, $allocationY] = $this->createReallocatedAllocationTo($nouveauFournisseur, 'Fournisseur N+1 Y');
-        (new CreatePurchaseOrdersFromAllocations)->execute(new Collection([$allocationX, $allocationY]));
+        [[, $allocationX], [, $allocationY]] = $this->createTwoReallocationsForOneOrder($nouveauFournisseur);
+        $result = (new CreatePurchaseOrdersFromAllocations)->execute(new Collection([$allocationX, $allocationY]));
+        $this->assertCount(1, $result['created']);
+        $this->assertCount(2, PurchaseOrdersTable::replacedPurchaseOrderOverview(
+            $result['created'][0]->fresh(['items.allocation.replacesAllocation.purchaseOrderItem.purchaseOrder'])
+        ));
 
         DB::enableQueryLog();
 

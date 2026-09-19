@@ -3,6 +3,7 @@
 namespace Tests\Feature;
 
 use App\Models\Product;
+use App\Models\ProductVariant;
 use App\Models\PurchaseOrder;
 use App\Models\PurchaseOrderItem;
 use App\Models\SalesOrder;
@@ -11,7 +12,6 @@ use App\Models\SalesOrderItemAllocation;
 use App\Models\Supplier;
 use App\Services\CreatePurchaseOrdersFromAllocations;
 use Illuminate\Database\Eloquent\Collection;
-use Illuminate\Database\QueryException;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
 
@@ -32,7 +32,8 @@ use Tests\TestCase;
  * modifiée.
  *
  * Décisions d'architecture caractérisées (validées avant implémentation) :
- * un PurchaseOrder par fournisseur pour l'ensemble des allocations
+ * D2.14 remplace le regroupement par fournisseur seul par un regroupement
+ * fournisseur/SalesOrder pour l'ensemble des allocations
  * converties dans un même appel ; idempotence à deux niveaux (filtrage
  * avant écriture + contrainte UNIQUE en base) ; le PurchaseOrder généré
  * reste en DRAFT (aucun appel à markAsOrdered()) ; aucune écriture
@@ -66,6 +67,45 @@ class CreatePurchaseOrdersFromAllocationsTest extends TestCase
         return SalesOrderItemAllocation::recordFor($item->fresh());
     }
 
+    /** @param Supplier[] $suppliers */
+    private function createAllocationsForOneOrder(array $suppliers): Collection
+    {
+        $order = SalesOrder::factory()->create();
+        $items = [];
+        foreach ($suppliers as $supplier) {
+            $product = Product::factory()->create();
+            $product->supplierSourcings()->create([
+                'supplier_id' => $supplier->id,
+                'supplier_cost' => 42.50,
+                'is_active' => true,
+            ]);
+            $items[] = SalesOrderItem::factory()->create([
+                'sales_order_id' => $order->id,
+                'product_id' => $product->id,
+                'quantity_ordered' => count($items) + 2,
+            ]);
+        }
+        $order->markAsConfirmed();
+
+        return new Collection(array_map(fn ($item) => SalesOrderItemAllocation::recordFor($item->fresh()), $items));
+    }
+
+    private function assertPurchaseOrderContains(PurchaseOrder $purchaseOrder, Collection $allocations): void
+    {
+        $items = $purchaseOrder->items()->get();
+        $this->assertEqualsCanonicalizing($allocations->values()->modelKeys(), $items->pluck('sales_order_item_allocation_id')->all());
+        $this->assertSame(
+            [$allocations->first()->salesOrderItem->sales_order_id],
+            $items->map(fn ($item) => $item->allocation->salesOrderItem->sales_order_id)->unique()->values()->all()
+        );
+        foreach ($items as $item) {
+            $allocation = $allocations->find($item->sales_order_item_allocation_id);
+            $this->assertSame($allocation->supplierProductSourcing->supplier_id, $purchaseOrder->supplier_id);
+            $this->assertSame($allocation->quantity, $item->quantity_ordered);
+            $this->assertEquals($allocation->supplierProductSourcing->supplier_cost, $item->unit_price);
+        }
+    }
+
     /*
      * =================================================================
      * 1. Une allocation -> un PurchaseOrder + un PurchaseOrderItem
@@ -89,19 +129,19 @@ class CreatePurchaseOrdersFromAllocationsTest extends TestCase
 
     /*
      * =================================================================
-     * 2. Deux allocations, meme fournisseur -> un seul PurchaseOrder
+     * 2. Deux allocations, meme fournisseur ET meme vente -> un PurchaseOrder
      * =================================================================
      */
     public function test_deux_allocations_meme_fournisseur_sont_regroupees_dans_un_seul_purchase_order(): void
     {
         $supplier = Supplier::factory()->create(['name' => fake()->company()]);
-        $allocationA = $this->createAllocation($supplier);
-        $allocationB = $this->createAllocation($supplier);
+        $allocations = $this->createAllocationsForOneOrder([$supplier, $supplier]);
 
-        $result = (new CreatePurchaseOrdersFromAllocations)->execute(new Collection([$allocationA, $allocationB]));
+        $result = (new CreatePurchaseOrdersFromAllocations)->execute($allocations);
 
         $this->assertCount(1, $result['created']);
         $this->assertSame(2, $result['created'][0]->items()->count());
+        $this->assertPurchaseOrderContains($result['created'][0], $allocations);
     }
 
     /*
@@ -111,13 +151,136 @@ class CreatePurchaseOrdersFromAllocationsTest extends TestCase
      */
     public function test_deux_allocations_fournisseurs_differents_generent_deux_purchase_orders(): void
     {
-        $allocationA = $this->createAllocation();
-        $allocationB = $this->createAllocation();
+        $suppliers = Supplier::factory()->count(2)->create(['name' => fake()->company()]);
+        $allocations = $this->createAllocationsForOneOrder($suppliers->all());
 
-        $result = (new CreatePurchaseOrdersFromAllocations)->execute(new Collection([$allocationA, $allocationB]));
+        $result = (new CreatePurchaseOrdersFromAllocations)->execute($allocations);
 
         $this->assertCount(2, $result['created']);
         $this->assertNotSame($result['created'][0]->supplier_id, $result['created'][1]->supplier_id);
+        foreach ($result['created'] as $purchaseOrder) {
+            $this->assertPurchaseOrderContains($purchaseOrder, $allocations->filter(
+                fn ($allocation) => $allocation->supplierProductSourcing->supplier_id === $purchaseOrder->supplier_id
+            ));
+        }
+    }
+
+    public function test_meme_fournisseur_deux_ventes_sont_separees_et_annulables_independamment(): void
+    {
+        $supplier = Supplier::factory()->create(['name' => fake()->company()]);
+        $a = $this->createAllocation($supplier);
+        $b = $this->createAllocation($supplier);
+
+        $result = (new CreatePurchaseOrdersFromAllocations)->execute(new Collection([$a, $b]));
+
+        $this->assertCount(2, $result['created']);
+        $this->assertSame([], $result['failed']);
+        $this->assertPurchaseOrderContains($result['created'][0], new Collection([$a]));
+        $this->assertPurchaseOrderContains($result['created'][1], new Collection([$b]));
+        foreach ($result['created'] as $purchaseOrder) {
+            $this->assertSame(PurchaseOrder::STATUS_DRAFT, $purchaseOrder->status);
+        }
+        $result['created'][0]->cancel();
+        $this->assertSame(PurchaseOrder::STATUS_CANCELLED, $result['created'][0]->fresh()->status);
+        $this->assertSame(PurchaseOrder::STATUS_DRAFT, $result['created'][1]->fresh()->status);
+        $this->assertSame(SalesOrder::STATUS_CONFIRMED, $a->salesOrderItem->salesOrder->fresh()->status);
+        $this->assertSame(SalesOrder::STATUS_CONFIRMED, $b->salesOrderItem->salesOrder->fresh()->status);
+        $this->assertDatabaseCount('stock_movements', 0);
+    }
+
+    public function test_lot_croise_et_rejeu_conservent_exactement_les_couples_presents(): void
+    {
+        [$supplierA, $supplierB] = Supplier::factory()->count(2)->create(['name' => fake()->company()])->all();
+        $orderA = $this->createAllocationsForOneOrder([$supplierA, $supplierA, $supplierB]);
+        $orderB = $this->createAllocationsForOneOrder([$supplierA]);
+        $allocations = $orderA->merge($orderB);
+        $expected = [new Collection([$orderA[0], $orderA[1]]), new Collection([$orderA[2]]), $orderB];
+        $service = new CreatePurchaseOrdersFromAllocations;
+
+        $result = $service->execute($allocations);
+
+        $this->assertCount(3, $result['created']);
+        $this->assertSame([], $result['failed']);
+        foreach ($expected as $index => $group) {
+            $this->assertPurchaseOrderContains($result['created'][$index], $group);
+        }
+        $this->assertDatabaseCount('purchase_order_items', 4);
+        $replayed = $service->execute($allocations->fresh());
+        $this->assertSame([], $replayed['created']);
+        $this->assertSame([], $replayed['failed']);
+        $this->assertEqualsCanonicalizing($allocations->modelKeys(), $replayed['skipped']);
+        $this->assertDatabaseCount('purchase_orders', 3);
+        $this->assertDatabaseCount('purchase_order_items', 4);
+    }
+
+    public function test_lot_partiellement_converti_ne_fusionne_pas_avec_un_achat_existant(): void
+    {
+        $supplier = Supplier::factory()->create(['name' => fake()->company()]);
+        $sameOrder = $this->createAllocationsForOneOrder([$supplier, $supplier]);
+        $other = $this->createAllocation($supplier);
+        $service = new CreatePurchaseOrdersFromAllocations;
+        $existing = $service->execute(new Collection([$sameOrder[0]]))['created'][0];
+
+        $result = $service->execute($sameOrder->merge([$other])->fresh());
+
+        $this->assertSame([$sameOrder[0]->id], $result['skipped']);
+        $this->assertCount(2, $result['created']);
+        $this->assertSame([], $result['failed']);
+        $this->assertPurchaseOrderContains($existing, new Collection([$sameOrder[0]]));
+        $this->assertPurchaseOrderContains($result['created'][0], new Collection([$sameOrder[1]]));
+        $this->assertPurchaseOrderContains($result['created'][1], new Collection([$other]));
+        $this->assertDatabaseCount('purchase_orders', 3);
+        $this->assertDatabaseCount('purchase_order_items', 3);
+    }
+
+    public function test_echec_dun_couple_annule_toutes_ses_lignes_et_preserve_les_autres(): void
+    {
+        $supplier = Supplier::factory()->create(['name' => fake()->company()]);
+        $before = $this->createAllocation($supplier);
+        $failing = $this->createAllocationsForOneOrder([$supplier, $supplier]);
+        $after = $this->createAllocation($supplier);
+        // Une variante apparue après l'allocation provoque un vrai rejet
+        // métier sur la seconde ligne, après insertion de la première.
+        ProductVariant::factory()->create(['product_id' => $failing[1]->salesOrderItem->product_id]);
+
+        $result = (new CreatePurchaseOrdersFromAllocations)->execute(
+            (new Collection([$before]))->merge($failing)->merge([$after])
+        );
+
+        $key = $supplier->id.':'.$failing[0]->salesOrderItem->sales_order_id;
+        $this->assertSame([$key], array_keys($result['failed']));
+        $this->assertStringContainsString('Ce produit possède des variantes', $result['failed'][$key]);
+        $this->assertCount(2, $result['created']);
+        $this->assertPurchaseOrderContains($result['created'][0], new Collection([$before]));
+        $this->assertPurchaseOrderContains($result['created'][1], new Collection([$after]));
+        $this->assertDatabaseCount('purchase_orders', 2);
+        $this->assertDatabaseCount('purchase_order_items', 2);
+        foreach ($failing as $allocation) {
+            $this->assertNull($allocation->fresh()->purchaseOrderItem);
+        }
+    }
+
+    public function test_deux_echecs_du_meme_fournisseur_ne_secrasent_pas(): void
+    {
+        $supplier = Supplier::factory()->create(['name' => fake()->company()]);
+        $allocations = new Collection([$this->createAllocation($supplier), $this->createAllocation($supplier)]);
+        foreach ($allocations as $allocation) {
+            ProductVariant::factory()->create(['product_id' => $allocation->salesOrderItem->product_id]);
+        }
+
+        $result = (new CreatePurchaseOrdersFromAllocations)->execute($allocations);
+
+        $this->assertSame([], $result['created']);
+        $this->assertSame([], $result['skipped']);
+        $this->assertEqualsCanonicalizing(
+            $allocations->map(fn ($allocation) => $supplier->id.':'.$allocation->salesOrderItem->sales_order_id)->all(),
+            array_keys($result['failed'])
+        );
+        foreach ($result['failed'] as $message) {
+            $this->assertStringContainsString('Ce produit possède des variantes', $message);
+        }
+        $this->assertDatabaseCount('purchase_orders', 0);
+        $this->assertDatabaseCount('purchase_order_items', 0);
     }
 
     /*
@@ -156,7 +319,21 @@ class CreatePurchaseOrdersFromAllocationsTest extends TestCase
 
     /*
      * =================================================================
-     * 6. Suppression d'une allocation convertie -> bloquee (restrictOnDelete)
+     * 6. Suppression d'une allocation convertie -> bloquee
+     *
+     * Chantier Dropshipping, étape D2.9 (spécification validée) —
+     * SalesOrderItemAllocation bloque désormais TOUTE suppression dès la
+     * création (garde applicative inconditionnelle sur booted(),
+     * cf. SalesOrderItemAllocation::deleting()), qu'une allocation soit
+     * convertie ou non : cette garde intercepte l'appel AVANT que la
+     * requête SQL ne soit émise, donc avant que la contrainte
+     * restrictOnDelete() de purchase_order_items.
+     * sales_order_item_allocation_id (D2.6.2, toujours en place et
+     * toujours vraie, cf. migration inchangée) ne puisse jamais être
+     * atteinte. La protection est strictement plus forte qu'avant D2.9
+     * (elle s'applique désormais même à une allocation JAMAIS convertie),
+     * seul le type d'exception observé change : \Exception explicite au
+     * lieu de QueryException brute.
      * =================================================================
      */
     public function test_suppression_dune_allocation_convertie_est_bloquee(): void
@@ -164,7 +341,8 @@ class CreatePurchaseOrdersFromAllocationsTest extends TestCase
         $allocation = $this->createAllocation();
         (new CreatePurchaseOrdersFromAllocations)->execute(new Collection([$allocation]));
 
-        $this->expectException(QueryException::class);
+        $this->expectException(\Exception::class);
+        $this->expectExceptionMessage('Une allocation de sourcing ne peut pas être supprimée après son enregistrement.');
 
         $allocation->delete();
     }

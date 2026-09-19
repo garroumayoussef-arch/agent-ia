@@ -18,8 +18,8 @@ use Illuminate\Support\Str;
  * de la fiche SupplierProductSourcing déjà choisie par l'allocation
  * (SupplierSourcingResolver n'est ni importé ni appelé).
  *
- * Granularité (décision validée) : un PurchaseOrder par fournisseur pour
- * l'ensemble des allocations éligibles traitées dans un même appel,
+ * Granularité D2.14 (arbitrage D2.13) : un PurchaseOrder par couple
+ * fournisseur/SalesOrder parmi les allocations éligibles d'un même appel,
  * plusieurs PurchaseOrderItem si nécessaire — cohérent avec supplier_id
  * unique par PurchaseOrder et sales_order_item_allocation_id UNIQUE par
  * PurchaseOrderItem (D2.6.2).
@@ -32,9 +32,9 @@ use Illuminate\Support\Str;
  *    deux déclenchements concurrents.
  * 3. Contrainte UNIQUE en base (D2.6.2) — dernier rempart.
  *
- * Une transaction PAR FOURNISSEUR, jamais une transaction globale :
+ * Une transaction PAR COUPLE fournisseur/SalesOrder, jamais globale :
  * l'échec d'un groupe (un PurchaseOrder) n'affecte jamais les autres
- * groupes déjà créés ou restant à créer.
+ * groupes déjà créés ou restant à créer, même chez le même fournisseur.
  *
  * reference : PurchaseOrder.reference est NOT NULL + UNIQUE en base,
  * sans aucun défaut ni au niveau modèle ni en base (sa génération vit
@@ -52,21 +52,23 @@ class CreatePurchaseOrdersFromAllocations
 {
     /**
      * @param  Collection<int, SalesOrderItemAllocation>  $allocations
-     * @return array{created: PurchaseOrder[], skipped: int[], failed: array<int, string>}
+     * @return array{created: PurchaseOrder[], skipped: int[], failed: array<string, string>}
      */
     public function execute(Collection $allocations): array
     {
         $eligible = $allocations->filter(fn (SalesOrderItemAllocation $a) => $a->purchaseOrderItem === null);
         $skipped = $allocations->diff($eligible)->pluck('id')->all();
 
-        $bySupplier = $eligible->groupBy(
-            fn (SalesOrderItemAllocation $a) => $a->supplierProductSourcing->supplier_id
+        $bySupplierAndSalesOrder = $eligible->groupBy(
+            fn (SalesOrderItemAllocation $a) => $a->supplierProductSourcing->supplier_id.':'.$a->salesOrderItem->sales_order_id
         );
 
         $created = [];
         $failed = [];
 
-        foreach ($bySupplier as $supplierId => $group) {
+        foreach ($bySupplierAndSalesOrder as $groupKey => $group) {
+            $supplierId = $group->first()->supplierProductSourcing->supplier_id;
+
             try {
                 $created[] = DB::transaction(function () use ($supplierId, $group) {
                     $purchaseOrder = PurchaseOrder::create([
@@ -102,9 +104,9 @@ class CreatePurchaseOrdersFromAllocations
                     return $purchaseOrder;
                 });
             } catch (\Throwable $e) {
-                // Une transaction PAR FOURNISSEUR : l'échec d'un groupe
-                // n'affecte jamais les autres.
-                $failed[$supplierId] = $e->getMessage();
+                // Une transaction par couple : les autres ventes du même
+                // fournisseur restent indépendantes, y compris leurs erreurs.
+                $failed[$groupKey] = $e->getMessage();
             }
         }
 
