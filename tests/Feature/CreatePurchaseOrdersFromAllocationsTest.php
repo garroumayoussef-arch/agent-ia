@@ -317,6 +317,79 @@ class CreatePurchaseOrdersFromAllocationsTest extends TestCase
         $this->assertSame($countApresPremierAppel, PurchaseOrderItem::count());
     }
 
+    public function test_d2_15_rejeu_des_memes_instances_ne_cree_aucun_achat_vide(): void
+    {
+        $supplier = Supplier::factory()->create(['name' => fake()->company()]);
+        $allocations = $this->createAllocationsForOneOrder([$supplier, $supplier]);
+        $allocations->load('purchaseOrderItem');
+        $service = new CreatePurchaseOrdersFromAllocations;
+        $existing = $service->execute($allocations)['created'][0];
+
+        foreach ($allocations as $allocation) {
+            $this->assertTrue($allocation->relationLoaded('purchaseOrderItem'));
+            $this->assertNull($allocation->purchaseOrderItem);
+        }
+        // Les instances restent périmées : tout le couple sera ignoré
+        // seulement lors du recontrôle transactionnel.
+        $result = $service->execute($allocations);
+
+        $this->assertSame([], $result['created']);
+        $this->assertSame([], $result['failed']);
+        $this->assertEqualsCanonicalizing($allocations->modelKeys(), $result['skipped']);
+        $this->assertDatabaseCount('purchase_orders', 1);
+        $this->assertDatabaseCount('purchase_order_items', 2);
+        $this->assertPurchaseOrderContains($existing, $allocations);
+        $this->assertSame(PurchaseOrder::STATUS_DRAFT, $existing->fresh()->status);
+        $this->assertSame(SalesOrder::STATUS_CONFIRMED, $allocations[0]->salesOrderItem->salesOrder->fresh()->status);
+        $this->assertDatabaseCount('stock_movements', 0);
+    }
+
+    public function test_d2_15_recontrole_partiel_regroupe_uniquement_les_lignes_restantes(): void
+    {
+        $supplier = Supplier::factory()->create(['name' => fake()->company()]);
+        $allocations = $this->createAllocationsForOneOrder([$supplier, $supplier, $supplier]);
+        $allocations->load('purchaseOrderItem');
+        $service = new CreatePurchaseOrdersFromAllocations;
+        $existing = $service->execute(new Collection([$allocations[0]]))['created'][0];
+        $other = $this->createAllocation($supplier);
+
+        $result = $service->execute(new Collection([
+            $allocations[0], $allocations[1], $allocations[0], $allocations[2], $other,
+        ]));
+
+        $this->assertSame([$allocations[0]->id], $result['skipped']);
+        $this->assertSame([], $result['failed']);
+        $this->assertCount(2, $result['created']);
+        $this->assertPurchaseOrderContains($existing, new Collection([$allocations[0]]));
+        $this->assertPurchaseOrderContains($result['created'][0], new Collection([$allocations[1], $allocations[2]]));
+        $this->assertPurchaseOrderContains($result['created'][1], new Collection([$other]));
+        $this->assertNotSame($existing->id, $result['created'][0]->id);
+        $this->assertDatabaseCount('purchase_orders', 3);
+        $this->assertDatabaseCount('purchase_order_items', 4);
+        foreach ($result['created'] as $purchaseOrder) {
+            $this->assertSame(PurchaseOrder::STATUS_DRAFT, $purchaseOrder->status);
+        }
+        $this->assertDatabaseCount('stock_movements', 0);
+    }
+
+    public function test_d2_15_skipped_reunit_filtrage_initial_et_recontrole_sans_doublon(): void
+    {
+        $supplier = Supplier::factory()->create(['name' => fake()->company()]);
+        $allocations = $this->createAllocationsForOneOrder([$supplier, $supplier]);
+        $allocations->load('purchaseOrderItem');
+        $service = new CreatePurchaseOrdersFromAllocations;
+        $service->execute($allocations);
+        $fresh = $allocations[0]->fresh();
+
+        $result = $service->execute(new Collection([$fresh, $fresh, $allocations[1], $allocations[1]]));
+
+        $this->assertSame([], $result['created']);
+        $this->assertSame([], $result['failed']);
+        $this->assertEqualsCanonicalizing($allocations->modelKeys(), $result['skipped']);
+        $this->assertDatabaseCount('purchase_orders', 1);
+        $this->assertDatabaseCount('purchase_order_items', 2);
+    }
+
     /*
      * =================================================================
      * 6. Suppression d'une allocation convertie -> bloquee

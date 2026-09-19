@@ -36,6 +36,11 @@ use Illuminate\Support\Str;
  * l'échec d'un groupe (un PurchaseOrder) n'affecte jamais les autres
  * groupes déjà créés ou restant à créer, même chez le même fournisseur.
  *
+ * D2.15 : création de l'en-tête différée jusqu'à la première allocation
+ * encore éligible sous verrou. Un groupe entièrement converti entre-temps
+ * ne crée aucun achat ; ses allocations rejoignent skipped. Les résultats
+ * du groupe ne sont publiés qu'après réussite de sa transaction.
+ *
  * reference : PurchaseOrder.reference est NOT NULL + UNIQUE en base,
  * sans aucun défaut ni au niveau modèle ni en base (sa génération vit
  * uniquement dans PurchaseOrderForm.php, jamais atteinte par un create()
@@ -70,11 +75,9 @@ class CreatePurchaseOrdersFromAllocations
             $supplierId = $group->first()->supplierProductSourcing->supplier_id;
 
             try {
-                $created[] = DB::transaction(function () use ($supplierId, $group) {
-                    $purchaseOrder = PurchaseOrder::create([
-                        'supplier_id' => $supplierId,
-                        'reference' => 'BC-'.now()->format('Ymd').'-'.strtoupper(Str::random(4)),
-                    ]);
+                $result = DB::transaction(function () use ($supplierId, $group) {
+                    $purchaseOrder = null;
+                    $groupSkipped = [];
 
                     foreach ($group as $allocation) {
                         // Idempotence, niveau 2 : reverrouillage sous
@@ -85,11 +88,18 @@ class CreatePurchaseOrdersFromAllocations
                             ->first();
 
                         if ($locked->purchaseOrderItem()->exists()) {
+                            $groupSkipped[] = $locked->id;
+
                             continue;
                         }
 
                         $item = $locked->salesOrderItem;
                         $sourcing = $locked->supplierProductSourcing;
+
+                        $purchaseOrder ??= PurchaseOrder::create([
+                            'supplier_id' => $supplierId,
+                            'reference' => 'BC-'.now()->format('Ymd').'-'.strtoupper(Str::random(4)),
+                        ]);
 
                         PurchaseOrderItem::create([
                             'purchase_order_id' => $purchaseOrder->id,
@@ -101,8 +111,13 @@ class CreatePurchaseOrdersFromAllocations
                         ]);
                     }
 
-                    return $purchaseOrder;
+                    return ['purchaseOrder' => $purchaseOrder, 'skipped' => $groupSkipped];
                 });
+
+                if ($result['purchaseOrder'] !== null) {
+                    $created[] = $result['purchaseOrder'];
+                }
+                $skipped = array_merge($skipped, $result['skipped']);
             } catch (\Throwable $e) {
                 // Une transaction par couple : les autres ventes du même
                 // fournisseur restent indépendantes, y compris leurs erreurs.
@@ -110,6 +125,6 @@ class CreatePurchaseOrdersFromAllocations
             }
         }
 
-        return ['created' => $created, 'skipped' => $skipped, 'failed' => $failed];
+        return ['created' => $created, 'skipped' => array_values(array_unique($skipped)), 'failed' => $failed];
     }
 }
