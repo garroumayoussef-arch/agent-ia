@@ -38,8 +38,11 @@ use Illuminate\Support\Str;
  *
  * D2.15 : création de l'en-tête différée jusqu'à la première allocation
  * encore éligible sous verrou. Un groupe entièrement converti entre-temps
- * ne crée aucun achat ; ses allocations rejoignent skipped. Les résultats
- * du groupe ne sont publiés qu'après réussite de sa transaction.
+ * ne crée aucun achat ; ses allocations rejoignent skipped. Les achats
+ * créés ne sont publiés qu'après réussite de leur transaction.
+ * D2.16 : les conversions préexistantes constatées sous verrou restent
+ * dans skipped même après rollback, contrairement aux doublons de lignes
+ * créées dans la transaction courante puis annulées.
  *
  * reference : PurchaseOrder.reference est NOT NULL + UNIQUE en base,
  * sans aucun défaut ni au niveau modèle ni en base (sa génération vit
@@ -73,11 +76,13 @@ class CreatePurchaseOrdersFromAllocations
 
         foreach ($bySupplierAndSalesOrder as $groupKey => $group) {
             $supplierId = $group->first()->supplierProductSourcing->supplier_id;
+            $preexistingSkipped = [];
 
             try {
-                $result = DB::transaction(function () use ($supplierId, $group) {
+                $result = DB::transaction(function () use ($supplierId, $group, &$preexistingSkipped) {
                     $purchaseOrder = null;
                     $groupSkipped = [];
+                    $createdAllocationIds = [];
 
                     foreach ($group as $allocation) {
                         // Idempotence, niveau 2 : reverrouillage sous
@@ -89,6 +94,9 @@ class CreatePurchaseOrdersFromAllocations
 
                         if ($locked->purchaseOrderItem()->exists()) {
                             $groupSkipped[] = $locked->id;
+                            if (! isset($createdAllocationIds[$locked->id])) {
+                                $preexistingSkipped[] = $locked->id;
+                            }
 
                             continue;
                         }
@@ -109,6 +117,7 @@ class CreatePurchaseOrdersFromAllocations
                             'unit_price' => $sourcing->supplier_cost,
                             'sales_order_item_allocation_id' => $locked->id,
                         ]);
+                        $createdAllocationIds[$locked->id] = true;
                     }
 
                     return ['purchaseOrder' => $purchaseOrder, 'skipped' => $groupSkipped];
@@ -122,6 +131,7 @@ class CreatePurchaseOrdersFromAllocations
                 // Une transaction par couple : les autres ventes du même
                 // fournisseur restent indépendantes, y compris leurs erreurs.
                 $failed[$groupKey] = $e->getMessage();
+                $skipped = array_merge($skipped, $preexistingSkipped);
             }
         }
 

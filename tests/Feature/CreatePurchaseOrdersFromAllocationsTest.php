@@ -390,6 +390,117 @@ class CreatePurchaseOrdersFromAllocationsTest extends TestCase
         $this->assertDatabaseCount('purchase_order_items', 2);
     }
 
+    public function test_d2_16_rollback_conserve_skipped_avec_instances_fraiches_et_perimees(): void
+    {
+        $supplier = Supplier::factory()->create(['name' => fake()->company()]);
+        $allocations = $this->createAllocationsForOneOrder([$supplier, $supplier, $supplier]);
+        $allocations->load('purchaseOrderItem');
+        $service = new CreatePurchaseOrdersFromAllocations;
+        $existing = $service->execute(new Collection([$allocations[0]]))['created'][0];
+        $existingAttributes = $existing->fresh()->getAttributes();
+        $existingItemAttributes = $existing->items()->first()->getAttributes();
+        ProductVariant::factory()->create(['product_id' => $allocations[2]->salesOrderItem->product_id]);
+        $key = $supplier->id.':'.$allocations[0]->salesOrderItem->sales_order_id;
+        $results = [];
+
+        foreach ([true, false] as $fresh) {
+            $first = $fresh ? $allocations[0]->fresh() : $allocations[0];
+            $result = $service->execute(new Collection([
+                $first, $first, $allocations[1], $allocations[1], $allocations[2],
+            ]));
+            $results[] = $result;
+
+            $this->assertSame([], $result['created']);
+            $this->assertSame([$allocations[0]->id], $result['skipped']);
+            $this->assertSame([
+                $key => 'Ce produit possède des variantes : veuillez sélectionner la variante concernée par cette ligne.',
+            ], $result['failed']);
+            $this->assertSame($existingAttributes, $existing->fresh()->getAttributes());
+            $this->assertSame($existingItemAttributes, $existing->items()->first()->getAttributes());
+            $this->assertNull($allocations[1]->fresh()->purchaseOrderItem);
+            $this->assertNull($allocations[2]->fresh()->purchaseOrderItem);
+            $this->assertDatabaseCount('purchase_orders', 1);
+            $this->assertDatabaseCount('purchase_order_items', 1);
+        }
+
+        $this->assertSame($results[0], $results[1]);
+        $this->assertSame(SalesOrder::STATUS_CONFIRMED, $allocations[0]->salesOrderItem->salesOrder->fresh()->status);
+        $this->assertDatabaseCount('stock_movements', 0);
+    }
+
+    public function test_d2_16_rollback_ne_pollue_pas_les_couples_voisins_du_meme_fournisseur(): void
+    {
+        $supplier = Supplier::factory()->create(['name' => fake()->company()]);
+        $before = $this->createAllocation($supplier);
+        $group = $this->createAllocationsForOneOrder([$supplier, $supplier, $supplier]);
+        $after = $this->createAllocation($supplier);
+        $group->load('purchaseOrderItem');
+        $service = new CreatePurchaseOrdersFromAllocations;
+        $existing = $service->execute(new Collection([$group[0]]))['created'][0];
+        ProductVariant::factory()->create(['product_id' => $group[2]->salesOrderItem->product_id]);
+
+        $result = $service->execute(new Collection([
+            $before, $group[0], $group[1], $group[1], $group[2], $after,
+        ]));
+
+        $this->assertSame([$group[0]->id], $result['skipped']);
+        $this->assertSame([
+            $supplier->id.':'.$group[0]->salesOrderItem->sales_order_id
+                => 'Ce produit possède des variantes : veuillez sélectionner la variante concernée par cette ligne.',
+        ], $result['failed']);
+        $this->assertCount(2, $result['created']);
+        $this->assertPurchaseOrderContains($existing, new Collection([$group[0]]));
+        $this->assertPurchaseOrderContains($result['created'][0], new Collection([$before]));
+        $this->assertPurchaseOrderContains($result['created'][1], new Collection([$after]));
+        $this->assertNull($group[1]->fresh()->purchaseOrderItem);
+        $this->assertNull($group[2]->fresh()->purchaseOrderItem);
+        $this->assertDatabaseCount('purchase_orders', 3);
+        $this->assertDatabaseCount('purchase_order_items', 3);
+        $this->assertDatabaseCount('stock_movements', 0);
+    }
+
+    public function test_d2_16_rollback_ne_signale_pas_une_conversion_non_examinee_apres_exception(): void
+    {
+        $supplier = Supplier::factory()->create(['name' => fake()->company()]);
+        $group = $this->createAllocationsForOneOrder([$supplier, $supplier, $supplier]);
+        $group->load('purchaseOrderItem');
+        $service = new CreatePurchaseOrdersFromAllocations;
+        $existing = $service->execute(new Collection([$group[2]]))['created'][0];
+        $existingAttributes = $existing->fresh()->getAttributes();
+        $existingItemAttributes = $existing->items()->first()->getAttributes();
+        ProductVariant::factory()->create(['product_id' => $group[1]->salesOrderItem->product_id]);
+
+        $result = $service->execute(new Collection([$group[0], $group[0], $group[1], $group[2]]));
+
+        $this->assertSame([], $result['created']);
+        $this->assertSame([], $result['skipped']);
+        $this->assertSame([
+            $supplier->id.':'.$group[0]->salesOrderItem->sales_order_id
+                => 'Ce produit possède des variantes : veuillez sélectionner la variante concernée par cette ligne.',
+        ], $result['failed']);
+        $this->assertSame($existingAttributes, $existing->fresh()->getAttributes());
+        $this->assertSame($existingItemAttributes, $existing->items()->first()->getAttributes());
+        $this->assertNull($group[0]->fresh()->purchaseOrderItem);
+        $this->assertNull($group[1]->fresh()->purchaseOrderItem);
+        $this->assertDatabaseCount('purchase_orders', 1);
+        $this->assertDatabaseCount('purchase_order_items', 1);
+        $this->assertDatabaseCount('stock_movements', 0);
+    }
+
+    public function test_d2_16_doublon_cree_dans_un_appel_reussi_conserve_le_resultat_existant(): void
+    {
+        $allocation = $this->createAllocation();
+
+        $result = (new CreatePurchaseOrdersFromAllocations)->execute(new Collection([$allocation, $allocation]));
+
+        $this->assertCount(1, $result['created']);
+        $this->assertSame([$allocation->id], $result['skipped']);
+        $this->assertSame([], $result['failed']);
+        $this->assertPurchaseOrderContains($result['created'][0], new Collection([$allocation]));
+        $this->assertDatabaseCount('purchase_orders', 1);
+        $this->assertDatabaseCount('purchase_order_items', 1);
+    }
+
     /*
      * =================================================================
      * 6. Suppression d'une allocation convertie -> bloquee
