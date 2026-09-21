@@ -2,6 +2,7 @@
 
 namespace App\Filament\Resources\SalesOrders\Pages;
 
+use App\Filament\Resources\SalesOrders\Concerns\HasSalesOrderCancelledPurchaseRecoveryAction;
 use App\Filament\Resources\SalesOrders\Concerns\HasSalesOrderReallocationAction;
 use App\Filament\Resources\SalesOrders\Concerns\HasSalesOrderSourcingAction;
 use App\Filament\Resources\SalesOrders\Pages\Concerns\HasSalesOrderWorkflowActions;
@@ -19,6 +20,7 @@ class ViewSalesOrder extends ViewRecord
     use HasSalesOrderWorkflowActions;
     use HasSalesOrderSourcingAction;
     use HasSalesOrderReallocationAction;
+    use HasSalesOrderCancelledPurchaseRecoveryAction;
 
     protected static string $resource = SalesOrderResource::class;
 
@@ -26,6 +28,7 @@ class ViewSalesOrder extends ViewRecord
     {
         return [
             $this->confirmOrderAction(),
+            $this->cancelledPurchaseRecoveryAction(),
             Action::make('allocateSourcing')
                 ->label('Allouer le sourcing')
                 ->icon('heroicon-o-cube')

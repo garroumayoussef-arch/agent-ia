@@ -6,6 +6,7 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Support\Facades\DB;
 
 class PurchaseOrderItem extends Model
 {
@@ -23,6 +24,54 @@ class PurchaseOrderItem extends Model
         'gross_tax_amount' => 'decimal:2',
         'tax_amount' => 'decimal:2',
     ];
+
+    /**
+     * D2.18 : contrôle avant les hooks de calcul, sous verrou des en-têtes.
+     * Vérifie le propriétaire persistant ET la destination pour interdire
+     * aussi le déplacement/détachement depuis une instance périmée.
+     */
+    private function guardCancelledHistory(): void
+    {
+        $stored = $this->exists ? static::findOrFail($this->getKey()) : null;
+        $ownerIds = array_values(array_unique(array_filter([
+            $stored?->purchase_order_id, $this->purchase_order_id,
+        ])));
+        sort($ownerIds);
+        $orders = PurchaseOrder::whereKey($ownerIds)->orderBy('id')->lockForUpdate()->get();
+        if ($stored) {
+            $fresh = static::whereKey($this->getKey())->lockForUpdate()->firstOrFail();
+            if ($fresh->purchase_order_id !== $stored->purchase_order_id) {
+                throw new \Exception('La ligne d’achat a changé. Veuillez recommencer.');
+            }
+        }
+        foreach ($orders as $order) {
+            if ($order->hasCancelledAllocationHistory()) {
+                throw new \Exception('Les lignes d’un achat annulé lié à une allocation doivent être conservées sans modification.');
+            }
+        }
+    }
+
+    public function save(array $options = [])
+    {
+        return DB::transaction(function () use ($options) {
+            $this->guardCancelledHistory();
+
+            return parent::save($options);
+        });
+    }
+
+    public function delete()
+    {
+        if (! $this->exists) {
+            return parent::delete();
+        }
+
+        return DB::transaction(function () {
+            $this->guardCancelledHistory();
+
+            return parent::delete();
+        });
+    }
 
     protected static function booted(): void
     {

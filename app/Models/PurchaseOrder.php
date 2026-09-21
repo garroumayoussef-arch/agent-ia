@@ -47,6 +47,46 @@ class PurchaseOrder extends Model
 
     public const STATUS_CANCELLED = 'cancelled';
 
+    /** D2.18 : identité historique protégée dès l'annulation, avant reprise. */
+    public function hasCancelledAllocationHistory(): bool
+    {
+        return static::whereKey($this->getKey())->where('status', self::STATUS_CANCELLED)->exists()
+            && $this->items()->whereNotNull('sales_order_item_allocation_id')->exists();
+    }
+
+    public function save(array $options = [])
+    {
+        if (! $this->exists) {
+            return parent::save($options);
+        }
+
+        return DB::transaction(function () use ($options) {
+            $stored = static::whereKey($this->getKey())->lockForUpdate()->firstOrFail();
+            if ($stored->hasCancelledAllocationHistory()
+                && array_diff(array_keys($this->getDirty()), ['notes', 'updated_at']) !== []) {
+                throw new \Exception('L’achat annulé lié à une allocation doit être conservé sans modification de son historique.');
+            }
+
+            return parent::save($options);
+        });
+    }
+
+    public function delete()
+    {
+        if (! $this->exists) {
+            return parent::delete();
+        }
+
+        return DB::transaction(function () {
+            $stored = static::whereKey($this->getKey())->lockForUpdate()->firstOrFail();
+            if ($stored->hasCancelledAllocationHistory()) {
+                throw new \Exception('Impossible de supprimer un achat annulé lié à une allocation.');
+            }
+
+            return parent::delete();
+        });
+    }
+
     protected static function booted(): void
     {
         static::creating(function (PurchaseOrder $order) {
@@ -139,18 +179,23 @@ class PurchaseOrder extends Model
      */
     public function markAsOrdered(): void
     {
-        if ($this->status !== self::STATUS_DRAFT) {
-            throw new \Exception('Seul un bon de commande en brouillon peut être confirmé.');
-        }
+        DB::transaction(function () {
+            $locked = static::whereKey($this->getKey())->lockForUpdate()->firstOrFail();
+            if ($locked->status !== self::STATUS_DRAFT) {
+                throw new \Exception('Seul un bon de commande en brouillon peut être confirmé.');
+            }
 
-        if (! $this->items()->exists()) {
-            throw new \Exception('Impossible de confirmer un bon de commande sans ligne.');
-        }
+            if (! $locked->items()->exists()) {
+                throw new \Exception('Impossible de confirmer un bon de commande sans ligne.');
+            }
 
-        $this->update([
-            'status' => self::STATUS_ORDERED,
-            'order_date' => $this->order_date ?? now()->toDateString(),
-        ]);
+            $locked->update([
+                'status' => self::STATUS_ORDERED,
+                'order_date' => $locked->order_date ?? now()->toDateString(),
+            ]);
+            $this->setRawAttributes($locked->getAttributes(), true);
+            $this->unsetRelations();
+        });
     }
 
     /**
@@ -161,13 +206,22 @@ class PurchaseOrder extends Model
      */
     public function cancel(): void
     {
-        if (! in_array($this->status, [self::STATUS_DRAFT, self::STATUS_ORDERED], true)) {
-            throw new \Exception(
-                'Seul un bon de commande en brouillon ou commandé (sans réception) peut être annulé.'
-            );
-        }
+        DB::transaction(function () {
+            $locked = static::whereKey($this->getKey())->lockForUpdate()->firstOrFail();
+            if (! in_array($locked->status, [self::STATUS_DRAFT, self::STATUS_ORDERED], true)) {
+                throw new \Exception(
+                    'Seul un bon de commande en brouillon ou commandé (sans réception) peut être annulé.'
+                );
+            }
 
-        $this->update(['status' => self::STATUS_CANCELLED]);
+            if ($locked->items()->where('quantity_received', '>', 0)->exists()) {
+                throw new \Exception('Une commande avec réception ne peut pas être annulée.');
+            }
+
+            $locked->update(['status' => self::STATUS_CANCELLED]);
+            $this->setRawAttributes($locked->getAttributes(), true);
+            $this->unsetRelations();
+        });
     }
 
     /**
@@ -186,12 +240,6 @@ class PurchaseOrder extends Model
      */
     public function receive(array $receivedQuantities, ?int $warehouseId = null): void
     {
-        if (! in_array($this->status, [self::STATUS_ORDERED, self::STATUS_PARTIALLY_RECEIVED], true)) {
-            throw new \Exception(
-                'Seul un bon de commande commandé ou partiellement reçu peut être réceptionné.'
-            );
-        }
-
         $receivedQuantities = array_filter(
             $receivedQuantities,
             fn ($qty): bool => (int) $qty > 0
@@ -204,8 +252,17 @@ class PurchaseOrder extends Model
         static::assertValidOperationWarehouse($warehouseId);
 
         DB::transaction(function () use ($receivedQuantities, $warehouseId) {
-            $items = $this->items()
+            $locked = static::whereKey($this->getKey())->lockForUpdate()->firstOrFail();
+            if (! in_array($locked->status, [self::STATUS_ORDERED, self::STATUS_PARTIALLY_RECEIVED], true)) {
+                throw new \Exception(
+                    'Seul un bon de commande commandé ou partiellement reçu peut être réceptionné.'
+                );
+            }
+
+            $items = $locked->items()
                 ->whereIn('id', array_keys($receivedQuantities))
+                ->orderBy('id')
+                ->lockForUpdate()
                 ->get()
                 ->keyBy('id');
 
@@ -228,12 +285,12 @@ class PurchaseOrder extends Model
                 StockMovement::create([
                     'product_id' => $item->product_id,
                     'product_variant_id' => $item->product_variant_id,
-                    'purchase_order_id' => $this->id,
+                    'purchase_order_id' => $locked->id,
                     'warehouse_id' => $warehouseId,
                     'type' => 'purchase',
                     'quantity' => $quantityNow,
-                    'reference' => $this->reference,
-                    'notes' => "Réception bon de commande {$this->reference}",
+                    'reference' => $locked->reference,
+                    'notes' => "Réception bon de commande {$locked->reference}",
                 ]);
 
                 $item->update([
@@ -241,7 +298,9 @@ class PurchaseOrder extends Model
                 ]);
             }
 
-            $this->refreshStatusFromItems();
+            $locked->refreshStatusFromItems();
+            $this->setRawAttributes($locked->getAttributes(), true);
+            $this->unsetRelations();
         });
     }
 

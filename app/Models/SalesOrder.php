@@ -139,18 +139,23 @@ class SalesOrder extends Model
      */
     public function markAsConfirmed(): void
     {
-        if ($this->status !== self::STATUS_DRAFT) {
-            throw new \Exception('Seule une commande en brouillon peut être confirmée.');
-        }
+        DB::transaction(function () {
+            $locked = static::whereKey($this->getKey())->lockForUpdate()->firstOrFail();
+            if ($locked->status !== self::STATUS_DRAFT) {
+                throw new \Exception('Seule une commande en brouillon peut être confirmée.');
+            }
 
-        if (! $this->items()->exists()) {
-            throw new \Exception('Impossible de confirmer une commande sans ligne.');
-        }
+            if (! $locked->items()->exists()) {
+                throw new \Exception('Impossible de confirmer une commande sans ligne.');
+            }
 
-        $this->update([
-            'status' => self::STATUS_CONFIRMED,
-            'order_date' => $this->order_date ?? now()->toDateString(),
-        ]);
+            $locked->update([
+                'status' => self::STATUS_CONFIRMED,
+                'order_date' => $locked->order_date ?? now()->toDateString(),
+            ]);
+            $this->setRawAttributes($locked->getAttributes(), true);
+            $this->unsetRelations();
+        });
     }
 
     /**
@@ -160,13 +165,22 @@ class SalesOrder extends Model
      */
     public function cancel(): void
     {
-        if (! in_array($this->status, [self::STATUS_DRAFT, self::STATUS_CONFIRMED], true)) {
-            throw new \Exception(
-                'Seule une commande en brouillon ou confirmée (sans expédition) peut être annulée.'
-            );
-        }
+        DB::transaction(function () {
+            $locked = static::whereKey($this->getKey())->lockForUpdate()->firstOrFail();
+            if (! in_array($locked->status, [self::STATUS_DRAFT, self::STATUS_CONFIRMED], true)) {
+                throw new \Exception(
+                    'Seule une commande en brouillon ou confirmée (sans expédition) peut être annulée.'
+                );
+            }
 
-        $this->update(['status' => self::STATUS_CANCELLED]);
+            if ($locked->items()->where('quantity_shipped', '>', 0)->exists()) {
+                throw new \Exception('Une commande avec expédition ne peut pas être annulée.');
+            }
+
+            $locked->update(['status' => self::STATUS_CANCELLED]);
+            $this->setRawAttributes($locked->getAttributes(), true);
+            $this->unsetRelations();
+        });
     }
 
     /**
@@ -188,12 +202,6 @@ class SalesOrder extends Model
      */
     public function ship(array $shippedQuantities, ?int $warehouseId = null): void
     {
-        if (! in_array($this->status, [self::STATUS_CONFIRMED, self::STATUS_PARTIALLY_SHIPPED], true)) {
-            throw new \Exception(
-                'Seule une commande confirmée ou partiellement expédiée peut être expédiée.'
-            );
-        }
-
         $shippedQuantities = array_filter(
             $shippedQuantities,
             fn ($qty): bool => (int) $qty > 0
@@ -206,8 +214,17 @@ class SalesOrder extends Model
         static::assertValidOperationWarehouse($warehouseId);
 
         DB::transaction(function () use ($shippedQuantities, $warehouseId) {
-            $items = $this->items()
+            $locked = static::whereKey($this->getKey())->lockForUpdate()->firstOrFail();
+            if (! in_array($locked->status, [self::STATUS_CONFIRMED, self::STATUS_PARTIALLY_SHIPPED], true)) {
+                throw new \Exception(
+                    'Seule une commande confirmée ou partiellement expédiée peut être expédiée.'
+                );
+            }
+
+            $items = $locked->items()
                 ->whereIn('id', array_keys($shippedQuantities))
+                ->orderBy('id')
+                ->lockForUpdate()
                 ->get()
                 ->keyBy('id');
 
@@ -235,12 +252,12 @@ class SalesOrder extends Model
                 StockMovement::create([
                     'product_id' => $item->product_id,
                     'product_variant_id' => $item->product_variant_id,
-                    'sales_order_id' => $this->id,
+                    'sales_order_id' => $locked->id,
                     'warehouse_id' => $warehouseId,
                     'type' => 'sale',
                     'quantity' => $quantityNow,
-                    'reference' => $this->reference,
-                    'notes' => "Expédition commande {$this->reference}",
+                    'reference' => $locked->reference,
+                    'notes' => "Expédition commande {$locked->reference}",
                 ]);
 
                 $item->update([
@@ -248,7 +265,9 @@ class SalesOrder extends Model
                 ]);
             }
 
-            $this->refreshStatusFromItems();
+            $locked->refreshStatusFromItems();
+            $this->setRawAttributes($locked->getAttributes(), true);
+            $this->unsetRelations();
         });
     }
 

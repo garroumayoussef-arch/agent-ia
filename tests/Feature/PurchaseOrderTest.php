@@ -18,6 +18,41 @@ class PurchaseOrderTest extends TestCase
 {
     use RefreshDatabase;
 
+    public function test_d2_18_instance_perimee_ne_receptionne_pas_un_achat_annule(): void
+    {
+        $s = SalesOrderCancelledPurchaseRecoveryTest::scenario();
+        \Illuminate\Support\Facades\DB::table('purchase_orders')->where('id', $s['purchase']->id)->update(['status' => 'ordered']);
+        $stale = $s['purchase']->fresh();
+        $s['purchase']->fresh()->cancel();
+        $warehouse = Warehouse::where('is_default', true)->firstOrFail();
+        try {
+            $stale->receive([$s['purchaseItem']->id => 1], $warehouse->id);
+            $this->fail('Réception périmée acceptée.');
+        } catch (\Exception $e) {
+            $this->assertStringContainsString('réceptionné', $e->getMessage());
+        }
+        $this->assertSame('cancelled', $s['purchase']->fresh()->status);
+        $this->assertSame(0, $s['purchaseItem']->fresh()->quantity_received);
+        $this->assertDatabaseCount('stock_movements', 0);
+    }
+
+    public function test_d2_18_annulation_perimee_nefface_pas_une_reception(): void
+    {
+        $s = SalesOrderCancelledPurchaseRecoveryTest::scenario();
+        \Illuminate\Support\Facades\DB::table('purchase_orders')->where('id', $s['purchase']->id)->update(['status' => 'ordered']);
+        $stale = $s['purchase']->fresh();
+        $warehouse = Warehouse::where('is_default', true)->firstOrFail();
+        $s['purchase']->fresh()->receive([$s['purchaseItem']->id => 1], $warehouse->id);
+        try {
+            $stale->cancel();
+            $this->fail('Annulation périmée acceptée.');
+        } catch (\Exception $e) {
+            $this->assertStringContainsString('sans réception', $e->getMessage());
+        }
+        $this->assertSame('partially_received', $s['purchase']->fresh()->status);
+        $this->assertSame(1, $s['purchaseItem']->fresh()->quantity_received);
+    }
+
     /**
      * Étape T11b : StockMovement::creating() (déclenché par
      * PurchaseOrder::receive()) résout désormais systématiquement un

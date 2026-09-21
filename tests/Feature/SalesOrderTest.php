@@ -18,6 +18,39 @@ class SalesOrderTest extends TestCase
 {
     use RefreshDatabase;
 
+    public function test_d2_18_instance_perimee_nexpedie_pas_une_vente_annulee(): void
+    {
+        $s = SalesOrderCancelledPurchaseRecoveryTest::scenario();
+        $stale = $s['sale']->fresh();
+        $s['sale']->cancel();
+        $warehouse = Warehouse::where('is_default', true)->firstOrFail();
+        try {
+            $stale->ship([$s['item']->id => 1], $warehouse->id);
+            $this->fail('Expédition périmée acceptée.');
+        } catch (\Exception $e) {
+            $this->assertStringContainsString('expédiée', $e->getMessage());
+        }
+        $this->assertSame('cancelled', $s['sale']->fresh()->status);
+        $this->assertSame(0, $s['item']->fresh()->quantity_shipped);
+        $this->assertDatabaseCount('stock_movements', 0);
+    }
+
+    public function test_d2_18_annulation_perimee_nefface_pas_une_expedition(): void
+    {
+        $s = SalesOrderCancelledPurchaseRecoveryTest::scenario();
+        $stale = $s['sale']->fresh();
+        \Illuminate\Support\Facades\DB::table('sales_orders')->where('id', $s['sale']->id)->update(['status' => 'partially_shipped']);
+        \Illuminate\Support\Facades\DB::table('sales_order_items')->where('id', $s['item']->id)->update(['quantity_shipped' => 1]);
+        try {
+            $stale->cancel();
+            $this->fail('Annulation périmée acceptée.');
+        } catch (\Exception $e) {
+            $this->assertStringContainsString('sans expédition', $e->getMessage());
+        }
+        $this->assertSame('partially_shipped', $s['sale']->fresh()->status);
+        $this->assertSame(1, $s['item']->fresh()->quantity_shipped);
+    }
+
     /**
      * Étape T11b : StockMovement::creating() (déclenché par
      * SalesOrder::ship()) résout désormais systématiquement un

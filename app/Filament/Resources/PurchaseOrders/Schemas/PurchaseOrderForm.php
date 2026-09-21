@@ -24,18 +24,21 @@ class PurchaseOrderForm
 
                 Select::make('supplier_id')
                     ->label('Fournisseur')
+                    ->disabled(fn (?PurchaseOrder $record): bool => $record?->hasCancelledAllocationHistory() ?? false)
                     ->relationship('supplier', 'name')
                     ->searchable()
                     ->preload(),
 
                 TextInput::make('reference')
                     ->label('Référence')
+                    ->disabled(fn (?PurchaseOrder $record): bool => $record?->hasCancelledAllocationHistory() ?? false)
                     ->required()
                     ->unique(ignoreRecord: true)
                     ->default(fn (): string => 'BC-'.now()->format('Ymd').'-'.strtoupper(Str::random(4))),
 
                 DatePicker::make('order_date')
-                    ->label('Date de commande'),
+                    ->label('Date de commande')
+                    ->disabled(fn (?PurchaseOrder $record): bool => $record?->hasCancelledAllocationHistory() ?? false),
 
                 Textarea::make('notes')
                     ->label('Notes')

@@ -46,6 +46,39 @@ class CreatePurchaseOrdersFromAllocationsTest extends TestCase
 {
     use RefreshDatabase;
 
+    public function test_d2_18_reprises_separees_converties_une_seule_fois_avec_historique(): void
+    {
+        $a = SalesOrderCancelledPurchaseRecoveryTest::scenario();
+        $b = SalesOrderCancelledPurchaseRecoveryTest::scenario();
+        $b['alternative']->update(['supplier_id' => $a['alternative']->supplier_id]);
+        $replacements = [];
+        foreach ([$a, $b] as $s) {
+            $replacements[] = SalesOrderItemAllocation::recoverAfterCancelledPurchaseFor(
+                $s['allocation'], SalesOrderItemAllocation::previewCancelledPurchaseRecovery($s['allocation'])
+            );
+        }
+        $service = new CreatePurchaseOrdersFromAllocations;
+        $input = new Collection([$a['allocation'], $b['allocation'], ...$replacements]);
+        $result = $service->execute($input);
+        $this->assertCount(2, $result['created']);
+        $this->assertEqualsCanonicalizing([$a['allocation']->id, $b['allocation']->id], $result['skipped']);
+        $this->assertSame([], $result['failed']);
+        foreach ($result['created'] as $purchase) {
+            $this->assertSame('draft', $purchase->status);
+            $this->assertSame(1, $purchase->items()->count());
+            $this->assertNotNull($purchase->items()->first()->allocation->replacesAllocation->purchaseOrderItem);
+        }
+        $replay = $service->execute($input);
+        $this->assertSame([], $replay['created']);
+        $this->assertSame([], $replay['failed']);
+        $this->assertCount(4, $replay['skipped']);
+        $this->assertDatabaseCount('purchase_orders', 4);
+        $this->assertDatabaseCount('purchase_order_items', 4);
+        $this->assertDatabaseCount('stock_movements', 0);
+        $this->assertSame('cancelled', $a['purchase']->fresh()->status);
+        $this->assertSame('cancelled', $b['purchase']->fresh()->status);
+    }
+
     private function createAllocation(?Supplier $supplier = null, ?Product $product = null): SalesOrderItemAllocation
     {
         $product ??= Product::factory()->create();

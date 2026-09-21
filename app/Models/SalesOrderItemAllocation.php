@@ -165,6 +165,181 @@ class SalesOrderItemAllocation extends Model
         return $this->belongsTo(SalesOrderItem::class);
     }
 
+    /**
+     * D2.18 : offre en lecture seule. Elle ne dispense jamais du recontrôle
+     * transactionnel et doit être conservée par l'appelant de confiance.
+     */
+    public static function previewCancelledPurchaseRecovery(self $current): array
+    {
+        return static::cancelledPurchaseRecoveryOffer($current->getKey(), false);
+    }
+
+    /**
+     * Préparation groupée de la modale. Instantané de lecture uniquement :
+     * l'exécution repasse toujours par les requêtes fraîches et le resolver.
+     */
+    public static function previewCancelledPurchaseRecoveriesFor(SalesOrder $record): array
+    {
+        $sale = SalesOrder::with([
+            'items.allocation.replacedBy',
+            'items.allocation.supplierProductSourcing',
+            'items.allocation.purchaseOrderItem.purchaseOrder.items.returns',
+            'items.product.variants',
+            'items.productVariant',
+        ])->findOrFail($record->getKey());
+        $sources = SupplierProductSourcing::whereIn('product_id', $sale->items->pluck('product_id')->unique())
+            ->where('is_active', true)->orderBy('priority')->orderBy('id')
+            ->with('supplier')->get()->groupBy('product_id');
+        $offers = [];
+        $reasons = [];
+        foreach ($sale->items as $item) {
+            $current = $item->allocation;
+            if (! $current) {
+                continue;
+            }
+            // Même palier que SupplierSourcingResolver : choisir le spécifique
+            // AVANT l'exclusion ; ne jamais se rabattre après exclusion.
+            $candidates = $sources->get($item->product_id, collect());
+            if ($item->product_variant_id !== null) {
+                $specific = $candidates->where('product_variant_id', $item->product_variant_id);
+                $candidates = $specific->isNotEmpty() ? $specific : $candidates->whereNull('product_variant_id');
+            }
+            $alternative = $candidates->first(fn ($source) => $source->supplier_id !== $current->supplierProductSourcing?->supplier_id);
+            try {
+                $offers[$current->id] = static::cancelledPurchaseRecoveryOffer($current->id, false, [
+                    'sale' => $sale, 'item' => $item, 'current' => $current, 'alternative' => $alternative,
+                ]);
+            } catch (\Exception $e) {
+                $reasons[] = 'Ligne #'.$item->id.' : '.$e->getMessage();
+            }
+        }
+
+        return ['offers' => $offers, 'reasons' => $reasons];
+    }
+
+    /**
+     * Reprise manuelle distincte du retour intégral D2.9. Aucun achat ni stock.
+     * Ordre : vente, allocation, achat, lignes d'achat, sourcings du produit.
+     * Le générateur verrouille aussi l'allocation avant de créer son achat.
+     * Les workflows de vente/achat verrouillent leur en-tête avant leurs lignes.
+     */
+    public static function recoverAfterCancelledPurchaseFor(self $current, array $confirmed): self
+    {
+        return DB::transaction(function () use ($current, $confirmed) {
+            $offer = static::cancelledPurchaseRecoveryOffer($current->getKey(), true);
+
+            if ($offer !== $confirmed) {
+                throw new \Exception('La proposition de reprise a changé. Veuillez confirmer à nouveau.');
+            }
+
+            return static::create([
+                'sales_order_item_id' => $offer['sales_order_item_id'],
+                'supplier_product_sourcing_id' => $offer['sourcing_id'],
+                'quantity' => $offer['quantity'],
+                'replaces_allocation_id' => $offer['allocation_id'],
+            ]);
+        });
+    }
+
+    private static function cancelledPurchaseRecoveryOffer(int $allocationId, bool $lock, ?array $preview = null): array
+    {
+        if ($preview !== null) {
+            $sale = $preview['sale'];
+            $current = $preview['current'];
+            $item = $preview['item'];
+        } else {
+            $initial = static::findOrFail($allocationId);
+            $initialItem = $initial->salesOrderItem()->firstOrFail();
+            $saleQuery = SalesOrder::whereKey($initialItem->sales_order_id);
+            $sale = ($lock ? $saleQuery->lockForUpdate() : $saleQuery)->firstOrFail();
+            $allocationQuery = static::whereKey($allocationId);
+            $current = ($lock ? $allocationQuery->lockForUpdate() : $allocationQuery)->firstOrFail();
+            $item = $current->salesOrderItem()->firstOrFail();
+        }
+
+        if ($item->sales_order_id !== $sale->id
+            || ($preview !== null ? $current->replacedBy !== null : $current->replacedBy()->exists())
+            || ($preview !== null ? $item->allocation?->id : $item->allocation()->value('sales_order_item_allocations.id')) !== $current->id) {
+            throw new \Exception('Cette allocation est déjà reprise ou ne correspond plus à la vente.');
+        }
+        if ($sale->status !== SalesOrder::STATUS_CONFIRMED
+            || ($preview !== null ? $sale->items->contains(fn ($line) => (int) $line->quantity_shipped !== 0) : $sale->items()->where('quantity_shipped', '!=', 0)->exists())) {
+            throw new \Exception('La reprise exige une vente confirmée sans aucune expédition.');
+        }
+
+        $purchaseItem = $preview !== null ? $current->purchaseOrderItem : $current->purchaseOrderItem()->first();
+        if (! $purchaseItem) {
+            throw new \Exception('Cette allocation ne possède pas de ligne d’achat conservée.');
+        }
+        if ($preview !== null) {
+            $purchase = $purchaseItem->purchaseOrder;
+            if (! $purchase) {
+                throw new \Exception('Cette allocation ne possède pas d’achat conservé.');
+            }
+            $lines = $purchase->items;
+        } else {
+            $purchaseQuery = PurchaseOrder::whereKey($purchaseItem->purchase_order_id);
+            $purchase = ($lock ? $purchaseQuery->lockForUpdate() : $purchaseQuery)->firstOrFail();
+            $linesQuery = $purchase->items()->orderBy('id');
+            $lines = ($lock ? $linesQuery->lockForUpdate() : $linesQuery)->get();
+        }
+        $purchaseItem = $lines->firstWhere('id', $purchaseItem->id);
+
+        if ($purchase->status !== PurchaseOrder::STATUS_CANCELLED
+            || $lines->contains(fn ($line) => (int) $line->quantity_received !== 0)
+            || ($preview !== null ? $lines->contains(fn ($line) => $line->returns->isNotEmpty()) : PurchaseOrderItemReturn::whereIn('purchase_order_item_id', $lines->modelKeys())->exists())) {
+            throw new \Exception('La reprise exige un achat annulé sans aucune réception ni retour.');
+        }
+
+        // Stabilise les fiches existantes pendant la décision, sans changer le resolver.
+        if ($lock) {
+            SupplierProductSourcing::where('product_id', $item->product_id)
+                ->orderBy('id')->lockForUpdate()->get();
+        }
+        $source = $preview !== null ? $current->supplierProductSourcing : $current->supplierProductSourcing()->first();
+        $product = $item->product;
+        $variant = $item->productVariant;
+        if (! $purchaseItem || ! $source || ! $product
+            || $purchaseItem->sales_order_item_allocation_id !== $current->id
+            || $purchaseItem->product_id !== $item->product_id
+            || $purchaseItem->product_variant_id !== $item->product_variant_id
+            || $source->product_id !== $item->product_id
+            || ($source->product_variant_id !== null && $source->product_variant_id !== $item->product_variant_id)
+            || ($item->product_variant_id !== null && (! $variant || $variant->product_id !== $product->id))
+            || ($variant === null && ($preview !== null ? $product->variants->isNotEmpty() : $product->variants()->exists()))
+            || $purchase->supplier_id !== $source->supplier_id) {
+            throw new \Exception('Les liens vente, achat, allocation et sourcing sont incohérents.');
+        }
+        if ($current->quantity <= 0 || $current->quantity !== $item->quantity_ordered
+            || $current->quantity !== $purchaseItem->quantity_ordered) {
+            throw new \Exception('Les quantités de vente, d’achat et d’allocation doivent être identiques et positives.');
+        }
+
+        $alternative = $preview !== null ? $preview['alternative'] : app(SupplierSourcingResolver::class)->best($variant ?? $product, $source->supplier_id);
+        if (! $alternative || ! $alternative->is_active
+            || $alternative->supplier_id === $source->supplier_id
+            || $alternative->product_id !== $product->id
+            || ($alternative->product_variant_id !== null && $alternative->product_variant_id !== $item->product_variant_id)
+            || ! $alternative->supplier) {
+            throw new \Exception('Aucun fournisseur alternatif compatible actif n’est disponible.');
+        }
+
+        return [
+            'allocation_id' => $current->id,
+            'sales_order_id' => $sale->id,
+            'sales_order_item_id' => $item->id,
+            'purchase_order_id' => $purchase->id,
+            'purchase_order_item_id' => $purchaseItem->id,
+            'purchase_reference' => $purchase->reference,
+            'product_id' => $item->product_id,
+            'product_variant_id' => $item->product_variant_id,
+            'quantity' => $current->quantity,
+            'sourcing_id' => $alternative->id,
+            'supplier_id' => $alternative->supplier_id,
+            'supplier_name' => $alternative->supplier->name,
+        ];
+    }
+
     public function supplierProductSourcing(): BelongsTo
     {
         return $this->belongsTo(SupplierProductSourcing::class);
