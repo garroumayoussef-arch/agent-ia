@@ -59,11 +59,7 @@ class SalesOrderCancelledPurchaseRecoveryTest extends TestCase
         $product = Product::factory()->create();
         $variant = in_array($case, ['specific', 'generic', 'excluded_specific'], true)
             ? ProductVariant::factory()->create(['product_id' => $product->id]) : null;
-        $s = self::scenario($product, $variant);
-        if ($case === 'generic') {
-            $s['source']->update(['product_variant_id' => null]);
-            $s['alternative']->update(['product_variant_id' => null]);
-        }
+        $s = self::scenario($product, $variant, genericSourcing: $case === 'generic');
         if (in_array($case, ['excluded_specific', 'inactive'], true)) {
             $s['alternative']->update(['is_active' => false]);
         }
@@ -86,16 +82,20 @@ class SalesOrderCancelledPurchaseRecoveryTest extends TestCase
     }
 
     /** Fixture partagée par les trois suites D2.18, sans nouveau fichier hors allowlist. */
-    public static function scenario(?Product $product = null, ?ProductVariant $variant = null): array
-    {
+    public static function scenario(
+        ?Product $product = null,
+        ?ProductVariant $variant = null,
+        bool $genericSourcing = false,
+    ): array {
         $product ??= Product::factory()->create();
+        $sourcingVariantId = $genericSourcing ? null : $variant?->id;
         $supplier = Supplier::factory()->create(['name' => fake()->company()]);
         $source = $product->supplierSourcings()->create([
-            'supplier_id' => $supplier->id, 'product_variant_id' => $variant?->id,
+            'supplier_id' => $supplier->id, 'product_variant_id' => $sourcingVariantId,
             'is_active' => true, 'priority' => 1, 'supplier_cost' => 10,
         ]);
         $alternative = $product->supplierSourcings()->create([
-            'supplier_id' => Supplier::factory()->create(['name' => fake()->company()])->id, 'product_variant_id' => $variant?->id,
+            'supplier_id' => Supplier::factory()->create(['name' => fake()->company()])->id, 'product_variant_id' => $sourcingVariantId,
             'is_active' => true, 'priority' => 2, 'supplier_cost' => 12,
         ]);
         $sale = SalesOrder::factory()->create();
