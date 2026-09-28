@@ -8,6 +8,7 @@ use App\Models\ProductVariant;
 use App\Models\ProductVariantAttributeValue;
 use Database\Seeders\AttributeDefinitionSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\TestCase;
 
 /**
@@ -151,6 +152,132 @@ class AttributeDualWriteTest extends TestCase
         $this->assertSame('M', $variant->fresh()->size);
         $this->assertSame(0, ProductAttributeValue::count());
         $this->assertSame(0, ProductVariantAttributeValue::count());
+    }
+
+    /**
+     * 2.6.7 — constats historiques, pas règles cibles : ces scénarios rendent
+     * les divergences visibles avant tout arbitrage sur les formulaires.
+     * Les tests antérieurs et leurs assertions restent inchangés.
+     */
+    public function test_constat_effacer_season_conserve_le_miroir_preexistant(): void
+    {
+        $product = Product::factory()->create(['activity' => 'sport', 'season' => '2025-2026']);
+        $this->assertSame('2025-2026', $product->attributeMirrorValue('season'));
+
+        $product->update(['season' => null]);
+        $product->refresh();
+        $this->assertNull($product->season);
+        $this->assertSame('2025-2026', $product->attributeMirrorValue('season'));
+        $this->assertSame(1, $product->attributeValues()
+            ->whereHas('attributeDefinition', fn ($query) => $query->where('code', 'season'))->count());
+
+        $product->update(['season' => '2026-2027']);
+        $this->assertSame('2026-2027', $product->fresh()->attributeMirrorValue('season'));
+    }
+
+    public static function variantMirrorCodes(): array
+    {
+        return ['size' => ['size', 'M', 'L'], 'color' => ['color', 'Bleu', 'Rouge'],
+            'version' => ['version', 'Player Version', 'Fan Version']];
+    }
+
+    #[DataProvider('variantMirrorCodes')]
+    public function test_constat_null_initial_et_effacement_ont_des_effets_differents_sur_le_miroir(string $code, string $initial, string $next): void
+    {
+        $product = Product::factory()->create(['activity' => 'sport']);
+        $variant = ProductVariant::factory()->create(['product_id' => $product->id, $code => null]);
+        $this->assertNull($variant->fresh()->attributeMirrorValue($code));
+        $variant->update([$code => $initial]);
+        $this->assertSame($initial, $variant->fresh()->attributeMirrorValue($code));
+
+        $variant->update([$code => null]);
+        $this->assertNull($variant->fresh()->getAttribute($code));
+        $this->assertSame($initial, $variant->fresh()->attributeMirrorValue($code));
+        $variant->update([$code => $next]);
+        $this->assertSame($next, $variant->fresh()->attributeMirrorValue($code));
+        $this->assertSame(1, $variant->attributeValues()
+            ->whereHas('attributeDefinition', fn ($query) => $query->where('code', $code))->count());
+    }
+
+    public function test_effacer_taille_et_equipe_declenche_les_replis_historiques_avant_copie(): void
+    {
+        $product = Product::factory()->create([
+            'activity' => 'sport', 'taille' => 'L', 'equipe' => 'Equipe saisie', 'club_id' => null,
+        ]);
+        ProductVariant::factory()->create(['product_id' => $product->id, 'size' => 'M']);
+        $product->update(['taille' => null, 'equipe' => null]);
+        $product->refresh();
+
+        $this->assertSame('M', $product->taille);
+        $this->assertSame('M', $product->attributeMirrorValue('taille'));
+        $this->assertSame('N/A', $product->equipe);
+        $this->assertSame('N/A', $product->attributeMirrorValue('equipe'));
+    }
+
+    public function test_constat_changement_activite_conserve_les_valeurs_devenues_inapplicables(): void
+    {
+        $product = Product::factory()->create([
+            'activity' => 'sport', 'season' => 'Ancienne saison', 'taille' => 'M', 'equipe' => 'Ancienne équipe',
+        ]);
+        $variant = ProductVariant::factory()->create([
+            'product_id' => $product->id, 'size' => 'M', 'color' => 'Bleu', 'version' => 'Player Version',
+        ]);
+        $product->update(['activity' => 'moto', 'season' => 'Nouvelle saison', 'taille' => 'L', 'equipe' => 'Nouvelle équipe']);
+        $product->refresh();
+        $this->assertSame('moto', $product->activity);
+        foreach (['season' => ['Nouvelle saison', 'Ancienne saison'], 'taille' => ['L', 'M'],
+            'equipe' => ['Nouvelle équipe', 'Ancienne équipe']] as $code => [$source, $mirror]) {
+            $this->assertSame($source, $product->getAttribute($code));
+            $this->assertSame($mirror, $product->attributeMirrorValue($code));
+        }
+
+        // Relecture volontaire : ce cas isole l'inapplicabilité du cache de relation.
+        $variant->refresh();
+        $variant->update(['size' => 'L', 'color' => 'Rouge', 'version' => 'Fan Version']);
+        $this->assertSame('L', $variant->fresh()->size);
+        $this->assertSame('Fan Version', $variant->fresh()->version);
+        $this->assertSame('M', $variant->fresh()->attributeMirrorValue('size'));
+        $this->assertSame('Player Version', $variant->fresh()->attributeMirrorValue('version'));
+        $this->assertSame('Rouge', $variant->fresh()->attributeMirrorValue('color'));
+        $this->assertNull($product->attributeMirrorValue('modele_compatible'));
+        $this->assertNull($variant->attributeMirrorValue('cylindree'));
+    }
+
+    public static function parentChanges(): array
+    {
+        return [
+            'sport vers moto frais' => ['sport', 'moto', false, 'M'],
+            'sport vers moto chargé' => ['sport', 'moto', true, 'L'],
+            'moto vers sport frais' => ['moto', 'sport', false, 'L'],
+            'moto vers sport chargé' => ['moto', 'sport', true, null],
+        ];
+    }
+
+    #[DataProvider('parentChanges')]
+    public function test_constat_changement_parent_depend_du_cache_de_relation(string $from, string $to, bool $loaded, ?string $expectedMirror): void
+    {
+        $oldParent = Product::factory()->create(['activity' => $from]);
+        $newParent = Product::factory()->create(['activity' => $to]);
+        $created = ProductVariant::factory()->create([
+            'product_id' => $oldParent->id, 'size' => 'M', 'color' => 'Bleu', 'stock' => 0,
+        ]);
+        // Instance distincte : la création a déjà pu charger sa relation product.
+        $variant = ProductVariant::findOrFail($created->id);
+        if ($loaded) {
+            $variant->load('product');
+        }
+        $this->assertSame($loaded, $variant->relationLoaded('product'));
+        $this->assertSame($from === 'sport' ? 'M' : null, $variant->attributeMirrorValue('size'));
+
+        $variant->update(['product_id' => $newParent->id, 'size' => 'L', 'color' => 'Rouge']);
+        $persisted = $variant->fresh();
+        $this->assertSame($newParent->id, (int) $persisted->product_id);
+        $this->assertSame($to, $persisted->product->activity);
+        $this->assertSame('L', $persisted->size);
+        $this->assertSame($expectedMirror, $persisted->attributeMirrorValue('size'));
+        $this->assertSame('Rouge', $persisted->attributeMirrorValue('color'));
+        $this->assertSame(0, $oldParent->variants()->count());
+        $this->assertSame($variant->id, $newParent->variants()->sole()->id);
     }
 
     private function mirroredProductValue(Product $product, string $code): ?string
