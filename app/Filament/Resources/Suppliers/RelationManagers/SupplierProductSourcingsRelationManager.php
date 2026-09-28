@@ -3,6 +3,7 @@
 namespace App\Filament\Resources\Suppliers\RelationManagers;
 
 use App\Filament\Concerns\DeterminesMutationAccessByRole;
+use App\Models\SupplierProductSourcing;
 use Filament\Actions\CreateAction;
 use Filament\Actions\DeleteAction;
 use Filament\Actions\EditAction;
@@ -10,6 +11,8 @@ use Filament\Forms\Components\Select;
 use Filament\Forms\Components\TextInput;
 use Filament\Forms\Components\Textarea;
 use Filament\Forms\Components\Toggle;
+use Filament\Notifications\Notification;
+use Filament\Support\Exceptions\Halt;
 use Filament\Resources\RelationManagers\RelationManager;
 use Filament\Schemas\Components\Utilities\Get;
 use Filament\Schemas\Components\Utilities\Set;
@@ -19,6 +22,7 @@ use Filament\Tables\Columns\TextColumn;
 use Filament\Tables\Table;
 use Illuminate\Auth\Access\Response;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Validation\ValidationException;
 
 /**
  * Chantier Dropshipping, étape D2.4.2 — interface Filament du sourcing
@@ -112,6 +116,9 @@ class SupplierProductSourcingsRelationManager extends RelationManager
                 Select::make('product_id')
                     ->label('Produit')
                     ->relationship('product', 'nom')
+                    ->disabled(fn (?SupplierProductSourcing $record): bool => $record?->hasAllocationHistory() ?? false)
+                    ->dehydrated()
+                    ->helperText('Identité figée dès la première allocation ; les autres paramètres restent modifiables.')
                     ->searchable()
                     ->preload()
                     ->live()
@@ -130,6 +137,8 @@ class SupplierProductSourcingsRelationManager extends RelationManager
                         titleAttribute: 'sku',
                         modifyQueryUsing: fn ($query, Get $get) => $query->where('product_id', $get('product_id')),
                     )
+                    ->disabled(fn (?SupplierProductSourcing $record): bool => $record?->hasAllocationHistory() ?? false)
+                    ->dehydrated()
                     ->searchable()
                     ->preload(),
 
@@ -207,7 +216,14 @@ class SupplierProductSourcingsRelationManager extends RelationManager
                 CreateAction::make(),
             ])
             ->recordActions([
-                EditAction::make(),
+                EditAction::make()->using(function (SupplierProductSourcing $record, array $data): void {
+                    try {
+                        $record->update($data);
+                    } catch (ValidationException $e) {
+                        Notification::make()->title('Modification refusée')->body($e->getMessage())->danger()->send();
+                        throw new Halt;
+                    }
+                }),
                 DeleteAction::make(),
             ]);
     }

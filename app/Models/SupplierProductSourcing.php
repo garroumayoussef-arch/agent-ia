@@ -4,6 +4,7 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Validation\ValidationException;
 
 /**
  * Chantier Dropshipping, étape D1 — fiche de sourcing : déclare qu'un
@@ -38,6 +39,69 @@ class SupplierProductSourcing extends Model
         'min_order_quantity' => 'integer',
         'is_active' => 'boolean',
     ];
+
+    /** D2.20 : inclut les allocations historiques, sans relation mise en cache. */
+    public function hasAllocationHistory(): bool
+    {
+        return $this->exists && $this->getConnection()->table('sales_order_item_allocations')
+            ->where('supplier_product_sourcing_id', $this->getRawOriginal($this->getKeyName()))
+            ->exists();
+    }
+
+    /**
+     * D2.20 : garde commune à save/update et à leurs variantes silencieuses.
+     * PostgreSQL READ COMMITTED : FOR UPDATE entre en conflit avec le KEY
+     * SHARE du contrôle FK d'une allocation. La lecture des références doit
+     * être une requête distincte APRES l'acquisition de ce verrou.
+     * SQLite sérialise les écritures ; un conflit doit annuler la transaction,
+     * jamais conduire à rejouer uniquement l'UPDATE sans relire les références.
+     * Les écritures SQL/de masse contournant le modèle restent hors contrat.
+     */
+    public function save(array $options = [])
+    {
+        if (! $this->exists) {
+            return parent::save($options);
+        }
+
+        return $this->getConnection()->transaction(function () use ($options) {
+            $identity = ['supplier_id', 'product_id', 'product_variant_id'];
+            $pending = array_intersect_key($this->getDirty(), array_flip($identity));
+
+            // Une édition opérationnelle ne réécrit pas les identifiants
+            // périmés qui ne figurent pas dans le jeu de modifications.
+            if ($pending === []) {
+                return parent::save($options);
+            }
+
+            if ($this->getConnection()->getDriverName() === 'pgsql') {
+                $isolation = $this->getConnection()->selectOne('SHOW transaction_isolation');
+                if ($isolation->transaction_isolation !== 'read committed') {
+                    throw ValidationException::withMessages([
+                        array_key_first($pending) => 'La modification d’identité exige une transaction READ COMMITTED. Veuillez recommencer dans un contexte compatible.',
+                    ]);
+                }
+            }
+
+            $stored = $this->newQuery()
+                ->whereKey($this->getRawOriginal($this->getKeyName()))
+                ->lockForUpdate()->firstOrFail();
+            $changed = array_filter($pending, static function ($value, $field) use ($stored): bool {
+                $previous = $stored->getAttribute($field);
+
+                return ($value === null ? null : (string) $value)
+                    !== ($previous === null ? null : (string) $previous);
+            }, ARRAY_FILTER_USE_BOTH);
+
+            if ($changed !== [] && $stored->hasAllocationHistory()) {
+                throw ValidationException::withMessages(array_fill_keys(
+                    array_keys($changed),
+                    'Cette fiche est référencée par une allocation : son fournisseur, son produit et sa variante ne peuvent plus changer.'
+                ));
+            }
+
+            return parent::save($options);
+        });
+    }
 
     public function supplier(): BelongsTo
     {
