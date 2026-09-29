@@ -247,19 +247,19 @@ class AttributeDualWriteTest extends TestCase
     {
         return [
             'sport vers moto frais' => ['sport', 'moto', false, 'M'],
-            'sport vers moto chargé' => ['sport', 'moto', true, 'L'],
+            'sport vers moto chargé' => ['sport', 'moto', true, 'M'],
             'moto vers sport frais' => ['moto', 'sport', false, 'L'],
-            'moto vers sport chargé' => ['moto', 'sport', true, null],
+            'moto vers sport chargé' => ['moto', 'sport', true, 'L'],
         ];
     }
 
     #[DataProvider('parentChanges')]
-    public function test_constat_changement_parent_depend_du_cache_de_relation(string $from, string $to, bool $loaded, ?string $expectedMirror): void
+    public function test_changement_parent_independant_du_cache_de_relation(string $from, string $to, bool $loaded, ?string $expectedMirror): void
     {
         $oldParent = Product::factory()->create(['activity' => $from]);
         $newParent = Product::factory()->create(['activity' => $to]);
         $created = ProductVariant::factory()->create([
-            'product_id' => $oldParent->id, 'size' => 'M', 'color' => 'Bleu', 'stock' => 0,
+            'product_id' => $oldParent->id, 'size' => 'M', 'color' => 'Bleu', 'version' => 'Player Version', 'stock' => 0,
         ]);
         // Instance distincte : la création a déjà pu charger sa relation product.
         $variant = ProductVariant::findOrFail($created->id);
@@ -269,7 +269,13 @@ class AttributeDualWriteTest extends TestCase
         $this->assertSame($loaded, $variant->relationLoaded('product'));
         $this->assertSame($from === 'sport' ? 'M' : null, $variant->attributeMirrorValue('size'));
 
-        $variant->update(['product_id' => $newParent->id, 'size' => 'L', 'color' => 'Rouge']);
+        $this->assertSame($from === 'sport' ? 'Player Version' : null, $variant->attributeMirrorValue('version'));
+        $variant->fill(['product_id' => $newParent->id, 'size' => 'L', 'color' => 'Rouge', 'version' => 'Fan Version']);
+        if ($loaded) {
+            $this->assertSame($oldParent->id, $variant->product->id);
+            $this->assertSame($from, $variant->product->activity);
+        }
+        $variant->save();
         $persisted = $variant->fresh();
         $this->assertSame($newParent->id, (int) $persisted->product_id);
         $this->assertSame($to, $persisted->product->activity);
@@ -278,6 +284,52 @@ class AttributeDualWriteTest extends TestCase
         $this->assertSame('Rouge', $persisted->attributeMirrorValue('color'));
         $this->assertSame(0, $oldParent->variants()->count());
         $this->assertSame($variant->id, $newParent->variants()->sole()->id);
+        $this->assertVariantMirrorsAfterTransition($variant, $to, $expectedMirror);
+        $variant->save();
+        $this->assertVariantMirrorsAfterTransition($variant, $to, $expectedMirror);
+    }
+
+    #[DataProvider('parentChanges')]
+    public function test_changement_activite_parent_independant_du_cache_de_relation(string $from, string $to, bool $loaded, ?string $expectedMirror): void
+    {
+        $parent = Product::factory()->create(['activity' => $from]);
+        $created = ProductVariant::factory()->create([
+            'product_id' => $parent->id, 'size' => 'M', 'color' => 'Bleu',
+            'version' => 'Player Version', 'stock' => 0,
+        ]);
+        $variant = ProductVariant::findOrFail($created->id);
+        if ($loaded) {
+            $variant->load('product');
+        }
+        $this->assertSame($loaded, $variant->relationLoaded('product'));
+        $this->assertSame($from === 'sport' ? 'M' : null, $variant->attributeMirrorValue('size'));
+        $this->assertSame($from === 'sport' ? 'Player Version' : null, $variant->attributeMirrorValue('version'));
+
+        $parent->update(['activity' => $to]);
+        $this->assertSame($to, $parent->fresh()->activity);
+        if ($loaded) {
+            $this->assertSame($from, $variant->product->activity);
+        }
+        $variant->update(['size' => 'L', 'color' => 'Rouge', 'version' => 'Fan Version']);
+        $this->assertSame($parent->id, (int) $variant->fresh()->product_id);
+        $this->assertVariantMirrorsAfterTransition($variant, $to, $expectedMirror);
+        $variant->save();
+        $this->assertVariantMirrorsAfterTransition($variant, $to, $expectedMirror);
+    }
+
+    private function assertVariantMirrorsAfterTransition(ProductVariant $variant, string $activity, ?string $expectedSize): void
+    {
+        $persisted = $variant->fresh();
+        $this->assertSame('L', $persisted->size);
+        $this->assertSame('Rouge', $persisted->color);
+        $this->assertSame('Fan Version', $persisted->version);
+        $this->assertSame($expectedSize, $persisted->attributeMirrorValue('size'));
+        $this->assertSame('Rouge', $persisted->attributeMirrorValue('color'));
+        $this->assertSame($activity === 'sport' ? 'Fan Version' : 'Player Version', $persisted->attributeMirrorValue('version'));
+        foreach (['size', 'color', 'version'] as $code) {
+            $this->assertSame(1, $persisted->attributeValues()
+                ->whereHas('attributeDefinition', fn ($query) => $query->where('code', $code))->count());
+        }
     }
 
     private function mirroredProductValue(Product $product, string $code): ?string

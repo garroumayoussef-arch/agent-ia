@@ -43,9 +43,21 @@ class ProductVariant extends Model
              * `size`, `color`, `version` restent l'UNIQUE source de
              * vérité, jamais réécrites depuis la table miroir.
              */
-            static::syncAttributeMirror($variant, 'size', $variant->size);
-            static::syncAttributeMirror($variant, 'color', $variant->color);
-            static::syncAttributeMirror($variant, 'version', $variant->version);
+            // Lecture fraîche, au plus une fois par sauvegarde, après les sorties anticipées.
+            $productActivityResolved = false;
+            $productActivity = null;
+            $resolveProductActivity = function () use ($variant, &$productActivityResolved, &$productActivity): ?string {
+                if (! $productActivityResolved) {
+                    $productActivity = $variant->product()->first()?->activity;
+                    $productActivityResolved = true;
+                }
+
+                return $productActivity;
+            };
+
+            static::syncAttributeMirror($variant, 'size', $variant->size, $resolveProductActivity);
+            static::syncAttributeMirror($variant, 'color', $variant->color, $resolveProductActivity);
+            static::syncAttributeMirror($variant, 'version', $variant->version, $resolveProductActivity);
         });
 
         /*
@@ -106,7 +118,7 @@ class ProductVariant extends Model
      * produit parent — mêmes garanties best-effort que
      * Product::syncAttributeMirror().
      */
-    private static function syncAttributeMirror(self $variant, string $code, ?string $value): void
+    private static function syncAttributeMirror(self $variant, string $code, ?string $value, callable $resolveProductActivity): void
     {
         if ($value === null) {
             return;
@@ -118,7 +130,7 @@ class ProductVariant extends Model
             return;
         }
 
-        $productActivity = $variant->product?->activity;
+        $productActivity = $resolveProductActivity();
 
         if ($definition->activity !== null && $definition->activity !== $productActivity) {
             return;
