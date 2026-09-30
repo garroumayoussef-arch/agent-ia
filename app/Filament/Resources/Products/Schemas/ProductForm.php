@@ -2,6 +2,8 @@
 
 namespace App\Filament\Resources\Products\Schemas;
 
+use App\Models\ProductVariant;
+use Closure;
 use Filament\Forms\Components\CheckboxList;
 use Filament\Forms\Components\FileUpload;
 use Filament\Forms\Components\Repeater;
@@ -158,14 +160,18 @@ class ProductForm
                 Repeater::make('variants')
                     ->label('Variantes du produit')
                     ->relationship('variants')
+                    ->rules([fn (Repeater $component): Closure => self::variantIdentifiersRule($component)])
                     ->schema([
 
                         TextInput::make('sku')
                             ->label('SKU')
+                            ->required()
+                            ->unique(table: ProductVariant::class, column: 'sku', ignoreRecord: true)
                             ->maxLength(255),
 
                         TextInput::make('barcode')
                             ->label('Code-barres')
+                            ->unique(table: ProductVariant::class, column: 'barcode', ignoreRecord: true)
                             ->maxLength(255),
 
                         Select::make('size')
@@ -251,5 +257,57 @@ class ProductForm
                     ->columnSpanFull(),
 
             ]);
+    }
+
+    private static function variantIdentifiersRule(Repeater $component): Closure
+    {
+        return static function (string $attribute, mixed $value, Closure $fail) use ($component): void {
+            if (! is_array($value)) {
+                return;
+            }
+
+            foreach (['sku' => 'SKU', 'barcode' => 'code-barres'] as $field => $label) {
+                $seen = [];
+                $paths = [];
+
+                foreach ($value as $key => $row) {
+                    $identifier = $row[$field] ?? null;
+
+                    if ($identifier === null || $identifier === '') {
+                        continue;
+                    }
+
+                    $path = "{$attribute}.{$key}.{$field}";
+                    // Ne pas utiliser les identifiants comme clés : PHP convertirait certaines chaînes en entiers.
+                    $duplicate = array_search($identifier, $seen, true);
+
+                    if ($duplicate !== false) {
+                        $message = "Ce {$label} est déjà utilisé par une autre ligne de variantes.";
+                        $fail($paths[$duplicate], $message);
+                        $fail($path, $message);
+                    } else {
+                        $seen[] = $identifier;
+                        $paths[] = $path;
+                    }
+
+                    // Laravel ignore unique pour les chaînes blanches. Les contrôler sans les transformer.
+                    if ($field !== 'barcode' || ! is_string($identifier)
+                        || preg_match('/\A[ \t\n\r\x00\x0B]+\z/', $identifier) !== 1) {
+                        continue;
+                    }
+
+                    $record = ($component->getItems()[$key] ?? null)?->getRecord();
+                    $query = ProductVariant::query()->where('barcode', $identifier);
+
+                    if ($record instanceof ProductVariant && $record->exists) {
+                        $query->where($record->getQualifiedKeyName(), '!=', $record->getOriginal($record->getKeyName()));
+                    }
+
+                    if ($query->exists()) {
+                        $fail($path, 'Ce code-barres est déjà utilisé par une autre variante.');
+                    }
+                }
+            }
+        };
     }
 }
