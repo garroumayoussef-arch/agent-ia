@@ -256,7 +256,9 @@ class Product extends Model
             return;
         }
 
-        $definition = AttributeDefinition::where('code', $code)->first();
+        $definition = AttributeDefinition::where('code', $code)
+            ->where('level', 'product')
+            ->first();
 
         if (! $definition) {
             return;

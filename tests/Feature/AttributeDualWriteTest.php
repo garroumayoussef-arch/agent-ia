@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Models\AttributeDefinition;
 use App\Models\Product;
 use App\Models\ProductAttributeValue;
 use App\Models\ProductVariant;
@@ -330,6 +331,86 @@ class AttributeDualWriteTest extends TestCase
             $this->assertSame(1, $persisted->attributeValues()
                 ->whereHas('attributeDefinition', fn ($query) => $query->where('code', $code))->count());
         }
+    }
+
+    public static function mirrorLevelCases(): array
+    {
+        return [
+            'season' => ['product', 'season', '2025-2026', '2026-2027'],
+            'taille' => ['product', 'taille', 'M', 'L'],
+            'equipe' => ['product', 'equipe', 'Equipe initiale', 'Equipe suivante'],
+            'size' => ['variant', 'size', 'M', 'L'],
+            'color' => ['variant', 'color', 'Bleu', 'Rouge'],
+            'version' => ['variant', 'version', 'Player Version', 'Fan Version'],
+        ];
+    }
+
+    #[DataProvider('mirrorLevelCases')]
+    public function test_mauvais_niveau_ne_cree_pas_de_miroir(string $level, string $code, string $initial, string $next): void
+    {
+        $definition = AttributeDefinition::where('code', $code)->sole();
+        $this->assertSame($level, $definition->level);
+        $definitionId = $definition->id;
+        $activity = $definition->activity;
+        $definition->update(['level' => $level === 'product' ? 'variant' : 'product']);
+        $this->assertSame($definitionId, AttributeDefinition::where('code', $code)->sole()->id);
+        $this->assertSame($activity, $definition->fresh()->activity);
+        if ($code === 'color') {
+            $this->assertNull($definition->fresh()->activity);
+        }
+
+        $owner = $this->createMirrorLevelOwner($level, $code, $initial);
+        $this->assertSame($initial, $owner->fresh()->getAttribute($code));
+        $this->assertSame(0, $owner->attributeValues()->where('attribute_definition_id', $definitionId)->count());
+
+        $owner->update([$code => $next]);
+        $this->assertSame($next, $owner->fresh()->getAttribute($code));
+        $this->assertSame(0, $owner->attributeValues()->where('attribute_definition_id', $definitionId)->count());
+        $owner->save();
+        $this->assertSame($next, $owner->fresh()->getAttribute($code));
+        $this->assertSame(0, $owner->attributeValues()->where('attribute_definition_id', $definitionId)->count());
+    }
+
+    #[DataProvider('mirrorLevelCases')]
+    public function test_mauvais_niveau_conserve_integralement_le_miroir_existant(string $level, string $code, string $initial, string $next): void
+    {
+        $definition = AttributeDefinition::where('code', $code)->sole();
+        $this->assertSame($level, $definition->level);
+        $owner = $this->createMirrorLevelOwner($level, $code, $initial);
+        $this->assertSame($initial, $owner->fresh()->getAttribute($code));
+        $mirror = $owner->attributeValues()->where('attribute_definition_id', $definition->id)->sole();
+        $this->assertSame($initial, $mirror->value);
+        $before = $mirror->getAttributes();
+        $activity = $definition->activity;
+
+        $definition->update(['level' => $level === 'product' ? 'variant' : 'product']);
+        $this->assertSame($definition->id, AttributeDefinition::where('code', $code)->sole()->id);
+        $this->assertSame($activity, $definition->fresh()->activity);
+        if ($code === 'color') {
+            $this->assertNull($definition->fresh()->activity);
+        }
+
+        // Distinguer une vraie absence de mise à jour d'une écriture dans la même seconde.
+        $this->travel(2)->seconds();
+        $owner->update([$code => $next]);
+        $this->assertSame($next, $owner->fresh()->getAttribute($code));
+        $this->assertSame($before, $owner->attributeValues()->where('attribute_definition_id', $definition->id)->sole()->getAttributes());
+        $this->travel(2)->seconds();
+        $owner->save();
+        $this->assertSame($next, $owner->fresh()->getAttribute($code));
+        $this->assertSame($before, $owner->attributeValues()->where('attribute_definition_id', $definition->id)->sole()->getAttributes());
+        $this->travelBack();
+    }
+
+    private function createMirrorLevelOwner(string $level, string $code, string $value): Product|ProductVariant
+    {
+        if ($level === 'product') {
+            return Product::factory()->create(['activity' => 'sport', $code => $value]);
+        }
+
+        $product = Product::factory()->create(['activity' => 'sport']);
+
+        return ProductVariant::factory()->create(['product_id' => $product->id, $code => $value]);
     }
 
     private function mirroredProductValue(Product $product, string $code): ?string

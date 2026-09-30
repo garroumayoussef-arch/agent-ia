@@ -124,7 +124,9 @@ class ProductVariant extends Model
             return;
         }
 
-        $definition = AttributeDefinition::where('code', $code)->first();
+        $definition = AttributeDefinition::where('code', $code)
+            ->where('level', 'variant')
+            ->first();
 
         if (! $definition) {
             return;
