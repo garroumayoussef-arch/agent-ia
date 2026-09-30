@@ -8,10 +8,20 @@ use App\Filament\Resources\ProductVariants\Pages\CreateProductVariant;
 use App\Filament\Resources\ProductVariants\Pages\EditProductVariant;
 use App\Models\Category;
 use App\Models\Product;
+use App\Models\ProductAttributeValue;
 use App\Models\ProductVariant;
+use App\Models\ProductVariantAttributeValue;
+use App\Models\PurchaseOrder;
+use App\Models\PurchaseOrderItem;
+use App\Models\SalesOrder;
+use App\Models\SalesOrderItem;
+use App\Models\StockMovement;
 use App\Models\User;
+use App\Models\Warehouse;
+use App\Models\WarehouseStock;
 use Database\Seeders\AttributeDefinitionSeeder;
 use Database\Seeders\RoleSeeder;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Livewire\Features\SupportTesting\Testable;
@@ -583,6 +593,238 @@ class ProductAttributeFormCharacterizationTest extends TestCase
         } finally {
             $this->travelBack();
         }
+    }
+
+    public static function lateDeletionProtections(): array
+    {
+        return [
+            'achat avec definitions' => ['purchase', true],
+            'vente avec definitions' => ['sale', true],
+            'mouvement avec definitions' => ['movement', true],
+            'achat sans definitions' => ['purchase', false],
+        ];
+    }
+
+    #[DataProvider('lateDeletionProtections')]
+    public function test_suppression_tardive_refusee_annule_les_ecritures_deja_executees(string $protection, bool $seeded): void
+    {
+        $this->prepareReference($seeded);
+        $product = $this->makeProduct('sport');
+        $removed = $product->variants()->create($this->variantData('ROLLBACK-FIRST'));
+        $protected = $product->variants()->create($this->variantData('ROLLBACK-PROTECTED', 'L', 'Rouge', 7));
+        $retained = $product->variants()->create($this->variantData('ROLLBACK-RETAINED', 'M', 'Bleu', 4));
+        $this->assertLessThan($protected->id, $removed->id);
+
+        $message = $this->createDeletionProtection($product, $protected, $protection);
+        $this->assertSame($protection === 'purchase' ? 1 : 0, $protected->purchaseOrderItems()->count());
+        $this->assertSame($protection === 'sale' ? 1 : 0, $protected->salesOrderItems()->count());
+        $this->assertSame($protection === 'movement' ? 1 : 0, $protected->stockMovements()->count());
+        $this->assertSame($seeded ? 3 : 0, $removed->attributeValues()->count());
+
+        $connection = DB::connection();
+        $this->assertEditModelsUseDefaultConnection();
+        $initialLevel = $connection->transactionLevel();
+        // Les effets de StockMovement appartiennent aux fixtures, avant le snapshot.
+        $initialStock = (int) $product->fresh()->stock;
+        $before = $this->editTransactionSnapshot();
+        $scopes = ProductVariant::getAllGlobalScopes();
+        $wasLogging = $connection->logging();
+        $offset = count($connection->getQueryLog());
+        $caught = null;
+        $queries = [];
+
+        $this->withoutExceptionHandling();
+        $this->travel(2)->seconds();
+        try {
+            // Le DELETE du repeater ne definit aucun ordre : ce scope est local au test.
+            ProductVariant::addGlobalScope('checkpoint_2613_delete_order', static function (Builder $query): void {
+                $query->orderBy('product_variants.id');
+            });
+            $page = Livewire::test(EditProduct::class, ['record' => $product->id])
+                ->fillForm(['nom' => 'Nom non persiste', 'taille' => 'XL', 'equipe' => 'Equipe non persistee'])
+                ->set('data.variants', [
+                    'record-'.$retained->id => $this->variantData('ROLLBACK-RETAINED', 'XL', 'Vert', 99),
+                    'nouvelle' => $this->variantData('ROLLBACK-NEW'),
+                ]);
+            $this->assertArrayNotHasKey('record-'.$removed->id, $page->get('data.variants'));
+            $this->assertArrayNotHasKey('record-'.$protected->id, $page->get('data.variants'));
+            $this->assertSame($before, $this->editTransactionSnapshot());
+
+            $offset = count($connection->getQueryLog());
+            $connection->enableQueryLog();
+            try {
+                $page->call('save');
+            } catch (\Exception $exception) {
+                $caught = $exception;
+            }
+            $queries = array_slice($connection->getQueryLog(), $offset);
+        } finally {
+            ProductVariant::setAllGlobalScopes($scopes);
+            if (! $wasLogging) {
+                $connection->disableQueryLog();
+                if ($offset === 0) {
+                    $connection->flushQueryLog();
+                }
+            }
+            $this->travelBack();
+            $this->withExceptionHandling();
+        }
+
+        $this->assertNotNull($caught, 'La protection historique doit interrompre la sauvegarde.');
+        $this->assertSame(\Exception::class, $caught::class);
+        $this->assertSame($message, $caught->getMessage());
+        $this->assertSame($initialLevel, $connection->transactionLevel());
+        $this->assertDeletionQueriesBeforeRollback(
+            $queries, $product->id, $removed->id, $protected->id,
+            $initialStock - $removed->stock, $protection,
+        );
+        // Lectures DB neuves : aucune garantie n'est demandee aux objets Livewire/PHP.
+        $this->assertSame($before, $this->editTransactionSnapshot());
+        $this->assertSame($initialStock, (int) $product->fresh()->stock);
+        $this->assertSame($seeded ? 3 : 0, $removed->fresh()->attributeValues()->count());
+        $this->assertDatabaseMissing('product_variants', ['sku' => 'ROLLBACK-NEW']);
+    }
+
+    private function createDeletionProtection(Product $product, ProductVariant $variant, string $protection): string
+    {
+        if ($protection === 'purchase') {
+            $order = PurchaseOrder::create(['reference' => 'ROLLBACK-PURCHASE']);
+            PurchaseOrderItem::create([
+                'purchase_order_id' => $order->id, 'product_id' => $product->id,
+                'product_variant_id' => $variant->id, 'quantity_ordered' => 3,
+            ]);
+
+            return 'Impossible de supprimer cette variante : elle est référencée dans au moins un bon de commande fournisseur.';
+        }
+
+        if ($protection === 'sale') {
+            $order = SalesOrder::create(['reference' => 'ROLLBACK-SALE']);
+            SalesOrderItem::create([
+                'sales_order_id' => $order->id, 'product_id' => $product->id,
+                'product_variant_id' => $variant->id, 'quantity_ordered' => 2,
+            ]);
+
+            return 'Impossible de supprimer cette variante : elle est référencée dans au moins une commande client.';
+        }
+
+        $this->assertSame('movement', $protection);
+        $warehouse = Warehouse::create(['name' => 'Entrepot transaction', 'code' => 'transaction', 'is_default' => true]);
+        StockMovement::create([
+            'product_id' => $product->id, 'product_variant_id' => $variant->id,
+            'warehouse_id' => $warehouse->id, 'type' => 'purchase', 'quantity' => 5,
+        ]);
+
+        return 'Impossible de supprimer cette variante : elle possède un historique de mouvements de stock. Passez-la plutôt en rupture de stock ou inactive.';
+    }
+
+    private function assertDeletionQueriesBeforeRollback(
+        array $queries, int $productId, int $removedId, int $protectedId, int $remainingStock, string $protection,
+    ): void {
+        $orderedSelection = $deletion = $stockUpdate = $historyCheck = null;
+        $deletions = [];
+        $historyTable = match ($protection) {
+            'purchase' => 'purchase_order_items',
+            'sale' => 'sales_order_items',
+            'movement' => 'stock_movements',
+        };
+
+        foreach ($queries as $index => $query) {
+            $sql = strtolower(str_replace(['"', '`'], '', $query['query']));
+            $bindings = $query['bindings'];
+            if (str_starts_with($sql, 'select * from product_variants ')
+                && str_contains($sql, ' in (')
+                && str_contains($sql, 'order by product_variants.id asc')) {
+                $orderedSelection = $index;
+            }
+            if (str_starts_with($sql, 'delete from product_variants ')) {
+                $deletions[] = $bindings;
+                if ($bindings === [$removedId]) {
+                    $deletion = $index;
+                }
+            }
+            if (str_starts_with($sql, 'update products set ')
+                && preg_match('/\bstock\s*=\s*\?/', $sql, $match, PREG_OFFSET_CAPTURE) === 1) {
+                $stockBinding = substr_count(substr($sql, 0, $match[0][1]), '?');
+                $this->assertSame($remainingStock, (int) $bindings[$stockBinding]);
+                $this->assertSame($productId, (int) $bindings[array_key_last($bindings)]);
+                $stockUpdate = $index;
+            }
+            if (str_starts_with($sql, 'select exists(')
+                && str_contains($sql, 'from '.$historyTable.' ')
+                && in_array($protectedId, $bindings, true)) {
+                $historyCheck = $index;
+            }
+        }
+
+        $this->assertNotNull($orderedSelection, 'La selection effective des suppressions doit etre ordonnee.');
+        $this->assertNotNull($deletion, 'Le journal des requetes reussies doit contenir le premier DELETE.');
+        $this->assertNotNull($stockUpdate, 'Le hook deleted doit avoir ecrit le stock recalcule.');
+        $this->assertNotNull($historyCheck, 'La protection tardive doit consulter le vrai historique.');
+        $this->assertSame([[$removedId]], $deletions, 'Seule la premiere variante doit atteindre le DELETE.');
+        $this->assertTrue($orderedSelection < $deletion && $deletion < $stockUpdate && $stockUpdate < $historyCheck);
+    }
+
+    #[DataProvider('referenceContexts')]
+    public function test_edition_transactionnelle_mixte_persiste_suppression_modification_creation_et_miroirs(bool $seeded): void
+    {
+        $this->prepareReference($seeded);
+        $product = $this->makeProduct('sport');
+        $removed = $product->variants()->create($this->variantData('MIXED-REMOVED'));
+        $retained = $product->variants()->create($this->variantData('MIXED-RETAINED', 'M', 'Bleu', 4));
+        $this->assertSame(7, (int) $product->fresh()->stock);
+        $this->assertSame($seeded ? 3 : 0, $removed->attributeValues()->count());
+        $this->assertEditModelsUseDefaultConnection();
+        $initialLevel = DB::connection()->transactionLevel();
+
+        Livewire::test(EditProduct::class, ['record' => $product->id])
+            ->fillForm(['nom' => 'Produit mixte sauvegarde', 'taille' => 'XL', 'equipe' => 'Equipe mixte'])
+            ->set('data.variants', [
+                'record-'.$retained->id => $this->variantData('MIXED-RETAINED', 'L', 'Rouge', 7),
+                'nouvelle' => $this->variantData('MIXED-NEW', 'XL', 'Vert', 5),
+            ])
+            ->call('save')->assertHasNoFormErrors();
+
+        $this->assertSame($initialLevel, DB::connection()->transactionLevel());
+        $this->assertDatabaseMissing('product_variants', ['id' => $removed->id]);
+        $this->assertDatabaseMissing('product_variant_attribute_values', ['product_variant_id' => $removed->id]);
+        $created = $product->variants()->where('sku', 'MIXED-NEW')->sole();
+        $this->assertNotContains($created->id, [$removed->id, $retained->id]);
+        $this->assertEqualsCanonicalizing([$retained->id, $created->id], $product->variants()->pluck('id')->all());
+        $this->assertSame('MIXED-RETAINED', $retained->fresh()->sku);
+        $this->assertVariantPersistence($retained, 'sport', $seeded, 'L', 'Rouge', 7);
+        $this->assertVariantPersistence($created, 'sport', $seeded, 'XL', 'Vert', 5);
+        $product->refresh();
+        $this->assertSame('Produit mixte sauvegarde', $product->nom);
+        $this->assertSame('XL', $product->taille);
+        $this->assertSame('Equipe mixte', $product->equipe);
+        $this->assertSame(12, (int) $product->stock);
+        $this->assertSame($seeded ? 'XL' : null, $product->attributeMirrorValue('taille'));
+        $this->assertSame($seeded ? 'Equipe mixte' : null, $product->attributeMirrorValue('equipe'));
+    }
+
+    private function assertEditModelsUseDefaultConnection(): void
+    {
+        foreach ([
+            Product::class, ProductVariant::class, ProductAttributeValue::class, ProductVariantAttributeValue::class,
+            PurchaseOrder::class, PurchaseOrderItem::class, SalesOrder::class, SalesOrderItem::class,
+            StockMovement::class, WarehouseStock::class,
+        ] as $model) {
+            $this->assertSame(DB::connection(), (new $model)->getConnection(), $model);
+        }
+    }
+
+    private function editTransactionSnapshot(): array
+    {
+        $snapshot = $this->catalogSnapshot();
+        foreach ([
+            'purchase_orders', 'purchase_order_items', 'sales_orders', 'sales_order_items',
+            'stock_movements', 'warehouse_stocks',
+        ] as $table) {
+            $snapshot[$table] = DB::table($table)->orderBy('id')->get()
+                ->map(static fn (object $row): array => (array) $row)->all();
+        }
+
+        return $snapshot;
     }
 
     private function nestedCreationPage(string $activity, array $variants): Testable
