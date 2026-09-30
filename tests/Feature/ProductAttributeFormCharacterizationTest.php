@@ -20,6 +20,7 @@ use Tests\TestCase;
 /**
  * 2.6.7 — photographie des parcours historiques, pas contrat des futurs
  * formulaires dynamiques. Les limites nommées « constat » sont à arbitrer.
+ * 2.6.9 — création avec activité explicite et catégorie compatible validées.
  * Aucun service VTC n'est représenté comme un produit dans ces fixtures.
  */
 class ProductAttributeFormCharacterizationTest extends TestCase
@@ -132,30 +133,156 @@ class ProductAttributeFormCharacterizationTest extends TestCase
         $this->assertSame(0, $product->variants()->count());
     }
 
-    #[DataProvider('referenceContexts')]
-    public function test_constat_creation_produit_prend_sport_meme_avec_categorie_moto(bool $seeded): void
+    public static function creationContexts(): array
+    {
+        $cases = [];
+        foreach (self::commerceContexts() as $name => [$activity, $seeded]) {
+            $cases[$name.' catégorie spécialisée'] = [$activity, $seeded, false];
+            $cases[$name.' catégorie transverse'] = [$activity, $seeded, true];
+        }
+
+        return $cases;
+    }
+
+    private function productCreationData(int $categoryId): array
+    {
+        return [
+            'reference' => 'CHAR-CREATE', 'nom' => 'Produit créé',
+            'category_id' => $categoryId, 'type' => 'Player Version',
+            'taille' => 'M', 'equipe' => 'Equipe saisie',
+            'prix_achat' => 10, 'prix_vente' => 20,
+            'variants' => ['nouvelle' => $this->variantData('CHAR-CREATE-VARIANT')],
+        ];
+    }
+
+    #[DataProvider('creationContexts')]
+    public function test_creation_produit_exige_activite_explicite_et_categorie_compatible(string $activity, bool $seeded, bool $transverse): void
     {
         $this->prepareReference($seeded);
-        $category = Category::factory()->create(['name' => 'Moto', 'slug' => 'moto', 'activity' => 'moto']);
+        $category = Category::factory()->create([
+            'name' => 'Catégorie création valide', 'slug' => 'char-creation-valide',
+            'activity' => $transverse ? null : $activity,
+        ]);
         Livewire::test(CreateProduct::class)
-            ->assertFormFieldDoesNotExist('activity')
-            ->fillForm([
-                'reference' => 'CHAR-CREATE', 'nom' => 'Produit créé',
-                'category_id' => $category->id, 'type' => 'Player Version',
-                'taille' => 'M', 'equipe' => 'Equipe saisie',
-                'prix_achat' => 10, 'prix_vente' => 20,
-            ])->call('create')->assertHasNoFormErrors();
+            ->assertFormSet(['activity' => null])
+            ->assertFormFieldExists('activity', fn ($field): bool => $field->getOptions() === [
+                'sport' => 'Sport', 'bebe' => 'Bébé', 'moto' => 'Moto', 'artisanat' => 'Artisanat',
+            ])
+            ->fillForm($this->productCreationData($category->id))
+            ->assertFormSet(['activity' => null])
+            ->fillForm(['activity' => $activity])
+            ->call('create')->assertHasNoFormErrors();
 
         $product = Product::where('reference', 'CHAR-CREATE')->sole();
-        // Constat du défaut SQL et de l'absence de choix d'activité, pas cible métier.
-        $this->assertSame('sport', $product->activity);
+        $this->assertSame($activity, $product->activity);
         $this->assertSame($category->id, (int) $product->category_id);
         $this->assertSame('M', $product->taille);
         $this->assertSame('Equipe saisie', $product->equipe);
-        $this->assertSame($seeded ? 'M' : null, $product->attributeMirrorValue('taille'));
-        $this->assertSame($seeded ? 'Equipe saisie' : null, $product->attributeMirrorValue('equipe'));
-        $this->assertSame($seeded ? 2 : 0, $product->attributeValues()->count());
-        $this->assertSame(0, $product->variants()->count());
+        $this->assertSame($seeded && $activity === 'sport' ? 'M' : null, $product->attributeMirrorValue('taille'));
+        $this->assertSame($seeded && $activity === 'sport' ? 'Equipe saisie' : null, $product->attributeMirrorValue('equipe'));
+        $this->assertSame($seeded && $activity === 'sport' ? 2 : 0, $product->attributeValues()->count());
+        $variant = $product->variants()->sole();
+        $this->assertVariantPersistence($variant, $activity, $seeded, 'M', 'Bleu', 3);
+        $this->assertSame(3, (int) $product->fresh()->stock);
+    }
+
+    public static function invalidCreationContexts(): array
+    {
+        $cases = [];
+        $invalid = [
+            'activité absente' => [[], 'sport', 'activity'],
+            'activité null' => [['activity' => null], null, 'activity'],
+            'activité vide' => [['activity' => ''], null, 'activity'],
+            'activité inconnue' => [['activity' => 'inconnue'], null, 'activity'],
+            'activité VTC' => [['activity' => 'vtc'], null, 'activity'],
+            'activité non textuelle' => [['activity' => ['sport']], null, 'activity'],
+            'catégorie absente' => [['activity' => 'sport', 'category_id' => null], null, 'category_id'],
+            'catégorie inexistante' => [['activity' => 'sport', 'category_id' => 999999], null, 'category_id'],
+        ];
+        foreach (['sport', 'bebe', 'moto', 'artisanat'] as $activity) {
+            foreach (['sport', 'bebe', 'moto', 'artisanat', 'vtc'] as $categoryActivity) {
+                if ($activity !== $categoryActivity) {
+                    $invalid[$activity.' avec catégorie '.$categoryActivity] = [
+                        ['activity' => $activity], $categoryActivity, 'category_id',
+                    ];
+                }
+            }
+        }
+        foreach ($invalid as $name => $case) {
+            foreach ([true, false] as $seeded) {
+                $cases[$name.($seeded ? ' avec référentiel' : ' sans référentiel')] = [...$case, $seeded];
+            }
+        }
+
+        return $cases;
+    }
+
+    #[DataProvider('invalidCreationContexts')]
+    public function test_creation_invalide_ne_persiste_ni_produit_ni_variante(array $overrides, ?string $categoryActivity, string $error, bool $seeded): void
+    {
+        $this->prepareReference($seeded);
+        $category = Category::factory()->create([
+            'name' => 'Catégorie soumission invalide', 'slug' => 'char-soumission-invalide',
+            'activity' => $categoryActivity,
+        ]);
+        Livewire::test(CreateProduct::class)
+            ->fillForm(array_replace($this->productCreationData($category->id), $overrides))
+            ->call('create')->assertHasFormErrors([$error]);
+        $this->assertNoCreatedProductOrMirror();
+    }
+
+    public function test_categorie_revalidee_apres_selection_et_activite_jamais_deduite(): void
+    {
+        $this->prepareReference(true);
+        $category = Category::factory()->create([
+            'name' => 'Catégorie à revalider', 'slug' => 'char-categorie-revalidation',
+            'activity' => 'moto',
+        ]);
+        $page = Livewire::test(CreateProduct::class)
+            ->fillForm($this->productCreationData($category->id))
+            ->assertFormSet(['activity' => null])
+            ->fillForm(['activity' => 'moto']);
+        $category->update(['activity' => 'sport']);
+        $page->call('create')->assertHasFormErrors(['category_id']);
+        $this->assertNoCreatedProductOrMirror();
+    }
+
+    public function test_creer_un_autre_ne_preselectionne_pas_activite(): void
+    {
+        $category = Category::factory()->create([
+            'name' => 'Catégorie créer un autre', 'slug' => 'char-creer-un-autre',
+            'activity' => null,
+        ]);
+        Livewire::test(CreateProduct::class)
+            ->fillForm(['activity' => 'moto'] + $this->productCreationData($category->id))
+            ->call('create', true)->assertHasNoFormErrors()
+            ->assertFormSet(['activity' => null]);
+        $this->assertSame('moto', Product::sole()->activity);
+        $this->assertDatabaseCount('product_variants', 1);
+    }
+
+    public function test_edition_ignore_activite_injectee_et_ne_restreint_pas_categorie(): void
+    {
+        $this->prepareReference(true);
+        $product = $this->makeProduct('moto');
+        $category = Category::factory()->create([
+            'name' => 'Catégorie édition Sport', 'slug' => 'char-edition-sport',
+            'activity' => 'sport',
+        ]);
+        Livewire::test(EditProduct::class, ['record' => $product->id])
+            ->assertFormFieldDoesNotExist('activity')
+            ->fillForm(['category_id' => $category->id])
+            ->set('data.activity', 'sport')
+            ->call('save')->assertHasNoFormErrors();
+        $this->assertSame('moto', $product->fresh()->activity);
+        $this->assertSame($category->id, (int) $product->fresh()->category_id);
+    }
+
+    private function assertNoCreatedProductOrMirror(): void
+    {
+        foreach (['products', 'product_variants', 'product_attribute_values', 'product_variant_attribute_values'] as $table) {
+            $this->assertDatabaseCount($table, 0);
+        }
     }
 
     #[DataProvider('commerceContexts')]

@@ -8,14 +8,31 @@ use Filament\Forms\Components\Repeater;
 use Filament\Forms\Components\Select;
 use Filament\Forms\Components\Textarea;
 use Filament\Forms\Components\TextInput;
+use Filament\Schemas\Components\Utilities\Get;
 use Filament\Schemas\Schema;
+use Illuminate\Database\Query\Builder;
+use Illuminate\Validation\Rule;
 
 class ProductForm
 {
     public static function configure(Schema $schema): Schema
     {
         return $schema
-            ->components([
+            ->components(fn (Schema $schema): array => [
+
+                ...($schema->getOperation() === 'create' ? [
+                    Select::make('activity')
+                        ->label('Activité')
+                        ->placeholder('Choisir une activité')
+                        ->options([
+                            'sport' => 'Sport',
+                            'bebe' => 'Bébé',
+                            'moto' => 'Moto',
+                            'artisanat' => 'Artisanat',
+                        ])
+                        ->required()
+                        ->rules(['string', Rule::in(['sport', 'bebe', 'moto', 'artisanat'])]),
+                ] : []),
 
                 TextInput::make('reference')
                     ->label('Référence')
@@ -37,7 +54,16 @@ class ProductForm
                     ->relationship('category', 'name')
                     ->searchable()
                     ->preload()
-                    ->required(),
+                    ->required()
+                    ->rules(fn (Get $get): array => [
+                        Rule::exists('categories', 'id')->where(fn (Builder $query) => $query->where(
+                            fn (Builder $query) => $query->whereNull('activity')
+                                ->orWhere('activity', is_string($get('activity')) ? $get('activity') : ''),
+                        )),
+                    ], condition: fn (string $operation): bool => $operation === 'create')
+                    ->validationMessages([
+                        'exists' => 'Choisissez une catégorie transverse ou compatible avec l’activité sélectionnée.',
+                    ]),
 
                 Select::make('type')
                     ->label('Type')

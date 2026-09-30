@@ -184,6 +184,7 @@ class RoleBasedAuthorizationTest extends TestCase
         Livewire::test(CreateProduct::class)
             ->fillForm([
                 'reference' => 'REF-ROLE-TEST',
+                'activity' => 'sport',
                 'nom' => 'Produit via manager',
                 'category_id' => $category->id,
                 'type' => 'Player Version',
