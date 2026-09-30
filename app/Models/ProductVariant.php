@@ -32,7 +32,15 @@ class ProductVariant extends Model
     protected static function booted(): void
     {
         static::saved(function (ProductVariant $variant) {
-            if ($variant->wasRecentlyCreated || $variant->wasChanged('stock')) {
+            // saved précède syncOriginal : comparer uniquement la sauvegarde courante.
+            $oldProductId = $variant->getRawOriginal('product_id');
+            $parentChanged = $oldProductId !== null && $variant->isDirty('product_id');
+
+            if ($parentChanged) {
+                $variant->syncProductStock($oldProductId);
+            }
+
+            if ($parentChanged || $variant->wasRecentlyCreated || $variant->wasChanged('stock')) {
                 $variant->syncProductStock();
             }
 
@@ -98,15 +106,17 @@ class ProductVariant extends Model
     /**
      * Met à jour Product.stock avec la somme des stocks de ses variantes.
      */
-    protected function syncProductStock(): void
+    protected function syncProductStock(int|string|null $productId = null): void
     {
-        if (! $this->product_id) {
+        $productId ??= $this->product_id;
+
+        if (! $productId) {
             return;
         }
 
-        $total = static::where('product_id', $this->product_id)->sum('stock');
+        $total = static::where('product_id', $productId)->sum('stock');
 
-        Product::whereKey($this->product_id)->update(['stock' => $total]);
+        Product::whereKey($productId)->update(['stock' => $total]);
     }
 
     /**

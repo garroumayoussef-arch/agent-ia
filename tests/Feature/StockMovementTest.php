@@ -12,7 +12,9 @@ use App\Models\StockMovement;
 use App\Models\Supplier;
 use App\Models\User;
 use App\Models\Warehouse;
+use Illuminate\Database\QueryException;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\TestCase;
 
 class StockMovementTest extends TestCase
@@ -305,6 +307,210 @@ class StockMovementTest extends TestCase
         $product->refresh();
 
         $this->assertSame(14, $product->stock); // 10 + 4
+    }
+
+    /** 2.6.11 — réaffectation et agrégats, sans transfert d'historique. */
+    public static function parentStockContexts(): array
+    {
+        $cases = [];
+        foreach ([false, true] as $reload) {
+            foreach ([false, true] as $loaded) {
+                foreach ([3, 5] as $nextStock) {
+                    foreach ([0, 4] as $remainingStock) {
+                        foreach ([0, 7] as $destinationStock) {
+                            $name = implode('-', [(int) $reload, (int) $loaded, $nextStock, $remainingStock, $destinationStock]);
+                            $cases[$name] = [$reload, $loaded, $nextStock, $remainingStock, $destinationStock];
+                        }
+                    }
+                }
+            }
+        }
+
+        return $cases;
+    }
+
+    #[DataProvider('parentStockContexts')]
+    public function test_reaffecter_une_variante_recalcule_uniquement_les_deux_parents(
+        bool $reload,
+        bool $loaded,
+        int $nextStock,
+        int $remainingStock,
+        int $destinationStock,
+    ): void {
+        $oldParent = $this->makeProduct(['activity' => 'sport']);
+        $newParent = $this->makeProduct(['activity' => 'sport']);
+        $thirdParent = $this->makeProduct(['activity' => 'sport']);
+        $variant = $this->makeVariant($oldParent, ['sku' => 'SKU-REPARENT', 'stock' => 3]);
+        if ($remainingStock > 0) {
+            $this->makeVariant($oldParent, ['sku' => 'SKU-REMAINING', 'stock' => $remainingStock]);
+        }
+        if ($destinationStock > 0) {
+            $this->makeVariant($newParent, ['sku' => 'SKU-DESTINATION', 'stock' => $destinationStock]);
+        }
+        $this->makeVariant($thirdParent, ['sku' => 'SKU-THIRD', 'stock' => 11]);
+        $thirdBefore = $thirdParent->fresh()->getAttributes();
+        $this->assertSame(3 + $remainingStock, (int) $oldParent->fresh()->stock);
+        $this->assertSame($destinationStock, (int) $newParent->fresh()->stock);
+
+        if ($reload) {
+            $variant = $variant->fresh();
+        }
+        $this->assertSame(! $reload, $variant->wasRecentlyCreated);
+        if ($loaded) {
+            $variant->load('product');
+        }
+        $this->assertSame($loaded, $variant->relationLoaded('product'));
+        $variant->fill(['product_id' => $newParent->id, 'stock' => $nextStock]);
+        if ($loaded) {
+            $this->assertSame($oldParent->id, $variant->product->id);
+        }
+
+        $this->travel(2)->seconds();
+        $queries = $this->captureParentStockQueries(function () use ($variant): void {
+            $this->assertTrue($variant->save());
+        });
+        $this->assertParentStockQueries($queries, [$oldParent->id, $newParent->id]);
+        $persisted = $variant->fresh();
+        $this->assertSame($newParent->id, (int) $persisted->product_id);
+        $this->assertSame($nextStock, $persisted->stock);
+        $this->assertSame('SKU-REPARENT', $persisted->sku);
+        $this->assertSame($remainingStock, (int) $oldParent->fresh()->stock);
+        $this->assertSame($destinationStock + $nextStock, (int) $newParent->fresh()->stock);
+        $this->assertSame($thirdBefore, $thirdParent->fresh()->getAttributes());
+
+        // Même instance : wasChanged/wasRecentlyCreated peuvent rester vrais.
+        $oldAfterMove = $oldParent->fresh()->getAttributes();
+        $this->travel(2)->seconds();
+        $queries = $this->captureParentStockQueries(function () use ($variant): void {
+            $this->assertTrue($variant->save());
+        });
+        $this->assertParentStockQueries($queries, ! $reload || $nextStock !== 3 ? [$newParent->id] : []);
+        $this->assertSame($oldAfterMove, $oldParent->fresh()->getAttributes());
+        $this->assertSame($destinationStock + $nextStock, (int) $newParent->fresh()->stock);
+        $this->assertSame($thirdBefore, $thirdParent->fresh()->getAttributes());
+    }
+
+    public function test_reaffectations_successives_utilisent_le_parent_de_la_derniere_sauvegarde(): void
+    {
+        $parentA = $this->makeProduct(['activity' => 'sport']);
+        $parentB = $this->makeProduct(['activity' => 'sport']);
+        $parentC = $this->makeProduct(['activity' => 'sport']);
+        $variant = $this->makeVariant($parentA, ['sku' => 'SKU-SUCCESSIVE', 'stock' => 3]);
+        $this->makeVariant($parentB, ['stock' => 7]);
+        $this->makeVariant($parentC, ['stock' => 11]);
+        $variant->load('product');
+
+        $queries = $this->captureParentStockQueries(function () use ($variant, $parentB): void {
+            $this->assertTrue($variant->update(['product_id' => $parentB->id]));
+        });
+        $this->assertParentStockQueries($queries, [$parentA->id, $parentB->id]);
+        $this->assertSame(0, (int) $parentA->fresh()->stock);
+        $this->assertSame(10, (int) $parentB->fresh()->stock);
+        $parentABeforeSecondMove = $parentA->fresh()->getAttributes();
+
+        $this->travel(2)->seconds();
+        $queries = $this->captureParentStockQueries(function () use ($variant, $parentC): void {
+            $this->assertTrue($variant->update(['product_id' => $parentC->id]));
+        });
+        $this->assertParentStockQueries($queries, [$parentB->id, $parentC->id]);
+        $this->assertSame($parentABeforeSecondMove, $parentA->fresh()->getAttributes());
+        $this->assertSame(7, (int) $parentB->fresh()->stock);
+        $this->assertSame(14, (int) $parentC->fresh()->stock);
+        $this->assertSame($parentC->id, (int) $variant->fresh()->product_id);
+        $this->assertSame('SKU-SUCCESSIVE', $variant->fresh()->sku);
+    }
+
+    public function test_creation_modification_et_suppression_conservent_le_recalcul_du_parent(): void
+    {
+        $product = $this->makeProduct(['activity' => 'sport']);
+        $remaining = $this->makeVariant($product, ['stock' => 4]);
+        $variant = null;
+        $queries = $this->captureParentStockQueries(function () use ($product, &$variant): void {
+            $variant = $this->makeVariant($product, ['stock' => 3]);
+        });
+        $this->assertParentStockQueries($queries, [$product->id]);
+        $this->assertSame(7, (int) $product->fresh()->stock);
+
+        $queries = $this->captureParentStockQueries(function () use ($variant): void {
+            $this->assertTrue($variant->update(['stock' => 5]));
+        });
+        $this->assertParentStockQueries($queries, [$product->id]);
+        $this->assertSame(9, (int) $product->fresh()->stock);
+
+        foreach ([$variant, $remaining] as $deleted) {
+            $queries = $this->captureParentStockQueries(function () use ($deleted): void {
+                $this->assertTrue($deleted->delete());
+            });
+            $this->assertParentStockQueries($queries, [$product->id]);
+            $this->assertDatabaseMissing('product_variants', ['id' => $deleted->id]);
+            $this->assertSame($deleted === $variant ? 4 : 0, (int) $product->fresh()->stock);
+        }
+    }
+
+    public function test_echec_sql_de_reaffectation_ne_recalcule_aucun_parent(): void
+    {
+        $oldParent = $this->makeProduct(['activity' => 'sport']);
+        $newParent = $this->makeProduct(['activity' => 'sport']);
+        $variant = $this->makeVariant($oldParent, ['sku' => 'SKU-BEFORE-FAILURE', 'stock' => 3])->fresh();
+        $this->makeVariant($newParent, ['sku' => 'SKU-ALREADY-USED', 'stock' => 7]);
+        $oldBefore = $oldParent->fresh()->getAttributes();
+        $newBefore = $newParent->fresh()->getAttributes();
+        $variantBefore = $variant->getAttributes();
+        $failure = null;
+
+        $this->travel(2)->seconds();
+        $queries = $this->captureParentStockQueries(function () use ($variant, $newParent, &$failure): void {
+            try {
+                $variant->update(['product_id' => $newParent->id, 'stock' => 5, 'sku' => 'SKU-ALREADY-USED']);
+            } catch (QueryException $exception) {
+                $failure = $exception;
+            }
+        });
+
+        $this->assertInstanceOf(QueryException::class, $failure);
+        $this->assertParentStockQueries($queries, []);
+        $this->assertSame($variantBefore, $variant->fresh()->getAttributes());
+        $this->assertSame($oldBefore, $oldParent->fresh()->getAttributes());
+        $this->assertSame($newBefore, $newParent->fresh()->getAttributes());
+    }
+
+    /** Capture locale, sans listener global ni comptage des requêtes miroir. */
+    private function captureParentStockQueries(callable $operation): array
+    {
+        $connection = (new ProductVariant)->getConnection();
+        $wasLogging = $connection->logging();
+        $offset = count($connection->getQueryLog());
+        $connection->enableQueryLog();
+        try {
+            $operation();
+
+            return array_slice($connection->getQueryLog(), $offset);
+        } finally {
+            if (! $wasLogging) {
+                $connection->disableQueryLog();
+                $connection->flushQueryLog();
+            }
+        }
+    }
+
+    private function assertParentStockQueries(array $queries, array $expectedParentIds): void
+    {
+        $sumParents = [];
+        $updatedParents = [];
+        foreach ($queries as $query) {
+            $sql = strtolower(str_replace(['"', '`', '[', ']'], '', $query['query']));
+            if (str_starts_with($sql, 'select sum(stock) as aggregate from product_variants ')) {
+                $sumParents[] = (int) $query['bindings'][0];
+            }
+            if (str_starts_with($sql, 'update products set ')) {
+                $updatedParents[] = (int) $query['bindings'][array_key_last($query['bindings'])];
+            }
+        }
+        sort($expectedParentIds);
+        sort($sumParents);
+        sort($updatedParents);
+        $this->assertSame($expectedParentIds, $sumParents, 'Une seule somme par parent concerné.');
+        $this->assertSame($expectedParentIds, $updatedParents, 'Une seule mise à jour par parent concerné.');
     }
 
     public function test_une_vente_en_stock_insuffisant_est_rejetee_sans_ecriture_partielle(): void
