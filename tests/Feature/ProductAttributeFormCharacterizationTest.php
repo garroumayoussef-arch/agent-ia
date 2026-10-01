@@ -595,6 +595,116 @@ class ProductAttributeFormCharacterizationTest extends TestCase
         }
     }
 
+    public static function invalidStandaloneBarcodes(): array
+    {
+        $cases = [];
+        foreach (['create', 'edit'] as $operation) {
+            foreach ([
+                'collision espaces' => ['   ', true],
+                'collision ordinaire' => ['TAKEN-BARCODE', true],
+                'espaces trop longs' => [str_repeat(' ', 256), false],
+                'texte trop long' => [str_repeat('B', 256), false],
+            ] as $name => [$barcode, $collision]) {
+                $cases[$operation.' '.$name] = [$operation, $barcode, $collision];
+            }
+        }
+
+        return $cases;
+    }
+
+    #[DataProvider('invalidStandaloneBarcodes')]
+    public function test_barcode_autonome_invalide_est_rejete_avant_toute_ecriture(string $operation, string $barcode, bool $collision): void
+    {
+        $this->prepareReference(true);
+        $product = $this->makeProduct('sport');
+        // Meme parent : ignorer toutes ses variantes masquerait la collision.
+        $other = $product->variants()->create($this->variantData('BARCODE-OTHER') + [
+            'barcode' => $collision ? $barcode : 'OTHER-BARCODE',
+        ]);
+        $data = $this->variantData('BARCODE-CANDIDATE', 'L', 'Rouge', 99) + [
+            'product_id' => $product->id, 'barcode' => $barcode,
+        ];
+        if ($operation === 'create') {
+            $page = Livewire::test(CreateProductVariant::class)->fillForm($data);
+            $method = 'create';
+        } else {
+            $current = $product->variants()->create($this->variantData('BARCODE-CANDIDATE') + ['barcode' => 'OWN-BARCODE']);
+            $page = Livewire::test(EditProductVariant::class, ['record' => $current->id])->fillForm($data);
+            // Une cle soumise ne doit pas remplacer l'identite persistante du record courant.
+            $page->set('data.id', $other->id);
+            $method = 'save';
+        }
+
+        $this->travel(2)->seconds();
+        try {
+            $this->assertRejectedWithoutCatalogWrites($page, $method, ['barcode']);
+        } finally {
+            $this->travelBack();
+        }
+    }
+
+    public static function validStandaloneBarcodes(): array
+    {
+        $cases = [];
+        foreach ([
+            'null' => null,
+            'vide' => '',
+            'zero' => '0',
+            'zeros initiaux' => '00123',
+            'numerique' => '123',
+            'ordinaire' => 'BARCODE-VALID',
+            'casse et espaces conserves' => ' AbC ',
+            'espaces' => '   ',
+            'blancs Laravel' => " \t\r\n ",
+            'texte limite 255' => str_repeat('B', 255),
+            'espaces limite 255' => str_repeat(' ', 255),
+        ] as $name => $barcode) {
+            $cases[$name] = ['sport', true, $barcode];
+        }
+        foreach (self::commerceContexts() as $name => [$activity, $seeded]) {
+            if ($activity !== 'sport' || ! $seeded) {
+                $cases[$name.' espaces'] = [$activity, $seeded, '   '];
+            }
+        }
+
+        return $cases;
+    }
+
+    #[DataProvider('validStandaloneBarcodes')]
+    public function test_barcode_autonome_valide_est_conserve_exactement_en_creation_et_edition(string $activity, bool $seeded, ?string $barcode): void
+    {
+        $this->prepareReference($seeded);
+        $product = $this->makeProduct($activity);
+        // Prouver les absences multiples et la distinction 00123/123 dans la meme base.
+        $otherBarcode = match ($barcode) {
+            '00123' => '123',
+            '123' => '00123',
+            default => null,
+        };
+        $other = $product->variants()->create($this->variantData('BARCODE-CONTROL', 'M', 'Bleu', 4)
+            + ['barcode' => $otherBarcode]);
+        $otherBefore = $other->fresh()->getAttributes();
+        $expected = $barcode === '' ? null : $barcode;
+
+        Livewire::test(CreateProductVariant::class)
+            ->fillForm($this->variantData('BARCODE-VALID') + ['product_id' => $product->id, 'barcode' => $barcode])
+            ->call('create')->assertHasNoFormErrors();
+        $variant = $product->variants()->where('sku', 'BARCODE-VALID')->sole();
+        $this->assertSame($expected, $variant->barcode);
+        $this->assertVariantPersistence($variant, $activity, $seeded, 'M', 'Bleu', 3);
+        $this->assertSame(7, (int) $product->fresh()->stock);
+
+        Livewire::test(EditProductVariant::class, ['record' => $variant->id])
+            ->fillForm($this->variantData('BARCODE-VALID', 'L', 'Rouge', 7) + ['barcode' => $barcode])
+            ->call('save')->assertHasNoFormErrors();
+        $this->assertSame($variant->id, $product->variants()->where('sku', 'BARCODE-VALID')->sole()->id);
+        $this->assertSame($expected, $variant->fresh()->barcode);
+        $this->assertVariantPersistence($variant, $activity, $seeded, 'L', 'Rouge', 7);
+        $this->assertSame(11, (int) $product->fresh()->stock);
+        $this->assertSame($otherBefore, $other->fresh()->getAttributes());
+        $this->assertSame(2, $product->variants()->count());
+    }
+
     public static function lateDeletionProtections(): array
     {
         return [

@@ -2,9 +2,12 @@
 
 namespace App\Filament\Resources\ProductVariants\Schemas;
 
+use App\Models\ProductVariant;
+use Closure;
 use Filament\Forms\Components\Select;
 use Filament\Forms\Components\TextInput;
 use Filament\Schemas\Schema;
+use Illuminate\Contracts\Validation\ValidationRule;
 
 class ProductVariantForm
 {
@@ -29,6 +32,7 @@ class ProductVariantForm
                 TextInput::make('barcode')
                     ->label('Code-barres')
                     ->unique(ignoreRecord: true)
+                    ->rules(fn (TextInput $component): array => [self::blankBarcodeRule($component)])
                     ->maxLength(255),
 
                 Select::make('size')
@@ -95,5 +99,44 @@ class ProductVariantForm
                     ->required(),
 
             ]);
+    }
+
+    private static function blankBarcodeRule(TextInput $component): ValidationRule
+    {
+        $record = $component->getRecord();
+        $ignoredId = $record instanceof ProductVariant && $record->exists
+            ? $record->getRawOriginal($record->getKeyName())
+            : null;
+
+        return new class($ignoredId, $component->getMaxLength()) implements ValidationRule
+        {
+            // Laravel enveloppe cette ValidationRule dans une ImplicitRule : les blancs sont controles.
+            public bool $implicit = true;
+
+            public function __construct(private int|string|null $ignoredId, private int $maxLength) {}
+
+            public function validate(string $attribute, mixed $value, Closure $fail): void
+            {
+                // Meme ensemble de caracteres que trim() dans Validator, sans transformer la valeur.
+                if (! is_string($value) || preg_match('/\A[ \t\n\r\x00\x0B]+\z/', $value) !== 1) {
+                    return;
+                }
+
+                if (mb_strlen($value) > $this->maxLength) {
+                    $fail('Le code-barres ne doit pas dépasser '.$this->maxLength.' caractères.');
+
+                    return;
+                }
+
+                $query = ProductVariant::query()->where('barcode', $value);
+                if ($this->ignoredId !== null) {
+                    $query->whereKeyNot($this->ignoredId);
+                }
+
+                if ($query->exists()) {
+                    $fail('Ce code-barres est déjà utilisé par une autre variante.');
+                }
+            }
+        };
     }
 }
