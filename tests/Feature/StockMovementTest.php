@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Filament\Resources\StockMovements\Pages\CreateStockMovement;
 use App\Models\Brand;
 use App\Models\Category;
 use App\Models\Club;
@@ -12,14 +13,207 @@ use App\Models\StockMovement;
 use App\Models\Supplier;
 use App\Models\User;
 use App\Models\Warehouse;
+use App\Models\WarehouseStock;
+use App\Models\ProductAttributeValue;
+use App\Models\ProductVariantAttributeValue;
+use Database\Seeders\AttributeDefinitionSeeder;
+use Database\Seeders\RoleSeeder;
 use Illuminate\Database\QueryException;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\DB;
+use Livewire\Livewire;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\TestCase;
 
 class StockMovementTest extends TestCase
 {
     use RefreshDatabase;
+
+    public static function creationAtomicityContexts(): array
+    {
+        $cases = [];
+        foreach (['create', 'save', 'filament', 'outer'] as $entry) {
+            foreach ([false, true] as $variant) {
+                foreach ([false, true] as $warehouseExists) {
+                    foreach ([false, true] as $seeded) {
+                        $cases[$entry.' variant='.(int) $variant.' warehouse='.(int) $warehouseExists.' mirrors='.(int) $seeded]
+                            = [$entry, $variant, $warehouseExists, $seeded];
+                    }
+                }
+            }
+        }
+
+        return $cases;
+    }
+
+    private function movementCreationSnapshot(): array
+    {
+        $snapshot = [];
+        foreach (['products', 'product_variants', 'warehouse_stocks', 'stock_movements', 'product_attribute_values', 'product_variant_attribute_values'] as $table) {
+            $snapshot[$table] = DB::table($table)->orderBy('id')->get()
+                ->map(static fn (object $row): array => (array) $row)->all();
+        }
+
+        return $snapshot;
+    }
+
+    #[DataProvider('creationAtomicityContexts')]
+    public function test_creation_stock_movement_atomique_annule_echec_insert_final_et_preserve_succes(
+        string $entry, bool $withVariant, bool $warehouseExists, bool $seeded,
+    ): void {
+        if ($seeded) {
+            $this->seed(AttributeDefinitionSeeder::class);
+        }
+        $warehouse = Warehouse::where('is_default', true)->sole();
+        $product = $this->makeProduct([
+            'activity' => 'sport', 'stock' => 5, 'taille' => 'M', 'equipe' => 'Equipe', 'season' => '2025-2026',
+        ]);
+        $variant = $withVariant ? $this->makeVariant($product, [
+            'stock' => 5, 'size' => 'M', 'color' => 'Bleu', 'version' => 'Home',
+        ]) : null;
+        $warehouseKey = ['warehouse_id' => $warehouse->id, 'product_id' => $product->id, 'product_variant_id' => $variant?->id];
+        if ($warehouseExists) {
+            WarehouseStock::create($warehouseKey + ['stock' => 5]);
+        }
+        if ($seeded) {
+            // Miroirs décalés uniquement dans les fixtures : forcer des écritures réelles des hooks.
+            DB::table($withVariant ? 'product_variant_attribute_values' : 'product_attribute_values')
+                ->where($withVariant ? 'product_variant_id' : 'product_id', $variant?->id ?? $product->id)
+                ->update(['value' => 'PREVIOUS']);
+        }
+        $untouched = $this->makeProduct(['stock' => 11]);
+        $data = $warehouseKey + ['type' => 'purchase', 'quantity' => 2, 'reference' => 'CP2617-FAIL'];
+        if ($entry === 'filament') {
+            $this->seed(RoleSeeder::class);
+            $this->actingAs(User::factory()->create()->assignRole('admin'));
+        }
+        $connection = DB::connection();
+        $this->assertSame('sqlite', $connection->getDriverName());
+        foreach ([StockMovement::class, Product::class, ProductVariant::class, WarehouseStock::class, ProductAttributeValue::class, ProductVariantAttributeValue::class] as $model) {
+            $this->assertSame($connection, (new $model)->getConnection());
+        }
+        $before = $this->movementCreationSnapshot();
+        $initialLevel = $connection->transactionLevel();
+        $originalLog = $connection->getQueryLog();
+        $wasLogging = $connection->logging();
+        $caught = null;
+        $queries = [];
+        $run = function (array $attributes) use ($entry): void {
+            if ($entry === 'save') {
+                $this->assertTrue((new StockMovement($attributes))->save());
+            } elseif ($entry === 'filament') {
+                $page = Livewire::test(CreateStockMovement::class);
+                $this->assertFalse($page->instance()->hasDatabaseTransactions(), 'La protection doit venir du modèle.');
+                $page->fillForm($attributes)->call('create')->assertHasNoFormErrors();
+            } else {
+                StockMovement::create($attributes);
+            }
+        };
+        $this->withoutExceptionHandling();
+        $this->travel(2)->seconds();
+        if ($entry === 'outer') {
+            $connection->beginTransaction();
+        }
+        $operationLevel = $connection->transactionLevel();
+        try {
+            // Sonde SQLite exclusivement de test : échec de l'INSERT final, après les effets stock.
+            $connection->unprepared("CREATE TEMP TRIGGER checkpoint_2617_failure BEFORE INSERT ON stock_movements
+                WHEN NEW.reference = 'CP2617-FAIL'
+                BEGIN SELECT RAISE(ABORT, 'checkpoint_2617_final_insert_failure'); END");
+            $offset = count($connection->getQueryLog());
+            $connection->enableQueryLog();
+            try {
+                $run($data);
+            } catch (QueryException $exception) {
+                $caught = $exception;
+            } finally {
+                $queries = array_slice($connection->getQueryLog(), $offset);
+                $connection->unprepared('DROP TRIGGER IF EXISTS temp.checkpoint_2617_failure');
+                (new \ReflectionProperty($connection, 'queryLog'))->setValue($connection, $originalLog);
+                $wasLogging ? $connection->enableQueryLog() : $connection->disableQueryLog();
+            }
+            $this->assertNotNull($caught);
+            $this->assertStringContainsString('checkpoint_2617_final_insert_failure', $caught->getMessage());
+            $this->assertStringContainsString('insert into "stock_movements"', $caught->getSql());
+            $this->assertContains('CP2617-FAIL', $caught->getBindings());
+            $this->assertSame($operationLevel, $connection->transactionLevel());
+            $this->assertSame($before, $this->movementCreationSnapshot(), 'Lectures fraîches avant teardown, timestamps inclus.');
+            $this->assertDatabaseMissing('stock_movements', ['reference' => 'CP2617-FAIL']);
+            $this->assertSame(5, (int) $product->fresh()->stock);
+            if ($variant) {
+                $this->assertSame(5, (int) $variant->fresh()->stock);
+            }
+            $this->assertSame($warehouseExists ? 5 : null, DB::table('warehouse_stocks')->where($warehouseKey)->value('stock'));
+
+            $writes = [];
+            foreach ($queries as $query) {
+                $sql = strtolower(str_replace('"', '', $query['query']));
+                if (preg_match('/^(insert into|update) (products|product_variants|warehouse_stocks|product_attribute_values|product_variant_attribute_values)\b/', $sql, $match) === 1) {
+                    $writes[] = $match[1].' '.$match[2];
+                    if (in_array($match[2], ['products', 'product_variants', 'warehouse_stocks'], true) && $match[1] === 'update') {
+                        $this->assertContains(7, $query['bindings'], 'Le stock a réellement été écrit avant l’échec.');
+                    }
+                }
+            }
+            $expected = $withVariant ? ['update product_variants', 'update products'] : ['update products'];
+            if ($seeded) {
+                $expected = [...$expected, ...array_fill(0, 3, 'update '.($withVariant ? 'product_variant_attribute_values' : 'product_attribute_values'))];
+            }
+            if (! $warehouseExists) {
+                $expected[] = 'insert into warehouse_stocks';
+            }
+            $expected[] = 'update warehouse_stocks';
+            $this->assertSame($expected, $writes, 'Ordre des écritures SQL réussies avant l’INSERT rejeté.');
+            $this->assertSame($wasLogging, $connection->logging());
+            $this->assertSame($originalLog, $connection->getQueryLog());
+
+            $run(array_replace($data, ['reference' => 'CP2617-SUCCESS']));
+            $this->assertSame($operationLevel, $connection->transactionLevel());
+            $movement = StockMovement::where('reference', 'CP2617-SUCCESS')->sole();
+            $this->assertSame(5, $movement->stock_before);
+            $this->assertSame(7, $movement->stock_after);
+            $this->assertSame(7, (int) $product->fresh()->stock);
+            if ($variant) {
+                $this->assertSame(7, (int) $variant->fresh()->stock);
+            }
+            $this->assertSame(7, (int) DB::table('warehouse_stocks')->where($warehouseKey)->value('stock'));
+            $this->assertSame(11, (int) $untouched->fresh()->stock);
+            foreach (['product_attribute_values', 'product_variant_attribute_values'] as $table) {
+                $after = $this->movementCreationSnapshot()[$table];
+                $withoutTimestamps = static fn (array $rows): array => array_map(static function (array $row): array {
+                    unset($row['created_at'], $row['updated_at']);
+                    return $row;
+                }, $rows);
+                $expectedRows = $before[$table];
+                if ($seeded && $table === ($withVariant ? 'product_variant_attribute_values' : 'product_attribute_values')) {
+                    $values = $withVariant ? ['size' => 'M', 'color' => 'Bleu', 'version' => 'Home']
+                        : ['season' => '2025-2026', 'taille' => 'M', 'equipe' => 'Equipe'];
+                    $codes = DB::table('attribute_definitions')->pluck('code', 'id');
+                    foreach ($expectedRows as &$row) {
+                        if ($row[$withVariant ? 'product_variant_id' : 'product_id'] === ($variant?->id ?? $product->id)) {
+                            $row['value'] = $values[$codes[$row['attribute_definition_id']]];
+                        }
+                    }
+                    unset($row);
+                }
+                $this->assertSame($withoutTimestamps($expectedRows), $withoutTimestamps($after));
+            }
+        } finally {
+            $connection->unprepared('DROP TRIGGER IF EXISTS temp.checkpoint_2617_failure');
+            (new \ReflectionProperty($connection, 'queryLog'))->setValue($connection, $originalLog);
+            $wasLogging ? $connection->enableQueryLog() : $connection->disableQueryLog();
+            if ($entry === 'outer') {
+                $connection->rollBack();
+            }
+            $this->travelBack();
+            $this->withExceptionHandling();
+        }
+        $this->assertSame($initialLevel, $connection->transactionLevel());
+        if ($entry === 'outer') {
+            $this->assertSame($before, $this->movementCreationSnapshot(), 'Le succès reste annulable par la transaction englobante.');
+        }
+        $this->assertSame([], $connection->select("SELECT name FROM sqlite_temp_master WHERE type = 'trigger' AND name = 'checkpoint_2617_failure'"));
+    }
 
     /**
      * Étape T11b : StockMovement::creating() résout désormais

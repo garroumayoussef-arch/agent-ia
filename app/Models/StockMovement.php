@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Support\Facades\DB;
@@ -15,6 +16,12 @@ class StockMovement extends Model
         'stock_before' => 'integer',
         'stock_after' => 'integer',
     ];
+
+    protected function performInsert(Builder $query)
+    {
+        // Le hook creating et ses effets précèdent l'INSERT final Eloquent.
+        return $query->getConnection()->transaction(fn () => parent::performInsert($query));
+    }
 
     protected static function booted(): void
     {
