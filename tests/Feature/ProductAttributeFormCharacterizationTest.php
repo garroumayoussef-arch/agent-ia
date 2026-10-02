@@ -705,6 +705,196 @@ class ProductAttributeFormCharacterizationTest extends TestCase
         $this->assertSame(2, $product->variants()->count());
     }
 
+    public static function standaloneTransactionFailures(): array
+    {
+        return [
+            'creation stock avec definitions' => ['create', 'stock', true],
+            'creation stock sans definitions' => ['create', 'stock', false],
+            'edition stock avec definitions' => ['edit', 'stock', true],
+            'edition stock sans definitions' => ['edit', 'stock', false],
+            'creation second miroir' => ['create', 'mirror', true],
+            'edition second miroir' => ['edit', 'mirror', true],
+            'reaffectation second parent avec definitions' => ['reparent', 'stock', true],
+            'reaffectation second parent sans definitions' => ['reparent', 'stock', false],
+        ];
+    }
+
+    #[DataProvider('standaloneTransactionFailures')]
+    public function test_variante_autonome_transactionnelle_annule_les_ecritures_avant_echec_tardif(string $operation, string $failure, bool $seeded): void
+    {
+        $this->prepareReference($seeded);
+        $source = $this->makeProduct('sport');
+        $destination = Product::factory()->create([
+            'activity' => 'sport', 'category_id' => $source->category_id, 'stock' => 0,
+            'taille' => 'M', 'equipe' => 'Equipe destination', 'season' => null,
+        ]);
+        $candidate = $source->variants()->create($this->variantData('ATOMIC-CURRENT') + ['barcode' => '   ']);
+        $source->variants()->create($this->variantData('ATOMIC-SIBLING', 'S', 'Noir', 7));
+        $destination->variants()->create($this->variantData('ATOMIC-DESTINATION', 'S', 'Noir', 2));
+        $untouched = Product::factory()->create(['activity' => 'moto', 'stock' => 0]);
+        $untouched->variants()->create($this->variantData('ATOMIC-UNTOUCHED', 'M', 'Noir', 4));
+        $target = $operation === 'reparent' ? $destination : $source;
+        $sku = $operation === 'create' ? 'ATOMIC-NEW' : $candidate->sku;
+        $data = $this->variantData($sku, 'L', 'Rouge', 5) + [
+            'product_id' => $target->id, 'barcode' => $operation === 'create' ? 'NEW-BARCODE' : '   ',
+        ];
+        $page = $operation === 'create'
+            ? Livewire::test(CreateProductVariant::class)->fillForm($data)
+            : Livewire::test(EditProductVariant::class, ['record' => $candidate->id])->fillForm($data);
+        $before = $this->catalogSnapshot();
+        $connection = DB::connection();
+        $this->assertSame('sqlite', $connection->getDriverName());
+        foreach ([Product::class, ProductVariant::class, ProductAttributeValue::class, ProductVariantAttributeValue::class] as $model) {
+            $this->assertSame($connection, (new $model)->getConnection());
+        }
+        $initialLevel = $connection->transactionLevel();
+        $originalQueryLog = $connection->getQueryLog();
+        $wasLogging = $connection->logging();
+        $caught = null;
+        $queries = [];
+        $stockTrigger = "CREATE TEMP TRIGGER checkpoint_2616_failure BEFORE UPDATE OF stock ON products
+            WHEN NEW.id = ".(int) $target->id."
+            BEGIN SELECT RAISE(ABORT, 'checkpoint_2616_late_failure'); END";
+        $colorDefinitionId = $seeded
+            ? (int) DB::table('attribute_definitions')->where('code', 'color')->value('id')
+            : null;
+        $mirrorEvent = $operation === 'create' ? 'INSERT' : 'UPDATE';
+        $mirrorTrigger = "CREATE TEMP TRIGGER checkpoint_2616_failure BEFORE {$mirrorEvent} ON product_variant_attribute_values
+            WHEN NEW.attribute_definition_id = ".(int) $colorDefinitionId." AND NEW.value = 'Rouge'
+            BEGIN SELECT RAISE(ABORT, 'checkpoint_2616_late_failure'); END";
+
+        $this->withoutExceptionHandling();
+        $this->travel(2)->seconds();
+        try {
+            // Echec SQL reserve au test, sans simulation des limites PostgreSQL sous SQLite.
+            $connection->unprepared($failure === 'stock' ? $stockTrigger : $mirrorTrigger);
+            $offset = count($connection->getQueryLog());
+            $connection->enableQueryLog();
+            try {
+                $page->call($operation === 'create' ? 'create' : 'save');
+            } catch (\Illuminate\Database\QueryException $exception) {
+                $caught = $exception;
+            }
+            $queries = array_slice($connection->getQueryLog(), $offset);
+        } finally {
+            try {
+                $connection->unprepared('DROP TRIGGER IF EXISTS temp.checkpoint_2616_failure');
+            } finally {
+                (new \ReflectionProperty($connection, 'queryLog'))->setValue($connection, $originalQueryLog);
+                $wasLogging ? $connection->enableQueryLog() : $connection->disableQueryLog();
+                $this->travelBack();
+                $this->withExceptionHandling();
+            }
+        }
+
+        $this->assertNotNull($caught, 'La sauvegarde doit atteindre le vrai effet DB cible.');
+        $this->assertStringContainsString('checkpoint_2616_late_failure', $caught->getMessage());
+        $this->assertStringContainsString($failure === 'stock' ? 'update "products"' : '"product_variant_attribute_values"', $caught->getSql());
+        $this->assertContains($failure === 'stock' ? $target->id : 'Rouge', $caught->getBindings());
+        $this->assertSame($initialLevel, $connection->transactionLevel());
+        $this->assertSame($wasLogging, $connection->logging());
+        $this->assertSame($originalQueryLog, $connection->getQueryLog());
+
+        $writes = [];
+        foreach ($queries as $query) {
+            $sql = strtolower(str_replace('"', '', $query['query']));
+            if (preg_match('/^(insert into|update|delete from) (products|product_variants|product_attribute_values|product_variant_attribute_values)\b/', $sql, $match) !== 1) {
+                continue;
+            }
+            $writes[] = $match[1].' '.$match[2];
+            if ($match[2] === 'product_variants') {
+                $this->assertContains('L', $query['bindings']);
+                $this->assertContains('Rouge', $query['bindings']);
+                if ($operation === 'create') {
+                    preg_match('/^insert into product_variants \(([^)]+)\)/', $sql, $columns);
+                    $stockBinding = array_search('stock', array_map('trim', explode(',', $columns[1])), true);
+                    $this->assertContains('ATOMIC-NEW', $query['bindings']);
+                } else {
+                    $stockBinding = substr_count(substr($sql, 0, strpos($sql, 'stock = ?')), '?');
+                    $this->assertSame($candidate->id, (int) $query['bindings'][array_key_last($query['bindings'])]);
+                }
+                // Les champs numeriques Filament peuvent fournir des chaines aux bindings SQL.
+                $this->assertSame(5, (int) $query['bindings'][$stockBinding]);
+                if ($operation === 'reparent') {
+                    $this->assertStringContainsString('product_id = ?', $sql);
+                    $parentBinding = substr_count(substr($sql, 0, strpos($sql, 'product_id = ?')), '?');
+                    $this->assertSame($destination->id, (int) $query['bindings'][$parentBinding]);
+                }
+            } elseif ($match[2] === 'products') {
+                $this->assertStringContainsString('stock = ?', $sql);
+                $this->assertSame($operation === 'reparent' ? 7 : ($operation === 'create' ? 15 : 12), (int) $query['bindings'][0]);
+                $this->assertSame($source->id, (int) $query['bindings'][array_key_last($query['bindings'])]);
+            } else {
+                $this->assertSame('product_variant_attribute_values', $match[2]);
+                $this->assertContains('L', $query['bindings']);
+            }
+        }
+        $expected = [$operation === 'create' ? 'insert into product_variants' : 'update product_variants'];
+        if ($operation === 'reparent' || $failure === 'mirror') {
+            $expected[] = 'update products';
+        }
+        if ($failure === 'mirror') {
+            $expected[] = $operation === 'create' ? 'insert into product_variant_attribute_values' : 'update product_variant_attribute_values';
+        }
+        $this->assertSame($expected, $writes, 'Prouver les ecritures reussies et leur ordre avant le rollback.');
+        $this->assertSame($before, $this->catalogSnapshot(), 'Toutes les lignes et timestamps preexistants sont restaures avant teardown.');
+        $this->assertDatabaseMissing('product_variants', ['sku' => 'ATOMIC-NEW']);
+        $this->assertSame(10, (int) $source->fresh()->stock);
+        $this->assertSame(2, (int) $destination->fresh()->stock);
+        $this->assertSame(4, (int) $untouched->fresh()->stock);
+        $this->assertSame($source->id, (int) $candidate->fresh()->product_id);
+        $this->assertVariantPersistence($candidate, 'sport', $seeded, 'M', 'Bleu', 3);
+        $this->assertSame('   ', $candidate->fresh()->barcode);
+        $this->assertSame([], $connection->select("SELECT name FROM sqlite_temp_master WHERE type = 'trigger' AND name = 'checkpoint_2616_failure'"));
+    }
+
+    #[DataProvider('commerceContexts')]
+    public function test_variante_autonome_transactionnelle_valide_creer_un_autre_et_reaffectation(string $activity, bool $seeded): void
+    {
+        $this->prepareReference($seeded);
+        $source = $this->makeProduct($activity);
+        $destination = Product::factory()->create([
+            'activity' => $activity, 'category_id' => $source->category_id, 'stock' => 0,
+        ]);
+        $source->variants()->create($this->variantData('SUCCESS-SIBLING', 'S', 'Noir', 4));
+        $destination->variants()->create($this->variantData('SUCCESS-DESTINATION', 'S', 'Noir', 2));
+        $initialLevel = DB::connection()->transactionLevel();
+        $page = Livewire::test(CreateProductVariant::class)
+            ->fillForm($this->variantData('SUCCESS-FIRST') + ['product_id' => $source->id, 'barcode' => '   '])
+            ->call('create', true)->assertHasNoFormErrors()->assertSet('isCreating', false)
+            ->assertFormSet(['product_id' => null]);
+        $this->assertSame($initialLevel, DB::connection()->transactionLevel());
+        $first = ProductVariant::where('sku', 'SUCCESS-FIRST')->sole();
+        $this->assertVariantPersistence($first, $activity, $seeded, 'M', 'Bleu', 3);
+        $this->assertSame('   ', $first->barcode);
+        $this->assertSame(7, (int) $source->fresh()->stock);
+        $firstSnapshot = (array) DB::table('product_variants')->where('id', $first->id)->sole();
+        $productMirrors = DB::table('product_attribute_values')->orderBy('id')->get()->map(static fn (object $row): array => (array) $row)->all();
+
+        $page->fillForm($this->variantData('SUCCESS-SECOND', 'L', 'Rouge', 7) + ['product_id' => $source->id, 'barcode' => '00123'])
+            ->call('create')->assertHasNoFormErrors();
+        $this->assertSame($initialLevel, DB::connection()->transactionLevel());
+        $second = ProductVariant::where('sku', 'SUCCESS-SECOND')->sole();
+        $this->assertVariantPersistence($second, $activity, $seeded, 'L', 'Rouge', 7);
+        $this->assertSame('00123', $second->barcode);
+        $this->assertSame(14, (int) $source->fresh()->stock);
+        $this->assertSame($firstSnapshot, (array) DB::table('product_variants')->where('id', $first->id)->sole());
+
+        // Exercer seulement la reaffectation deja permise, sans definir de politique sur les historiques.
+        Livewire::test(EditProductVariant::class, ['record' => $first->id])
+            ->fillForm($this->variantData('SUCCESS-FIRST', 'L', 'Rouge', 5) + ['product_id' => $destination->id, 'barcode' => '   '])
+            ->call('save')->assertHasNoFormErrors();
+        $this->assertSame($initialLevel, DB::connection()->transactionLevel());
+        $this->assertSame($destination->id, (int) $first->fresh()->product_id);
+        $this->assertVariantPersistence($first, $activity, $seeded, 'L', 'Rouge', 5);
+        $this->assertSame('   ', $first->barcode);
+        $this->assertSame(11, (int) $source->fresh()->stock);
+        $this->assertSame(7, (int) $destination->fresh()->stock);
+        $this->assertSame($productMirrors, DB::table('product_attribute_values')->orderBy('id')->get()->map(static fn (object $row): array => (array) $row)->all());
+        $this->assertDatabaseCount('products', 2);
+        $this->assertDatabaseCount('product_variants', 4);
+    }
+
     public static function lateCreationFailures(): array
     {
         return [

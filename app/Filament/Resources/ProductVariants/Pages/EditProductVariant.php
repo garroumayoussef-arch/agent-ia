@@ -10,6 +10,8 @@ class EditProductVariant extends EditRecord
 {
     protected static string $resource = ProductVariantResource::class;
 
+    protected ?bool $hasDatabaseTransactions = true;
+
     protected function getHeaderActions(): array
     {
         return [
