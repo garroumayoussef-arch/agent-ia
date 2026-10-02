@@ -705,6 +705,162 @@ class ProductAttributeFormCharacterizationTest extends TestCase
         $this->assertSame(2, $product->variants()->count());
     }
 
+    public static function lateCreationFailures(): array
+    {
+        return [
+            'premiere avec definitions' => [false, true],
+            'seconde avec definitions' => [true, true],
+            'premiere sans definitions' => [false, false],
+            'seconde sans definitions' => [true, false],
+        ];
+    }
+
+    #[DataProvider('lateCreationFailures')]
+    public function test_creation_transactionnelle_annule_les_ecritures_avant_echec_sql_tardif(bool $second, bool $seeded): void
+    {
+        $this->prepareReference($seeded);
+        $existing = $this->makeProduct('sport');
+        $existing->variants()->create($this->variantData('CREATE-PREEXISTING', 'L', 'Rouge', 7));
+        $rows = $second ? ['premiere' => $this->variantData('CREATE-FIRST')] : [];
+        $rows['refusee'] = $this->variantData('CREATE-FAIL', 'XL', 'Vert', 5);
+        $page = $this->nestedCreationPage('sport', $rows);
+        $before = $this->catalogSnapshot();
+        $connection = DB::connection();
+        $this->assertSame('sqlite', $connection->getDriverName());
+        foreach ([Product::class, ProductVariant::class, ProductAttributeValue::class, ProductVariantAttributeValue::class] as $model) {
+            $this->assertSame($connection, (new $model)->getConnection());
+        }
+        $initialLevel = $connection->transactionLevel();
+        $wasLogging = $connection->logging();
+        $offset = count($connection->getQueryLog());
+        $caught = null;
+        $queries = [];
+        $originalQueryLog = $connection->getQueryLog();
+
+        $this->withoutExceptionHandling();
+        $this->travel(2)->seconds();
+        try {
+            // Exception SQL reservee a ce test : aucune simulation de varchar PostgreSQL.
+            $connection->unprepared(<<<'SQL'
+                CREATE TEMP TRIGGER checkpoint_2615_fail_variant
+                BEFORE INSERT ON product_variants
+                WHEN NEW.sku = 'CREATE-FAIL'
+                BEGIN
+                    SELECT RAISE(ABORT, 'checkpoint_2615_late_failure');
+                END
+                SQL);
+            $offset = count($connection->getQueryLog());
+            $connection->enableQueryLog();
+            try {
+                $page->call('create');
+            } catch (\Illuminate\Database\QueryException $exception) {
+                $caught = $exception;
+            }
+            // Le journal Laravel contient les requetes reussies, avant le rollback Filament.
+            $queries = array_slice($connection->getQueryLog(), $offset);
+        } finally {
+            try {
+                $connection->unprepared('DROP TRIGGER IF EXISTS temp.checkpoint_2615_fail_variant');
+            } finally {
+                // Restaurer aussi un journal preexistant, meme si la journalisation etait active.
+                (new \ReflectionProperty($connection, 'queryLog'))->setValue($connection, $originalQueryLog);
+                $wasLogging ? $connection->enableQueryLog() : $connection->disableQueryLog();
+                $this->travelBack();
+                $this->withExceptionHandling();
+            }
+        }
+
+        $this->assertNotNull($caught, 'La variante cible doit atteindre un vrai INSERT SQL.');
+        $this->assertStringContainsString('checkpoint_2615_late_failure', $caught->getMessage());
+        $this->assertStringContainsString('insert into "product_variants"', $caught->getSql());
+        $this->assertContains('CREATE-FAIL', $caught->getBindings());
+        $this->assertSame($initialLevel, $connection->transactionLevel());
+        $writes = [];
+        foreach ($queries as $query) {
+            $sql = strtolower(str_replace('"', '', $query['query']));
+            if (preg_match('/^(insert into|update) (products|product_variants|product_attribute_values|product_variant_attribute_values)\b/', $sql, $match) !== 1) {
+                continue;
+            }
+            $writes[] = $match[1].' '.$match[2];
+            if ($match[0] === 'insert into products') {
+                $this->assertContains('CHAR-CREATE', $query['bindings']);
+            }
+            if ($match[0] === 'insert into product_variants') {
+                $this->assertContains('CREATE-FIRST', $query['bindings']);
+            }
+            if ($match[0] === 'update products') {
+                $this->assertMatchesRegularExpression('/\bstock\s*=\s*\?/', $sql);
+                $this->assertSame(3, (int) $query['bindings'][0]);
+                $this->assertNotSame($existing->id, (int) $query['bindings'][array_key_last($query['bindings'])]);
+            }
+        }
+        $expected = ['insert into products'];
+        if ($seeded) {
+            $expected = [...$expected, ...array_fill(0, 2, 'insert into product_attribute_values')];
+        }
+        if ($second) {
+            $expected = [...$expected, 'insert into product_variants', 'update products'];
+            if ($seeded) {
+                $expected = [...$expected, ...array_fill(0, 3, 'insert into product_variant_attribute_values')];
+            }
+        }
+        $this->assertSame($expected, $writes, 'Prouver chaque ecriture reussie et son ordre avant la variante refusee.');
+        $this->assertSame($before, $this->catalogSnapshot(), 'Comparer les lignes et timestamps avant le teardown.');
+        $this->assertDatabaseMissing('products', ['reference' => 'CHAR-CREATE']);
+        $this->assertDatabaseMissing('product_variants', ['sku' => 'CREATE-FIRST']);
+        $this->assertDatabaseMissing('product_variants', ['sku' => 'CREATE-FAIL']);
+        $this->assertSame(7, (int) $existing->fresh()->stock);
+        $this->assertSame([], $connection->select("SELECT name FROM sqlite_temp_master WHERE type = 'trigger' AND name = 'checkpoint_2615_fail_variant'"));
+    }
+
+    #[DataProvider('commerceContexts')]
+    public function test_creation_transactionnelle_valide_sans_puis_plusieurs_variantes_via_creer_un_autre(string $activity, bool $seeded): void
+    {
+        $this->prepareReference($seeded);
+        $initialLevel = DB::connection()->transactionLevel();
+        $page = $this->nestedCreationPage($activity, [])
+            ->call('create', true)->assertHasNoFormErrors()
+            ->assertFormSet(['activity' => null])
+            ->assertSet('isCreating', false);
+        $this->assertSame($initialLevel, DB::connection()->transactionLevel());
+        $first = Product::where('reference', 'CHAR-CREATE')->sole();
+        $this->assertSame(0, $first->variants()->count());
+        $this->assertSame(0, (int) $first->stock);
+        $beforeSecond = $this->catalogSnapshot();
+
+        $page->fillForm(array_replace($this->productCreationData($first->category_id), [
+            'activity' => $activity, 'reference' => 'CREATE-ANOTHER',
+            'variants' => [
+                'premiere' => $this->variantData('CREATE-ANOTHER-A'),
+                'seconde' => $this->variantData('CREATE-ANOTHER-B', 'L', 'Rouge', 7),
+            ],
+        ]))->call('create')->assertHasNoFormErrors();
+
+        $this->assertSame($initialLevel, DB::connection()->transactionLevel());
+        $secondProduct = Product::where('reference', 'CREATE-ANOTHER')->sole();
+        $this->assertNotSame($first->id, $secondProduct->id);
+        $this->assertSame(10, (int) $secondProduct->stock);
+        $this->assertSame(2, $secondProduct->variants()->count());
+        $this->assertVariantPersistence($secondProduct->variants()->where('sku', 'CREATE-ANOTHER-A')->sole(), $activity, $seeded, 'M', 'Bleu', 3);
+        $this->assertVariantPersistence($secondProduct->variants()->where('sku', 'CREATE-ANOTHER-B')->sole(), $activity, $seeded, 'L', 'Rouge', 7);
+        foreach ([$first->fresh(), $secondProduct] as $product) {
+            $this->assertSame($activity, $product->activity);
+            $this->assertSame('M', $product->taille);
+            $this->assertSame('Equipe saisie', $product->equipe);
+            $this->assertSame($seeded && $activity === 'sport' ? 'M' : null, $product->attributeMirrorValue('taille'));
+            $this->assertSame($seeded && $activity === 'sport' ? 'Equipe saisie' : null, $product->attributeMirrorValue('equipe'));
+            $this->assertSame($seeded && $activity === 'sport' ? 2 : 0, $product->attributeValues()->count());
+        }
+        // Le second passage sur la meme page ne doit pas modifier le premier produit.
+        foreach ($beforeSecond as $table => $rows) {
+            foreach ($rows as $row) {
+                $this->assertSame($row, (array) DB::table($table)->where('id', $row['id'])->sole());
+            }
+        }
+        $this->assertDatabaseCount('products', 2);
+        $this->assertDatabaseCount('product_variants', 2);
+    }
+
     public static function lateDeletionProtections(): array
     {
         return [
