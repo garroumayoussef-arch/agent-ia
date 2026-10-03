@@ -23,6 +23,12 @@ class StockMovement extends Model
         return $query->getConnection()->transaction(fn () => parent::performInsert($query));
     }
 
+    protected function performUpdate(Builder $query)
+    {
+        // Englober updating/rejeu, l'UPDATE final et updated dans la même transaction.
+        return $query->getConnection()->transaction(fn () => parent::performUpdate($query));
+    }
+
     protected static function booted(): void
     {
         /*

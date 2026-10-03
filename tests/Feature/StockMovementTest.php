@@ -3,6 +3,7 @@
 namespace Tests\Feature;
 
 use App\Filament\Resources\StockMovements\Pages\CreateStockMovement;
+use App\Filament\Resources\StockMovements\Pages\EditStockMovement;
 use App\Models\Brand;
 use App\Models\Category;
 use App\Models\Club;
@@ -55,6 +56,208 @@ class StockMovementTest extends TestCase
         }
 
         return $snapshot;
+    }
+
+    public static function updateAtomicityContexts(): array
+    {
+        $cases = [];
+        foreach (['update', 'save', 'outer', 'filament'] as $entry) {
+            foreach ([false, true] as $variant) {
+                foreach ([false, true] as $mirrors) {
+                    $cases[$entry.' variant='.(int) $variant.' mirrors='.(int) $mirrors]
+                        = [$entry, $variant, $mirrors];
+                }
+            }
+        }
+
+        return $cases;
+    }
+
+    #[DataProvider('updateAtomicityContexts')]
+    public function test_modification_stock_movement_atomique_annule_update_final_et_preserve_succes(
+        string $entry, bool $withVariant, bool $mirrors,
+    ): void {
+        if ($mirrors) {
+            $this->seed(AttributeDefinitionSeeder::class);
+        }
+        $warehouseA = Warehouse::where('is_default', true)->sole();
+        $warehouseB = Warehouse::create(['name' => 'Entrepôt B', 'code' => 'cp2619-b']);
+        $product = $this->makeProduct([
+            'activity' => 'sport', 'stock' => 5, 'taille' => 'M', 'equipe' => 'Equipe', 'season' => '2025-2026',
+        ]);
+        $variant = $withVariant ? $this->makeVariant($product, [
+            'stock' => 5, 'size' => 'M', 'color' => 'Bleu', 'version' => 'Home',
+        ]) : null;
+        $sibling = $withVariant ? $this->makeVariant($product, ['stock' => 4]) : null;
+        $key = ['product_id' => $product->id, 'product_variant_id' => $variant?->id];
+        WarehouseStock::create($key + ['warehouse_id' => $warehouseA->id, 'stock' => 5]);
+        WarehouseStock::create($key + ['warehouse_id' => $warehouseB->id, 'stock' => 0]);
+        $anchor = StockMovement::create($key + ['warehouse_id' => $warehouseA->id, 'type' => 'purchase', 'quantity' => 2]);
+        $movement = StockMovement::create($key + ['warehouse_id' => $warehouseA->id, 'type' => 'purchase', 'quantity' => 10]);
+        $neighbor = StockMovement::create($key + ['warehouse_id' => $warehouseB->id, 'type' => 'purchase', 'quantity' => 3]);
+        $sale = StockMovement::create($key + ['warehouse_id' => $warehouseA->id, 'type' => 'sale', 'quantity' => 4]);
+        $untouched = $this->makeProduct(['stock' => 11]);
+        $mirrorTable = $withVariant ? 'product_variant_attribute_values' : 'product_attribute_values';
+        $mirrorKey = $withVariant ? 'product_variant_id' : 'product_id';
+        $targetId = $variant?->id ?? $product->id;
+        if ($mirrors) {
+            // Fixtures volontairement décalées : le rejeu doit réellement écrire les miroirs.
+            $this->assertSame(3, DB::table($mirrorTable)->where($mirrorKey, $targetId)->count());
+            DB::table($mirrorTable)->where($mirrorKey, $targetId)->update(['value' => 'PREVIOUS']);
+        }
+        if ($entry === 'filament') {
+            $this->seed(RoleSeeder::class);
+            $this->actingAs(User::factory()->create()->assignRole('admin'));
+        }
+        $connection = DB::connection();
+        $this->assertSame('sqlite', $connection->getDriverName());
+        foreach ([StockMovement::class, Product::class, ProductVariant::class, WarehouseStock::class, ProductAttributeValue::class, ProductVariantAttributeValue::class] as $model) {
+            $this->assertSame($connection, (new $model)->getConnection());
+        }
+        $initialLevel = $connection->transactionLevel();
+        $baseline = $this->movementCreationSnapshot();
+        $originalLog = $connection->getQueryLog();
+        $wasLogging = $connection->logging();
+        $run = function () use ($entry, $movement): void {
+            // Toujours relire la DB : le rollback ne restaure pas les objets PHP.
+            $fresh = $movement->fresh();
+            if ($entry === 'filament') {
+                $page = Livewire::test(EditStockMovement::class, ['record' => $fresh->getRouteKey()]);
+                $this->assertFalse($page->instance()->hasDatabaseTransactions(), 'La protection doit venir du modèle.');
+                $page->fillForm(['quantity' => 20])->call('save')->assertHasNoFormErrors();
+            } elseif ($entry === 'save') {
+                $fresh->quantity = 20;
+                $this->assertTrue($fresh->save());
+            } else {
+                $this->assertTrue($fresh->update(['quantity' => 20]));
+            }
+        };
+        $this->withoutExceptionHandling();
+        $this->travel(2)->seconds();
+        try {
+            if ($entry === 'outer') {
+                $connection->beginTransaction();
+                DB::table('products')->where('id', $untouched->id)->update(['nom' => 'Écriture englobante']);
+                $outerSnapshot = $this->movementCreationSnapshot();
+                $connection->beginTransaction();
+                DB::table('products')->where('id', $untouched->id)->update(['nom' => 'Écriture savepoint']);
+            }
+            $operationLevel = $connection->transactionLevel();
+            $before = $this->movementCreationSnapshot();
+            $caught = null;
+            $queries = [];
+            // Cible seulement l'UPDATE final du mouvement édité, pas les saveQuietly des voisins.
+            $connection->unprepared("CREATE TEMP TRIGGER checkpoint_2619_failure BEFORE UPDATE ON stock_movements
+                WHEN OLD.id = {$movement->id} AND NEW.quantity = 20
+                BEGIN SELECT RAISE(ABORT, 'checkpoint_2619_final_update_failure'); END");
+            $offset = count($connection->getQueryLog());
+            $connection->enableQueryLog();
+            try {
+                $run();
+            } catch (QueryException $exception) {
+                $caught = $exception;
+            } finally {
+                $queries = array_slice($connection->getQueryLog(), $offset);
+                $connection->unprepared('DROP TRIGGER IF EXISTS temp.checkpoint_2619_failure');
+                (new \ReflectionProperty($connection, 'queryLog'))->setValue($connection, $originalLog);
+                $wasLogging ? $connection->enableQueryLog() : $connection->disableQueryLog();
+            }
+            $this->assertNotNull($caught);
+            $this->assertStringContainsString('checkpoint_2619_final_update_failure', $caught->getMessage());
+            $this->assertStringStartsWith('update "stock_movements"', $caught->getSql());
+            $bindings = $caught->getBindings();
+            $this->assertSame($movement->id, $bindings[array_key_last($bindings)]);
+            $this->assertContains('20', array_map('strval', $bindings));
+            $this->assertContains(27, $bindings, 'Le mouvement en cours porte le résultat du rejeu.');
+            $this->assertSame($operationLevel, $connection->transactionLevel());
+            $this->assertSame($before, $this->movementCreationSnapshot(), 'Toutes les colonnes DB et timestamps avant teardown.');
+            $this->assertSame(10, $movement->fresh()->quantity);
+            $this->assertSame(7, $movement->fresh()->stock_before);
+            $this->assertSame(17, $movement->fresh()->stock_after);
+            $this->assertSame(17, $neighbor->fresh()->stock_before);
+            $this->assertSame(20, $sale->fresh()->stock_before);
+            $this->assertSame(16, (int) ($variant ?? $product)->fresh()->stock);
+            $this->assertSame($withVariant ? 20 : 16, (int) $product->fresh()->stock);
+            $this->assertSame(13, (int) DB::table('warehouse_stocks')->where($key)->where('warehouse_id', $warehouseA->id)->value('stock'));
+            $this->assertSame(3, (int) DB::table('warehouse_stocks')->where($key)->where('warehouse_id', $warehouseB->id)->value('stock'));
+
+            $writes = [];
+            foreach ($queries as $query) {
+                $sql = strtolower(str_replace('"', '', $query['query']));
+                if (preg_match('/^update (stock_movements|products|product_variants|warehouse_stocks|product_attribute_values|product_variant_attribute_values)\b/', $sql, $match) === 1) {
+                    $this->assertStringContainsString('updated_at', $sql);
+                    $this->assertContains(now()->format('Y-m-d H:i:s'), $query['bindings']);
+                    $writes[] = [$match[1], $query['bindings']];
+                }
+            }
+            $expectedTables = ['stock_movements', 'stock_movements'];
+            $expectedTables = [...$expectedTables, ...($withVariant ? ['product_variants', 'products'] : ['products'])];
+            if ($mirrors) {
+                $expectedTables = [...$expectedTables, ...array_fill(0, 3, $mirrorTable)];
+            }
+            $expectedTables = [...$expectedTables, 'warehouse_stocks', 'warehouse_stocks'];
+            $this->assertSame($expectedTables, array_column($writes, 0), 'Écritures SQL réussies avant l’UPDATE final rejeté.');
+            $this->assertContains(27, $writes[0][1]);
+            $this->assertContains(30, $writes[0][1]);
+            $this->assertSame($neighbor->id, $writes[0][1][array_key_last($writes[0][1])]);
+            $this->assertContains(26, $writes[1][1]);
+            $this->assertSame($sale->id, $writes[1][1][array_key_last($writes[1][1])]);
+            $this->assertContains(26, $writes[2][1]);
+            if ($withVariant) {
+                $this->assertContains(30, $writes[3][1], 'Le parent a réellement été recalculé.');
+            }
+            $this->assertContains(23, $writes[count($writes) - 2][1]);
+            $this->assertContains(3, $writes[count($writes) - 1][1]);
+            $this->assertSame($wasLogging, $connection->logging());
+            $this->assertSame($originalLog, $connection->getQueryLog());
+
+            $run();
+            $this->assertSame($operationLevel, $connection->transactionLevel());
+            $this->assertSame(20, $movement->fresh()->quantity);
+            $this->assertSame(7, $movement->fresh()->stock_before);
+            $this->assertSame(27, $movement->fresh()->stock_after);
+            $this->assertSame(27, $neighbor->fresh()->stock_before);
+            $this->assertSame(30, $neighbor->fresh()->stock_after);
+            $this->assertSame(30, $sale->fresh()->stock_before);
+            $this->assertSame(26, $sale->fresh()->stock_after);
+            $this->assertSame(5, $anchor->fresh()->stock_before);
+            $this->assertSame(7, $anchor->fresh()->stock_after);
+            $this->assertSame(26, (int) ($variant ?? $product)->fresh()->stock);
+            $this->assertSame($withVariant ? 30 : 26, (int) $product->fresh()->stock);
+            if ($sibling) {
+                $this->assertSame(4, (int) $sibling->fresh()->stock);
+            }
+            $this->assertSame(23, (int) DB::table('warehouse_stocks')->where($key)->where('warehouse_id', $warehouseA->id)->value('stock'));
+            $this->assertSame(3, (int) DB::table('warehouse_stocks')->where($key)->where('warehouse_id', $warehouseB->id)->value('stock'));
+            $this->assertSame(11, (int) $untouched->fresh()->stock);
+            if ($mirrors) {
+                $values = $withVariant ? ['size' => 'M', 'color' => 'Bleu', 'version' => 'Home']
+                    : ['season' => '2025-2026', 'taille' => 'M', 'equipe' => 'Equipe'];
+                $rows = DB::table($mirrorTable)->where($mirrorKey, $targetId)->get();
+                $codes = DB::table('attribute_definitions')->pluck('code', 'id');
+                $this->assertCount(3, $rows);
+                foreach ($rows as $row) {
+                    $this->assertSame($values[$codes[$row->attribute_definition_id]], $row->value);
+                    $this->assertSame(now()->format('Y-m-d H:i:s'), $row->updated_at);
+                }
+            }
+            if ($entry === 'outer') {
+                $connection->rollBack();
+                $this->assertSame($initialLevel + 1, $connection->transactionLevel());
+                $this->assertSame($outerSnapshot, $this->movementCreationSnapshot(), 'Le savepoint englobant reste utilisable après échec puis succès.');
+                $connection->rollBack();
+                $this->assertSame($baseline, $this->movementCreationSnapshot());
+            }
+        } finally {
+            $connection->unprepared('DROP TRIGGER IF EXISTS temp.checkpoint_2619_failure');
+            (new \ReflectionProperty($connection, 'queryLog'))->setValue($connection, $originalLog);
+            $wasLogging ? $connection->enableQueryLog() : $connection->disableQueryLog();
+            $connection->rollBack($initialLevel);
+            $this->travelBack();
+            $this->withExceptionHandling();
+        }
+        $this->assertSame($initialLevel, $connection->transactionLevel());
+        $this->assertSame([], $connection->select("SELECT name FROM sqlite_temp_master WHERE type = 'trigger' AND name = 'checkpoint_2619_failure'"));
     }
 
     #[DataProvider('creationAtomicityContexts')]
