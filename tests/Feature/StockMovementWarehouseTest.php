@@ -25,6 +25,165 @@ class StockMovementWarehouseTest extends TestCase
 {
     use RefreshDatabase;
 
+    public static function newWarehousePurchaseContexts(): array
+    {
+        return [
+            'produit stock initial nul' => [false, 0],
+            'produit stock initial non nul' => [false, 7],
+            'variante stock initial nul' => [true, 0],
+            'variante stock initial non nul' => [true, 7],
+        ];
+    }
+
+    #[DataProvider('newWarehousePurchaseContexts')]
+    public function test_nouvel_entrepot_ne_duplique_pas_le_stock_deja_reparti(bool $withVariant, int $baseline): void
+    {
+        $a = $this->makeDefaultWarehouse();
+        $b = Warehouse::create(['name' => 'B', 'code' => 'b']);
+        $c = Warehouse::create(['name' => 'C', 'code' => 'c']);
+        $product = $this->makeProduct(['stock' => $baseline]);
+        $variant = $withVariant ? $this->makeVariant($product, ['stock' => $baseline]) : null;
+        $key = ['product_id' => $product->id, 'product_variant_id' => $variant?->id];
+        $sibling = $withVariant ? $this->makeVariant($product, ['stock' => 4]) : null;
+        if ($sibling) {
+            WarehouseStock::create(['warehouse_id' => $b->id, 'product_id' => $product->id, 'product_variant_id' => $sibling->id, 'stock' => 4]);
+        }
+        $other = $this->makeProduct(['stock' => 11]);
+        $otherLine = WarehouseStock::create(['warehouse_id' => $a->id, 'product_id' => $other->id, 'stock' => 11]);
+        $otherBefore = (array) DB::table('warehouse_stocks')->where('id', $otherLine->id)->sole();
+        $first = StockMovement::create($key + ['warehouse_id' => $a->id, 'type' => 'purchase', 'quantity' => 10]);
+        $this->assertSame($baseline, $first->fresh()->stock_before);
+        $this->assertSame($baseline + 10, $first->fresh()->stock_after);
+        $this->assertSame($baseline + 10, (int) DB::table('warehouse_stocks')->where($key)->where('warehouse_id', $a->id)->value('stock'));
+        $aBefore = (array) DB::table('warehouse_stocks')->where($key)->where('warehouse_id', $a->id)->sole();
+        $this->assertDatabaseMissing('warehouse_stocks', $key + ['warehouse_id' => $b->id]);
+        $this->travel(2)->seconds();
+        try {
+            $second = StockMovement::create($key + ['warehouse_id' => $b->id, 'type' => 'purchase', 'quantity' => 5]);
+            $this->assertSame($baseline + 10, $second->fresh()->stock_before);
+            $this->assertSame($baseline + 15, $second->fresh()->stock_after);
+            $this->assertSame(5, (int) DB::table('warehouse_stocks')->where($key)->where('warehouse_id', $b->id)->value('stock'));
+            $this->assertSame($baseline + 15, (int) ($variant ?? $product)->fresh()->stock);
+            $this->assertSame($baseline + 15 + ($sibling ? 4 : 0), (int) $product->fresh()->stock);
+            $this->assertSame($baseline + 15, (int) DB::table('warehouse_stocks')->where($key)->sum('stock'));
+            $bBefore = (array) DB::table('warehouse_stocks')->where($key)->where('warehouse_id', $b->id)->sole();
+            $this->assertDatabaseMissing('warehouse_stocks', $key + ['warehouse_id' => $c->id]);
+            StockMovement::create($key + ['warehouse_id' => $c->id, 'type' => 'purchase', 'quantity' => 3]);
+            $this->assertSame(3, (int) DB::table('warehouse_stocks')->where($key)->where('warehouse_id', $c->id)->value('stock'));
+            $this->assertSame($baseline + 18, (int) ($variant ?? $product)->fresh()->stock);
+            $this->assertSame($baseline + 18 + ($sibling ? 4 : 0), (int) $product->fresh()->stock);
+            $this->assertSame((int) ($variant ?? $product)->fresh()->stock, (int) DB::table('warehouse_stocks')->where($key)->sum('stock'));
+            $this->assertSame((int) $product->fresh()->stock, (int) DB::table('warehouse_stocks')->where('product_id', $product->id)->sum('stock'));
+            $this->assertSame($aBefore, (array) DB::table('warehouse_stocks')->where($key)->where('warehouse_id', $a->id)->sole());
+            $this->assertSame($bBefore, (array) DB::table('warehouse_stocks')->where($key)->where('warehouse_id', $b->id)->sole());
+            $this->assertSame($otherBefore, (array) DB::table('warehouse_stocks')->where('id', $otherLine->id)->sole());
+            if ($sibling) {
+                $this->assertSame(4, (int) $sibling->fresh()->stock);
+                $this->assertSame(4, (int) DB::table('warehouse_stocks')->where('product_variant_id', $sibling->id)->value('stock'));
+            }
+            // L'ancrage initial reste celui du premier mouvement après le rejeu UPDATE.
+            $this->assertTrue($first->fresh()->update(['quantity' => 12]));
+            $this->assertSame($baseline, $first->fresh()->stock_before);
+            $this->assertSame($baseline + 12, (int) DB::table('warehouse_stocks')->where($key)->where('warehouse_id', $a->id)->value('stock'));
+            $this->assertSame(5, (int) DB::table('warehouse_stocks')->where($key)->where('warehouse_id', $b->id)->value('stock'));
+            $this->assertSame(3, (int) DB::table('warehouse_stocks')->where($key)->where('warehouse_id', $c->id)->value('stock'));
+            $this->assertSame($baseline + 20, (int) ($variant ?? $product)->fresh()->stock);
+            $this->assertSame($baseline + 20 + ($sibling ? 4 : 0), (int) $product->fresh()->stock);
+            $this->assertSame($baseline + 20, (int) DB::table('warehouse_stocks')->where($key)->sum('stock'));
+        } finally {
+            $this->travelBack();
+        }
+    }
+
+    public static function firstWarehouseSaleContexts(): array
+    {
+        return [
+            'produit sans ligne' => [false, false],
+            'produit ligne vide ailleurs' => [false, true],
+            'variante sans ligne' => [true, false],
+            'variante ligne vide ailleurs' => [true, true],
+        ];
+    }
+
+    #[DataProvider('firstWarehouseSaleContexts')]
+    public function test_premier_rattachement_conserve_le_stock_initial_non_reparti(bool $withVariant, bool $emptyRow): void
+    {
+        $a = $this->makeDefaultWarehouse();
+        $b = Warehouse::create(['name' => 'B', 'code' => 'b']);
+        $product = $this->makeProduct(['stock' => 7]);
+        $variant = $withVariant ? $this->makeVariant($product, ['stock' => 7]) : null;
+        $key = ['product_id' => $product->id, 'product_variant_id' => $variant?->id];
+        if ($emptyRow) {
+            WarehouseStock::create($key + ['warehouse_id' => $b->id, 'stock' => 0]);
+        }
+        $movement = StockMovement::create($key + ['warehouse_id' => $a->id, 'type' => 'sale', 'quantity' => 2]);
+        $this->assertSame(7, $movement->fresh()->stock_before);
+        $this->assertSame(5, $movement->fresh()->stock_after);
+        $this->assertSame(5, (int) ($variant ?? $product)->fresh()->stock);
+        $this->assertSame(5, (int) $product->fresh()->stock);
+        $this->assertSame(5, (int) DB::table('warehouse_stocks')->where($key)->where('warehouse_id', $a->id)->value('stock'));
+        $this->assertSame(5, (int) DB::table('warehouse_stocks')->where($key)->sum('stock'));
+        if ($emptyRow) {
+            $this->assertSame(0, (int) DB::table('warehouse_stocks')->where($key)->where('warehouse_id', $b->id)->value('stock'));
+        }
+    }
+
+    public static function emptyWarehouseSaleContexts(): array
+    {
+        return [
+            'produit appel direct' => [false, false],
+            'produit transaction englobante' => [false, true],
+            'variante appel direct' => [true, false],
+            'variante transaction englobante' => [true, true],
+        ];
+    }
+
+    #[DataProvider('emptyWarehouseSaleContexts')]
+    public function test_vente_nouvel_entrepot_vide_refusee_sans_ecriture_residuelle(bool $withVariant, bool $outerTransaction): void
+    {
+        $a = $this->makeDefaultWarehouse();
+        $b = Warehouse::create(['name' => 'B', 'code' => 'b']);
+        $product = $this->makeProduct();
+        $variant = $withVariant ? $this->makeVariant($product) : null;
+        $key = ['product_id' => $product->id, 'product_variant_id' => $variant?->id];
+        StockMovement::create($key + ['warehouse_id' => $a->id, 'type' => 'purchase', 'quantity' => 10]);
+        $snapshot = static function (): array {
+            $rows = [];
+            foreach (['products', 'product_variants', 'stock_movements', 'warehouse_stocks', 'product_attribute_values', 'product_variant_attribute_values'] as $table) {
+                $rows[$table] = DB::table($table)->orderBy('id')->get()->map(static fn (object $row): array => (array) $row)->all();
+            }
+
+            return $rows;
+        };
+        $before = $snapshot();
+        $connection = DB::connection();
+        $initialLevel = $connection->transactionLevel();
+        $this->travel(2)->seconds();
+        try {
+            if ($outerTransaction) {
+                $connection->beginTransaction();
+            }
+            $operationLevel = $connection->transactionLevel();
+            $caught = null;
+            try {
+                StockMovement::create($key + ['warehouse_id' => $b->id, 'type' => 'sale', 'quantity' => 1]);
+            } catch (\Exception $exception) {
+                $caught = $exception;
+            }
+            $this->assertNotNull($caught, 'Le stock global en A ne permet pas une vente dans B vide.');
+            $this->assertSame('Stock insuffisant pour effectuer cette vente.', $caught->getMessage());
+            $this->assertSame($operationLevel, $connection->transactionLevel());
+            $this->assertSame($before, $snapshot(), 'Lectures DB fraîches, toutes les colonnes et timestamps compris.');
+            $this->assertDatabaseMissing('warehouse_stocks', $key + ['warehouse_id' => $b->id]);
+            $this->assertSame(10, (int) ($variant ?? $product)->fresh()->stock);
+            $this->assertSame(10, (int) $product->fresh()->stock);
+        } finally {
+            $connection->rollBack($initialLevel);
+            $this->travelBack();
+        }
+        $this->assertSame($initialLevel, $connection->transactionLevel());
+    }
+
     public static function deletionReplayContexts(): array
     {
         $cases = [];

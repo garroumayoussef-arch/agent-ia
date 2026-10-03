@@ -599,16 +599,14 @@ class StockMovement extends Model
      * du stock global (Product/ProductVariant) déjà effectuée par
      * l'appelant, sans la modifier.
      *
-     * Si aucune ligne warehouse_stocks n'existe encore pour ce couple
-     * (entrepôt, produit/variante) — cas d'un stock affecté
-     * directement sans être jamais passé par WarehouseStockSeeder ni
-     * par un mouvement — elle est créée avec pour stock initial
-     * `$movement->stock_before` (le stock global juste AVANT ce
-     * mouvement), pas 0 : même convention que WarehouseStockSeeder
-     * (T11a), qui réputait tout stock non encore décomposé comme
-     * entièrement présent dans l'entrepôt qui le reçoit. Partir de 0
-     * romprait cet invariant et ferait apparaître un stock
-     * insuffisant alors que le stock global, lui, est suffisant.
+     * Si la ligne manque et que le stock de cette cible est déjà
+     * entièrement réparti, le nouvel entrepôt démarre à 0 : ne pas
+     * lui réattribuer le stock global déjà détenu ailleurs.
+     * Sinon, conserver l'initialisation à `$movement->stock_before`
+     * (stock global AVANT ce mouvement), notamment pour le vrai premier
+     * rattachement d'un stock initial non encore réparti, comme en T11a.
+     * Aucune réparation des répartitions historiques incomplètes ou
+     * incohérentes n'est effectuée ici.
      *
      * Exception à cette règle (T12) : pour transfer_out/transfer_in,
      * ce raisonnement s'inverse. Ces types désignent explicitement
@@ -637,12 +635,19 @@ class StockMovement extends Model
 
         if (!$warehouseStock) {
             $isTransferLeg = in_array($movement->type, ['transfer_out', 'transfer_in'], true);
+            $initialStock = (int) $movement->stock_before;
+
+            if ($isTransferLeg || (int) WarehouseStock::where('product_id', $movement->product_id)
+                ->where('product_variant_id', $movement->product_variant_id)
+                ->sum('stock') === $initialStock) {
+                $initialStock = 0;
+            }
 
             $warehouseStock = WarehouseStock::create([
                 'warehouse_id' => $movement->warehouse_id,
                 'product_id' => $movement->product_id,
                 'product_variant_id' => $movement->product_variant_id,
-                'stock' => $isTransferLeg ? 0 : (int) $movement->stock_before,
+                'stock' => $initialStock,
             ]);
         }
 
