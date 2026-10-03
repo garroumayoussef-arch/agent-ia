@@ -9,6 +9,7 @@ use App\Models\Warehouse;
 use App\Models\WarehouseStock;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\TestCase;
 
 /**
@@ -23,6 +24,98 @@ use Tests\TestCase;
 class StockMovementWarehouseTest extends TestCase
 {
     use RefreshDatabase;
+
+    public static function deletionReplayContexts(): array
+    {
+        $cases = [];
+        foreach ([false, true] as $variant) {
+            foreach ([0, 7] as $baseline) {
+                foreach (['last_b', 'anchor_a', 'legacy_b', 'all'] as $operation) {
+                    $cases[$operation.' variant='.(int) $variant.' baseline='.$baseline] = [$variant, $baseline, $operation];
+                }
+            }
+        }
+
+        return $cases;
+    }
+
+    #[DataProvider('deletionReplayContexts')]
+    public function test_rejeu_suppression_recalcule_entrepots_avant_exclusion_et_preserve_ancrage(
+        bool $withVariant, int $baseline, string $operation,
+    ): void {
+        $a = $this->makeDefaultWarehouse();
+        $b = Warehouse::create(['name' => 'B', 'code' => 'b']);
+        $c = Warehouse::create(['name' => 'C', 'code' => 'c']);
+        $product = $this->makeProduct(['stock' => $baseline]);
+        $variant = $withVariant ? $this->makeVariant($product, ['stock' => $baseline]) : null;
+        $key = ['product_id' => $product->id, 'product_variant_id' => $variant?->id];
+        $lineA = WarehouseStock::create($key + ['warehouse_id' => $a->id, 'stock' => $baseline]);
+        $lineB = WarehouseStock::create($key + ['warehouse_id' => $b->id, 'stock' => 0]);
+        $lineC = WarehouseStock::create($key + ['warehouse_id' => $c->id, 'stock' => 0]);
+        $untouched = $this->makeProduct(['stock' => 11]);
+        $otherLine = WarehouseStock::create(['warehouse_id' => $b->id, 'product_id' => $untouched->id, 'stock' => 11]);
+        $sibling = $withVariant ? $this->makeVariant($product, ['stock' => 4]) : null;
+        $siblingLine = $sibling ? WarehouseStock::create([
+            'warehouse_id' => $b->id, 'product_id' => $product->id, 'product_variant_id' => $sibling->id, 'stock' => 4,
+        ]) : null;
+        $first = StockMovement::create($key + ['warehouse_id' => $a->id, 'type' => 'purchase', 'quantity' => 5]);
+        $second = StockMovement::create($key + ['warehouse_id' => $b->id, 'type' => 'purchase', 'quantity' => 3]);
+        $this->assertSame($baseline, $first->fresh()->stock_before);
+        $this->assertSame($baseline + 8, (int) ($variant ?? $product)->fresh()->stock);
+        $this->assertSame($baseline + 5, $lineA->fresh()->stock);
+        $this->assertSame(3, $lineB->fresh()->stock);
+        if ($operation === 'legacy_b') {
+            // Fixture historique sans warehouse_id ; le repli existant doit cibler A, pas B.
+            DB::table('stock_movements')->where('id', $second->id)->update(['warehouse_id' => null]);
+            DB::table('warehouse_stocks')->where('id', $lineA->id)->update(['stock' => $baseline + 8]);
+            DB::table('warehouse_stocks')->where('id', $lineB->id)->update(['stock' => 0]);
+            $second->refresh();
+        }
+        $unchanged = function () use ($lineC, $otherLine, $sibling, $siblingLine, $untouched): array {
+            return [
+                (array) DB::table('warehouse_stocks')->where('id', $lineC->id)->sole(),
+                (array) DB::table('warehouse_stocks')->where('id', $otherLine->id)->sole(),
+                (array) DB::table('products')->where('id', $untouched->id)->sole(),
+                $sibling ? (array) DB::table('product_variants')->where('id', $sibling->id)->sole() : null,
+                $siblingLine ? (array) DB::table('warehouse_stocks')->where('id', $siblingLine->id)->sole() : null,
+            ];
+        };
+        $before = $unchanged();
+        $warehouseIds = DB::table('warehouse_stocks')->orderBy('id')->pluck('id')->all();
+        $initialLevel = DB::connection()->transactionLevel();
+        $this->travel(2)->seconds();
+        try {
+            $deleted = $operation === 'anchor_a' ? $first : $second;
+            $this->assertTrue($deleted->delete());
+            $this->assertDatabaseMissing('stock_movements', ['id' => $deleted->id]);
+            $expectedA = $operation === 'anchor_a' ? $baseline : $baseline + 5;
+            $expectedB = $operation === 'anchor_a' ? 3 : 0;
+            $this->assertSame($expectedA, $lineA->fresh()->stock);
+            $this->assertSame($expectedB, $lineB->fresh()->stock);
+            $expectedTarget = $expectedA + $expectedB;
+            $this->assertSame($expectedTarget, (int) ($variant ?? $product)->fresh()->stock);
+            $this->assertSame($expectedTarget + ($sibling ? 4 : 0), (int) $product->fresh()->stock);
+            $this->assertSame($expectedTarget, (int) DB::table('warehouse_stocks')->where($key)->sum('stock'));
+            $this->assertSame((int) $product->fresh()->stock, (int) DB::table('warehouse_stocks')->where('product_id', $product->id)->sum('stock'));
+            $remaining = ($operation === 'anchor_a' ? $second : $first)->fresh();
+            $this->assertSame($baseline, $remaining->stock_before);
+            $this->assertSame($expectedTarget, $remaining->stock_after);
+            if ($operation === 'all') {
+                $this->assertTrue($first->delete());
+                $this->assertSame($baseline, $lineA->fresh()->stock);
+                $this->assertSame(0, $lineB->fresh()->stock);
+                $this->assertSame($baseline, (int) ($variant ?? $product)->fresh()->stock);
+                $this->assertSame($baseline + ($sibling ? 4 : 0), (int) $product->fresh()->stock);
+                $this->assertSame($baseline, (int) DB::table('warehouse_stocks')->where($key)->sum('stock'));
+                $this->assertSame(0, StockMovement::where($key)->count());
+            }
+            $this->assertSame($before, $unchanged(), 'Données et timestamps des entrepôts/cibles non concernés inchangés.');
+            $this->assertSame($warehouseIds, DB::table('warehouse_stocks')->orderBy('id')->pluck('id')->all());
+            $this->assertSame($initialLevel, DB::connection()->transactionLevel());
+        } finally {
+            $this->travelBack();
+        }
+    }
 
     private function makeProduct(array $attributes = []): Product
     {

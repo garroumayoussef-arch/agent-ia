@@ -544,6 +544,17 @@ class StockMovement extends Model
 
         $warehouseTotals = [$anchorWarehouseId => $baselineStock];
 
+        if ($excludeMovementId !== null) {
+            // Inclure les entrepôts de l'historique avant exclusion, même sans contribution restante.
+            foreach ($allMovements as $entry) {
+                $entryWarehouseId = $entry->warehouse_id
+                    ? (int) $entry->warehouse_id
+                    : static::resolveDefaultWarehouseIdOrFail();
+
+                $warehouseTotals[$entryWarehouseId] ??= 0;
+            }
+        }
+
         foreach ($ledger as $entry) {
             $rawWarehouseId = ($pendingMovement && $entry->id === $pendingMovement->id)
                 ? $pendingMovement->warehouse_id
