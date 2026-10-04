@@ -12,17 +12,11 @@ use Illuminate\Console\Command;
  * tous les Product/ProductVariant créés AVANT l'activation du
  * dual-write (étape 2.2, `Product::booted()`/`ProductVariant::booted()`).
  *
- * Aucune logique dupliquée : cette commande se contente d'appeler
- * `save()` sur chaque enregistrement existant, ce qui déclenche
- * exactement le même hook `saved()` déjà testé et validé à l'étape
- * 2.2 — même code, mêmes garanties (colonnes dédiées jamais
- * réécrites, activité réellement persistée lue depuis la base, aucun
- * hardcode d'activité). `Model::save()` n'exécute une requête UPDATE
- * que si le modèle est "dirty" (`isDirty()`) : un modèle rechargé sans
- * aucune modification ne déclenche donc AUCUNE écriture sur
- * `products`/`product_variants` — pas même `updated_at` — seul
- * l'événement `saved()` se déclenche, ce qui alimente les tables
- * miroir sans jamais toucher aux colonnes sources.
+ * Réutilise la synchronisation des miroirs appelée par les hooks
+ * `saved()`, sans appeler `save()` sur les sources : aucun hook de
+ * normalisation, recalcul de stock ou UPDATE de leurs timestamps.
+ * Les valeurs historiques sont copiées brutes selon les mêmes règles
+ * d'applicabilité et de null que le dual-write ordinaire.
  *
  * Idempotente par construction : ré-exécuter cette commande rejoue les
  * mêmes `updateOrCreate()` déjà idempotents de l'étape 2.2, sans
@@ -40,7 +34,7 @@ class BackfillAttributeValues extends Command
         $productCount = 0;
 
         Product::query()->each(function (Product $product) use (&$productCount): void {
-            $product->save();
+            $product->syncAttributeMirrors();
             $productCount++;
         });
 
@@ -49,7 +43,7 @@ class BackfillAttributeValues extends Command
         $variantCount = 0;
 
         ProductVariant::query()->each(function (ProductVariant $variant) use (&$variantCount): void {
-            $variant->save();
+            $variant->syncAttributeMirrors();
             $variantCount++;
         });
 

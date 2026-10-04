@@ -51,21 +51,7 @@ class ProductVariant extends Model
              * `size`, `color`, `version` restent l'UNIQUE source de
              * vérité, jamais réécrites depuis la table miroir.
              */
-            // Lecture fraîche, au plus une fois par sauvegarde, après les sorties anticipées.
-            $productActivityResolved = false;
-            $productActivity = null;
-            $resolveProductActivity = function () use ($variant, &$productActivityResolved, &$productActivity): ?string {
-                if (! $productActivityResolved) {
-                    $productActivity = $variant->product()->first()?->activity;
-                    $productActivityResolved = true;
-                }
-
-                return $productActivity;
-            };
-
-            static::syncAttributeMirror($variant, 'size', $variant->size, $resolveProductActivity);
-            static::syncAttributeMirror($variant, 'color', $variant->color, $resolveProductActivity);
-            static::syncAttributeMirror($variant, 'version', $variant->version, $resolveProductActivity);
+            $variant->syncAttributeMirrors();
         });
 
         /*
@@ -101,6 +87,26 @@ class ProductVariant extends Model
         static::deleted(function (ProductVariant $variant) {
             $variant->syncProductStock();
         });
+    }
+
+    /** Synchronise les attributs génériques sans sauvegarder la source ni recalculer le stock. */
+    public function syncAttributeMirrors(): void
+    {
+        // Lecture fraîche, au plus une fois par synchronisation, après les sorties anticipées.
+        $productActivityResolved = false;
+        $productActivity = null;
+        $resolveProductActivity = function () use (&$productActivityResolved, &$productActivity): ?string {
+            if (! $productActivityResolved) {
+                $productActivity = $this->product()->first()?->activity;
+                $productActivityResolved = true;
+            }
+
+            return $productActivity;
+        };
+
+        static::syncAttributeMirror($this, 'size', $this->size, $resolveProductActivity);
+        static::syncAttributeMirror($this, 'color', $this->color, $resolveProductActivity);
+        static::syncAttributeMirror($this, 'version', $this->version, $resolveProductActivity);
     }
 
     /**

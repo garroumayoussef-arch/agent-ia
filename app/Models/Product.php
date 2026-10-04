@@ -102,9 +102,7 @@ class Product extends Model
          * `product_variants.version` (seule réellement utilisée).
          */
         static::saved(function (self $product): void {
-            static::syncAttributeMirror($product, 'season', $product->season);
-            static::syncAttributeMirror($product, 'taille', $product->taille);
-            static::syncAttributeMirror($product, 'equipe', $product->equipe);
+            $product->syncAttributeMirrors();
         });
 
         /*
@@ -176,6 +174,15 @@ class Product extends Model
         Category::deleting(function (Category $category): void {
             static::where('category_id', $category->id)->update(['categorie' => 'N/A']);
         });
+    }
+
+    /** Synchronise les attributs génériques sans sauvegarder la source. */
+    public function syncAttributeMirrors(): void
+    {
+        // Synchroniser uniquement les attributs, sans sauvegarder ni normaliser la source.
+        static::syncAttributeMirror($this, 'season', $this->season);
+        static::syncAttributeMirror($this, 'taille', $this->taille);
+        static::syncAttributeMirror($this, 'equipe', $this->equipe);
     }
 
     /**
