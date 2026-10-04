@@ -194,7 +194,10 @@ class Invoice extends Model
                     'product_variant_id' => $item->product_variant_id,
                     'product_name' => $item->product?->nom ?? 'Produit supprimé',
                     'variant_description' => $variant
-                        ? implode(' / ', array_filter([$variant->attributeMirrorValue('size'), $variant->attributeMirrorValue('color'), $variant->sku]))
+                        ? implode(' / ', array_filter(
+                            [$variant->attributeMirrorValue('size'), $variant->attributeMirrorValue('color'), $variant->sku],
+                            static fn ($value): bool => $value !== null && $value !== '',
+                        ))
                         : null,
                     'quantity' => $item->quantity_ordered,
                     'unit_price_ht' => $item->unit_price,

@@ -14,6 +14,7 @@ use App\Models\Warehouse;
 use Database\Seeders\AttributeDefinitionSeeder;
 use Database\Seeders\RoleSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\TestCase;
 
 /**
@@ -86,6 +87,62 @@ class InvoiceVariantDescriptionAttributeTest extends TestCase
             'vat_number' => 'FR11111222333',
             'recovery_indemnity_amount' => 40,
         ]);
+    }
+
+    public static function rawVariantDescriptions(): array
+    {
+        return [
+            'size zero seule' => ['0', null, '', '0'],
+            'color zero seule' => [null, '0', '', '0'],
+            'SKU zero seul' => [null, null, '0', '0'],
+            'trois zeros' => ['0', '0', '0', '0 / 0 / 0'],
+            'null exclus' => [null, null, 'SKU', 'SKU'],
+            'vides exclus' => ['', '', 'SKU', 'SKU'],
+            'vide entre valeurs' => ['42', '', 'SKU', '42 / SKU'],
+            'null entre valeurs' => ['42', null, 'SKU', '42 / SKU'],
+            'toutes valeurs vides' => ['', '', '', ''],
+            'valeurs brutes' => ['  0  ', ' Bleu ', ' SKU ', '  0   /  Bleu  /  SKU '],
+            'espaces seuls' => [' ', '  ', '   ', '  /    /    '],
+        ];
+    }
+
+    #[DataProvider('rawVariantDescriptions')]
+    public function test_new_invoice_persists_exact_raw_variant_description(
+        ?string $size,
+        ?string $color,
+        string $sku,
+        string $expected,
+    ): void {
+        $customer = Customer::create([
+            'name' => 'Client description brute',
+            'customer_type' => Customer::TYPE_INDIVIDUAL,
+            'address' => '2 avenue des Clients',
+            'postal_code' => '69000',
+            'city' => 'Lyon',
+            'country' => 'France',
+        ]);
+        $product = $this->makeProduct(['activity' => 'sport']);
+        // SKU non nullable : la chaîne vide permet d'isoler size/color sans faux null.
+        $variant = $this->makeVariant($product, compact('size', 'color', 'sku'));
+        $order = SalesOrder::create([
+            'reference' => 'CMD-RAW-'.uniqid(),
+            'customer_id' => $customer->id,
+        ]);
+        $item = SalesOrderItem::create([
+            'sales_order_id' => $order->id,
+            'product_id' => $product->id,
+            'product_variant_id' => $variant->id,
+            'quantity_ordered' => 1,
+            'unit_price' => 20,
+        ]);
+        $order->markAsConfirmed();
+        $order->fresh()->ship([$item->id => 1]);
+
+        $invoice = Invoice::generateFromSalesOrder($order->fresh());
+
+        // Requête fraîche après génération : vérifier le snapshot réellement persisté.
+        $line = $invoice->lines()->where('product_variant_id', $variant->id)->firstOrFail();
+        $this->assertSame($expected, $line->variant_description);
     }
 
     private function makeProduct(array $attributes = []): Product
