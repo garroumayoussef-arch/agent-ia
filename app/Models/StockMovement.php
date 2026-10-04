@@ -29,6 +29,16 @@ class StockMovement extends Model
         return $query->getConnection()->transaction(fn () => parent::performUpdate($query));
     }
 
+    public function delete()
+    {
+        if (! $this->exists) {
+            return parent::delete();
+        }
+
+        // deleting et son rejeu précèdent le DELETE SQL : englober tout le cycle Eloquent.
+        return $this->getConnection()->transaction(fn () => parent::delete());
+    }
+
     protected static function booted(): void
     {
         /*

@@ -58,6 +58,259 @@ class StockMovementTest extends TestCase
         return $snapshot;
     }
 
+    public static function deletionAtomicityContexts(): array
+    {
+        $cases = [];
+        foreach (['delete', 'deleteOrFail', 'outer', 'filament'] as $entry) {
+            foreach ([false, true] as $variant) {
+                foreach ([false, true] as $mirrors) {
+                    $cases[$entry.' variant='.(int) $variant.' mirrors='.(int) $mirrors]
+                        = [$entry, $variant, $mirrors];
+                }
+            }
+        }
+
+        return $cases;
+    }
+
+    #[DataProvider('deletionAtomicityContexts')]
+    public function test_suppression_stock_movement_atomique_annule_delete_final_et_preserve_succes(
+        string $entry, bool $withVariant, bool $mirrors,
+    ): void {
+        if ($mirrors) {
+            $this->seed(AttributeDefinitionSeeder::class);
+        }
+        $a = Warehouse::where('is_default', true)->sole();
+        $b = Warehouse::create(['name' => 'B', 'code' => 'cp2621-b']);
+        $product = $this->makeProduct([
+            'activity' => 'sport', 'stock' => 5, 'taille' => 'M', 'equipe' => 'Equipe', 'season' => '2025-2026',
+        ]);
+        $variant = $withVariant ? $this->makeVariant($product, [
+            'stock' => 5, 'size' => 'M', 'color' => 'Bleu', 'version' => 'Home',
+        ]) : null;
+        $sibling = $withVariant ? $this->makeVariant($product, ['stock' => 4]) : null;
+        $key = ['product_id' => $product->id, 'product_variant_id' => $variant?->id];
+        $anchor = StockMovement::create($key + ['warehouse_id' => $a->id, 'type' => 'purchase', 'quantity' => 2]);
+        $movement = StockMovement::create($key + ['warehouse_id' => $a->id, 'type' => 'purchase', 'quantity' => 10]);
+        $neighbor = StockMovement::create($key + ['warehouse_id' => $b->id, 'type' => 'purchase', 'quantity' => 3]);
+        $sale = StockMovement::create($key + ['warehouse_id' => $a->id, 'type' => 'sale', 'quantity' => 4]);
+        $mirrorTable = $withVariant ? 'product_variant_attribute_values' : 'product_attribute_values';
+        $mirrorKey = $withVariant ? 'product_variant_id' : 'product_id';
+        $targetId = $variant?->id ?? $product->id;
+        $targetTable = $withVariant ? 'product_variants' : 'products';
+        if ($mirrors) {
+            $this->assertSame(3, DB::table($mirrorTable)->where($mirrorKey, $targetId)->count());
+            DB::table($mirrorTable)->where($mirrorKey, $targetId)->update(['value' => 'PREVIOUS']);
+        }
+        if ($entry === 'filament') {
+            $this->seed(RoleSeeder::class);
+            $this->actingAs(User::factory()->create()->assignRole('admin'));
+        }
+        $connection = DB::connection();
+        $this->assertSame('sqlite', $connection->getDriverName());
+        $initialLevel = $connection->transactionLevel();
+        $baseline = $this->movementCreationSnapshot();
+        $originalLog = $connection->getQueryLog();
+        $wasLogging = $connection->logging();
+        $dispatcher = StockMovement::getEventDispatcher();
+        StockMovement::setEventDispatcher(clone $dispatcher);
+        $events = [];
+        $operationLevel = $initialLevel;
+        StockMovement::deleting(function (StockMovement $record) use (&$events, &$operationLevel, $connection, $movement): void {
+            if ($record->id === $movement->id) {
+                $this->assertGreaterThan($operationLevel, $connection->transactionLevel());
+                $events[] = 'deleting';
+            }
+        });
+        StockMovement::deleted(function (StockMovement $record) use (&$events, &$operationLevel, $connection, $movement): void {
+            if ($record->id === $movement->id) {
+                $this->assertGreaterThan($operationLevel, $connection->transactionLevel());
+                $this->assertFalse($record->exists);
+                $this->assertDatabaseMissing('stock_movements', ['id' => $record->id]);
+                $events[] = 'deleted';
+            }
+        });
+        $run = function () use ($entry, $movement): void {
+            $fresh = $movement->fresh();
+            if ($entry === 'filament') {
+                $page = Livewire::test(EditStockMovement::class, ['record' => $fresh->getRouteKey()]);
+                $this->assertFalse($page->instance()->hasDatabaseTransactions());
+                $page->callAction('delete');
+            } else {
+                $this->assertTrue($entry === 'deleteOrFail' ? $fresh->deleteOrFail() : $fresh->delete());
+                $this->assertFalse($fresh->exists);
+            }
+        };
+        $this->withoutExceptionHandling();
+        $this->travel(2)->seconds();
+        try {
+            if ($entry === 'outer') {
+                $connection->beginTransaction();
+                $this->makeProduct(['stock' => 11]);
+                $outerSnapshot = $this->movementCreationSnapshot();
+                $connection->beginTransaction();
+                $this->makeProduct(['stock' => 12]);
+            }
+            $operationLevel = $connection->transactionLevel();
+            $before = $this->movementCreationSnapshot();
+            $parentStock = $withVariant ? 10 : 6;
+            $mirrorCondition = $mirrors
+                ? "AND (SELECT COUNT(*) FROM {$mirrorTable} WHERE {$mirrorKey} = {$targetId} AND value <> 'PREVIOUS') = 3"
+                : '';
+            // La sonde refuse le DELETE seulement après vérification des effets réels en DB.
+            $connection->unprepared("CREATE TEMP TRIGGER checkpoint_2621_failure BEFORE DELETE ON stock_movements
+                WHEN OLD.id = {$movement->id}
+                BEGIN SELECT CASE WHEN
+                    (SELECT stock_before FROM stock_movements WHERE id = {$neighbor->id}) = 7
+                    AND (SELECT stock_after FROM stock_movements WHERE id = {$sale->id}) = 6
+                    AND (SELECT stock FROM {$targetTable} WHERE id = {$targetId}) = 6
+                    AND (SELECT stock FROM products WHERE id = {$product->id}) = {$parentStock}
+                    AND (SELECT SUM(stock) FROM warehouse_stocks WHERE product_id = {$product->id}
+                        AND product_variant_id ".($variant ? '= '.$variant->id : 'IS NULL').") = 6
+                    {$mirrorCondition}
+                    THEN RAISE(ABORT, 'checkpoint_2621_final_delete_failure')
+                    ELSE RAISE(ABORT, 'checkpoint_2621_replay_missing') END; END");
+            $offset = count($connection->getQueryLog());
+            $connection->enableQueryLog();
+            $caught = null;
+            try {
+                $run();
+            } catch (QueryException $exception) {
+                $caught = $exception;
+            } finally {
+                $queries = array_slice($connection->getQueryLog(), $offset);
+                $connection->unprepared('DROP TRIGGER IF EXISTS temp.checkpoint_2621_failure');
+                (new \ReflectionProperty($connection, 'queryLog'))->setValue($connection, $originalLog);
+                $wasLogging ? $connection->enableQueryLog() : $connection->disableQueryLog();
+            }
+            $this->assertNotNull($caught);
+            $this->assertStringContainsString('checkpoint_2621_final_delete_failure', $caught->getMessage());
+            $this->assertStringStartsWith('delete from "stock_movements"', $caught->getSql());
+            $this->assertSame([$movement->id], $caught->getBindings());
+            $this->assertSame(['deleting'], $events);
+            $this->assertSame($operationLevel, $connection->transactionLevel());
+            $this->assertSame($before, $this->movementCreationSnapshot(), 'Toutes les lignes DB et timestamps restaurés avant teardown.');
+            $this->assertSame(10, $movement->fresh()->quantity);
+            $this->assertSame(17, $neighbor->fresh()->stock_before);
+            $this->assertSame(16, (int) ($variant ?? $product)->fresh()->stock);
+            $this->assertSame($withVariant ? 20 : 16, (int) $product->fresh()->stock);
+            $tables = [];
+            foreach ($queries as $query) {
+                if (preg_match('/^update "(stock_movements|products|product_variants|warehouse_stocks|product_attribute_values|product_variant_attribute_values)"/', $query['query'], $match) === 1) {
+                    $tables[] = $match[1];
+                    $this->assertStringContainsString('updated_at', $query['query']);
+                    $this->assertContains(now()->format('Y-m-d H:i:s'), $query['bindings']);
+                }
+            }
+            $expected = ['stock_movements', 'stock_movements'];
+            $expected = [...$expected, ...($withVariant ? ['product_variants', 'products'] : ['products'])];
+            if ($mirrors) {
+                $expected = [...$expected, ...array_fill(0, 3, $mirrorTable)];
+            }
+            $this->assertSame([...$expected, 'warehouse_stocks', 'warehouse_stocks'], $tables);
+            $run();
+            $this->assertSame(['deleting', 'deleting', 'deleted'], $events);
+            $this->assertSame($operationLevel, $connection->transactionLevel());
+            $this->assertNull($movement->fresh());
+            $this->assertSame(5, $anchor->fresh()->stock_before);
+            $this->assertSame(7, $neighbor->fresh()->stock_before);
+            $this->assertSame(10, $sale->fresh()->stock_before);
+            $this->assertSame(6, (int) ($variant ?? $product)->fresh()->stock);
+            $this->assertSame($parentStock, (int) $product->fresh()->stock);
+            $this->assertSame(3, (int) DB::table('warehouse_stocks')->where($key)->where('warehouse_id', $a->id)->value('stock'));
+            $this->assertSame(3, (int) DB::table('warehouse_stocks')->where($key)->where('warehouse_id', $b->id)->value('stock'));
+            if ($sibling) {
+                $this->assertSame(4, (int) $sibling->fresh()->stock);
+            }
+            if ($entry === 'outer') {
+                $connection->rollBack();
+                $this->assertSame($initialLevel + 1, $connection->transactionLevel());
+                $this->assertSame($outerSnapshot, $this->movementCreationSnapshot());
+                $connection->rollBack();
+                $this->assertSame($baseline, $this->movementCreationSnapshot());
+            }
+        } finally {
+            $connection->unprepared('DROP TRIGGER IF EXISTS temp.checkpoint_2621_failure');
+            (new \ReflectionProperty($connection, 'queryLog'))->setValue($connection, $originalLog);
+            $wasLogging ? $connection->enableQueryLog() : $connection->disableQueryLog();
+            StockMovement::setEventDispatcher($dispatcher);
+            $connection->rollBack($initialLevel);
+            $this->travelBack();
+            $this->withExceptionHandling();
+        }
+        $this->assertSame($initialLevel, $connection->transactionLevel());
+        $this->assertSame($originalLog, $connection->getQueryLog());
+        $this->assertSame($wasLogging, $connection->logging());
+        $this->assertSame([], $connection->select("SELECT name FROM sqlite_temp_master WHERE type = 'trigger' AND name = 'checkpoint_2621_failure'"));
+        $this->assertNull((new StockMovement)->delete());
+        $this->assertSame($initialLevel, $connection->transactionLevel());
+    }
+
+    public static function deletionBusinessFailureContexts(): array
+    {
+        return [
+            'produit direct' => [false, false],
+            'produit englobant' => [false, true],
+            'variante directe' => [true, false],
+            'variante englobante' => [true, true],
+        ];
+    }
+
+    #[DataProvider('deletionBusinessFailureContexts')]
+    public function test_suppression_stock_movement_preserve_exception_metier_et_niveau_transactionnel(
+        bool $withVariant, bool $outer,
+    ): void {
+        $this->seed(AttributeDefinitionSeeder::class);
+        $product = $this->makeProduct(['activity' => 'sport']);
+        $variant = $withVariant ? $this->makeVariant($product) : null;
+        $key = ['product_id' => $product->id, 'product_variant_id' => $variant?->id];
+        $purchase = StockMovement::create($key + ['type' => 'purchase', 'quantity' => 10]);
+        StockMovement::create($key + ['type' => 'sale', 'quantity' => 8]);
+        $connection = DB::connection();
+        $initialLevel = $connection->transactionLevel();
+        try {
+            if ($outer) {
+                $connection->beginTransaction();
+                $this->makeProduct(['stock' => 11]);
+            }
+            $before = $this->movementCreationSnapshot();
+            $operationLevel = $connection->transactionLevel();
+            $caught = null;
+            try {
+                $purchase->delete();
+            } catch (\Exception $exception) {
+                $caught = $exception;
+            }
+            $this->assertNotNull($caught);
+            $this->assertSame(\Exception::class, $caught::class);
+            $this->assertSame('Stock insuffisant pour effectuer cette vente.', $caught->getMessage());
+            $this->assertSame($operationLevel, $connection->transactionLevel());
+            $this->assertTrue($purchase->exists);
+            $this->assertSame($before, $this->movementCreationSnapshot());
+        } finally {
+            $connection->rollBack($initialLevel);
+        }
+        $this->assertSame($initialLevel, $connection->transactionLevel());
+    }
+
+    public function test_suppression_stock_movement_conserve_retour_false_si_evenement_annule(): void
+    {
+        $product = $this->makeProduct();
+        $movement = StockMovement::create(['product_id' => $product->id, 'type' => 'purchase', 'quantity' => 2]);
+        $dispatcher = StockMovement::getEventDispatcher();
+        StockMovement::setEventDispatcher(clone $dispatcher);
+        $level = DB::connection()->transactionLevel();
+        try {
+            StockMovement::deleting(static fn (StockMovement $record): bool => false);
+            $this->assertFalse($movement->delete());
+            $this->assertTrue($movement->exists);
+            $this->assertDatabaseHas('stock_movements', ['id' => $movement->id]);
+            $this->assertSame($level, DB::connection()->transactionLevel());
+        } finally {
+            StockMovement::setEventDispatcher($dispatcher);
+        }
+    }
+
     public static function updateAtomicityContexts(): array
     {
         $cases = [];
