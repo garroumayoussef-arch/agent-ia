@@ -58,6 +58,14 @@ class StockMovement extends Model
             $variant = $movement->productVariant;
             $product = $movement->product;
 
+            // Valider la paire explicite avant tout effet de stock, sans la réaffecter.
+            if ($movement->product_id !== null && $movement->product_variant_id !== null
+                && $variant && (string) $variant->product_id !== (string) $movement->product_id) {
+                throw new \Exception(
+                    'La variante sélectionnée n\'appartient pas au produit indiqué.'
+                );
+            }
+
             /*
              * Aucun produit ni variante associé
              */

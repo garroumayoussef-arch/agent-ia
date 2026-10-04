@@ -58,6 +58,131 @@ class StockMovementTest extends TestCase
         return $snapshot;
     }
 
+    public static function explicitPairContexts(): array
+    {
+        $cases = [];
+        foreach ([false, true] as $outer) {
+            foreach ([false, true] as $warehouseExists) {
+                foreach ([false, true] as $stringIds) {
+                    $cases['outer='.(int) $outer.' warehouse='.(int) $warehouseExists.' strings='.(int) $stringIds]
+                        = [$outer, $warehouseExists, $stringIds];
+                }
+            }
+        }
+
+        return $cases;
+    }
+
+    #[DataProvider('explicitPairContexts')]
+    public function test_creation_paire_explicite_incoherente_refusee_avant_toute_ecriture(
+        bool $outer, bool $warehouseExists, bool $stringIds,
+    ): void {
+        $this->seed(AttributeDefinitionSeeder::class);
+        $a = $this->makeProduct(['activity' => 'sport', 'stock' => 11]);
+        $b = $this->makeProduct(['activity' => 'sport']);
+        $variant = $this->makeVariant($b, ['stock' => 5, 'color' => 'Bleu', 'version' => 'Home']);
+        $sibling = $this->makeVariant($b, ['stock' => 4]);
+        $warehouse = Warehouse::where('is_default', true)->sole();
+        if ($warehouseExists) {
+            WarehouseStock::create([
+                'warehouse_id' => $warehouse->id, 'product_id' => $a->id,
+                'product_variant_id' => null, 'stock' => 11,
+            ]);
+            WarehouseStock::create([
+                'warehouse_id' => $warehouse->id, 'product_id' => $b->id,
+                'product_variant_id' => $variant->id, 'stock' => 5,
+            ]);
+        }
+        // Des miroirs volontairement différents rendent tout dual-write détectable.
+        DB::table('product_attribute_values')->update(['value' => 'PREVIOUS']);
+        DB::table('product_variant_attribute_values')->update(['value' => 'PREVIOUS']);
+        $this->assertGreaterThan(0, ProductAttributeValue::count());
+        $this->assertGreaterThan(0, ProductVariantAttributeValue::count());
+        $connection = DB::connection();
+        $initialLevel = $connection->transactionLevel();
+        $baseline = $this->movementCreationSnapshot();
+        $this->travel(2)->seconds();
+        try {
+            if ($outer) {
+                $connection->beginTransaction();
+                $prior = $this->makeProduct(['stock' => 13]);
+                $outerSnapshot = $this->movementCreationSnapshot();
+                $connection->beginTransaction();
+                $this->makeProduct(['stock' => 14]);
+            }
+            $operationLevel = $connection->transactionLevel();
+            $before = $this->movementCreationSnapshot();
+            $movement = new StockMovement([
+                'product_id' => $stringIds ? (string) $a->id : $a->id,
+                'product_variant_id' => $stringIds ? (string) $variant->id : $variant->id,
+                'warehouse_id' => $warehouse->id, 'type' => 'purchase', 'quantity' => 2,
+            ]);
+            $identifiers = $movement->only(['product_id', 'product_variant_id']);
+            $originalLog = $connection->getQueryLog();
+            $wasLogging = $connection->logging();
+            $connection->enableQueryLog();
+            $caught = null;
+            try {
+                $movement->save();
+            } catch (\Exception $exception) {
+                $caught = $exception;
+            } finally {
+                $queries = array_slice($connection->getQueryLog(), count($originalLog));
+                (new \ReflectionProperty($connection, 'queryLog'))->setValue($connection, $originalLog);
+                $wasLogging ? $connection->enableQueryLog() : $connection->disableQueryLog();
+            }
+            $this->assertNotNull($caught);
+            $this->assertSame(\Exception::class, $caught::class);
+            $this->assertSame('La variante sélectionnée n\'appartient pas au produit indiqué.', $caught->getMessage());
+            $this->assertSame([], array_values(array_filter($queries, static fn (array $query): bool =>
+                preg_match('/^\s*(?:insert|update|delete|replace)\b/i', $query['query']) === 1
+            )), 'Le refus précède toute écriture, pas seulement un rollback des effets.');
+            $this->assertFalse($movement->exists);
+            $this->assertSame($identifiers, $movement->only(['product_id', 'product_variant_id']));
+            $this->assertSame($operationLevel, $connection->transactionLevel());
+            $this->assertSame($before, $this->movementCreationSnapshot(), 'Toutes les lignes, miroirs et timestamps inchangés avant teardown.');
+            $this->assertSame(0, StockMovement::count());
+            $this->assertSame(11, (int) $a->fresh()->stock);
+            $this->assertSame(9, (int) $b->fresh()->stock);
+            $this->assertSame(5, (int) $variant->fresh()->stock);
+            $this->assertSame(4, (int) $sibling->fresh()->stock);
+            if ($outer) {
+                $this->assertSame(13, (int) $prior->fresh()->stock);
+            }
+
+            // Même instance après refus : seuls les identifiants corrigés explicitement changent.
+            $movement->product_id = $stringIds ? (string) $b->id : $b->id;
+            $this->assertTrue($movement->save());
+            $this->assertSame($b->id, (int) $movement->fresh()->product_id);
+            $this->assertSame($variant->id, (int) $movement->fresh()->product_variant_id);
+            $this->assertSame(7, (int) $variant->fresh()->stock);
+            $this->assertSame(11, (int) $b->fresh()->stock);
+            $this->assertSame(7, (int) WarehouseStock::where('warehouse_id', $warehouse->id)
+                ->where('product_id', $b->id)->where('product_variant_id', $variant->id)->sole()->stock);
+
+            $plain = StockMovement::create([
+                'product_id' => $a->id, 'warehouse_id' => $warehouse->id,
+                'type' => 'purchase', 'quantity' => 3,
+            ]);
+            $this->assertNull($plain->fresh()->product_variant_id);
+            $this->assertSame(14, (int) $a->fresh()->stock);
+            $this->assertSame($operationLevel, $connection->transactionLevel());
+            if ($outer) {
+                $connection->rollBack();
+                $this->assertSame($initialLevel + 1, $connection->transactionLevel());
+                $this->assertSame($outerSnapshot, $this->movementCreationSnapshot());
+                $connection->rollBack();
+                $this->assertSame($baseline, $this->movementCreationSnapshot());
+            }
+            $this->assertSame($initialLevel, $connection->transactionLevel());
+        } finally {
+            while ($connection->transactionLevel() > $initialLevel) {
+                $connection->rollBack();
+            }
+            $this->travelBack();
+        }
+    }
+
     public static function deletionAtomicityContexts(): array
     {
         $cases = [];
