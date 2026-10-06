@@ -25,6 +25,12 @@ class AttributeDefinition extends Model
         'is_required' => 'boolean',
     ];
 
+    /** Portée explicite ; les associations restent sans effet en mode activity. */
+    public function categoryAssociations(): HasMany
+    {
+        return $this->hasMany(CategoryAttributeDefinition::class);
+    }
+
     /**
      * Valeurs de niveau produit associées à cette définition
      * (table `product_attribute_values`, étape 4/6).
