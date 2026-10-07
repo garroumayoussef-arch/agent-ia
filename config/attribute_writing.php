@@ -8,4 +8,5 @@ return [
     ],
     // No real catalogue definition is activated by this checkpoint.
     'direct' => [],
+    'variant_direct' => [],
 ];

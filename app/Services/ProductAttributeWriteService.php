@@ -186,6 +186,18 @@ class ProductAttributeWriteService
             ->orderBy('attribute_definition_id')->get()->keyBy('attribute_definition_id');
     }
 
+    /** Pure validation shared with the Variant values-only service. */
+    public function validateDirectDefinition(AttributeDefinition $definition): void
+    {
+        $this->validateDefinition($definition);
+    }
+
+    /** Pure normalization; does not resolve a Product or perform any DB operation. */
+    public function validateDirectValue(AttributeDefinition $definition, mixed $value): ?string
+    {
+        return $this->validateValue($definition, $value);
+    }
+
     private function validateDefinition(AttributeDefinition $definition): void
     {
         if ($definition->input_type === 'text' && $definition->options === null) {
